@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from . import arbiter, gates, profiles, regions, workspace
 from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
+from .memory import extract_settled, save_settled, inject_settled
 from .providers import Completion, ProviderError, chat
 
 # `>{2,}` rather than `>>>`: kimi-k2.7-code closed a block with `>>` on T3 and
@@ -435,6 +436,14 @@ def run_ticket(
     if graph_status != "no-project":
         print(f"  [graph] {graph_status}")
 
+    # Phase 5: inject auto-extracted settled decisions from prior runs.
+    # Hand-curated decisions in profile.settled take precedence; auto-extracted
+    # ones are appended after.
+    effective_settled = inject_settled(profile.settled, repo)
+    if len(effective_settled) > len(profile.settled):
+        extra = len(effective_settled) - len(profile.settled)
+        print(f"  [memory] {len(effective_settled)} settled decisions ({extra} from prior runs)")
+
     with workspace.open_workspace(repo, tid, keep=keep_worktree) as ws:
         print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")
         if profile.test_cmd:
@@ -678,6 +687,10 @@ def run_ticket(
                     print(f"           [arbiter] {adj.summary()}  {adj.usage}")
                     if adj.settled:
                         print(f"           [arbiter] nominates {len(adj.settled)} finding(s) as settled")
+                        # Phase 5: persist arbiter-nominated settled decisions
+                        saved = save_settled(repo, tid, adj.settled)
+                        if saved:
+                            print(f"           [memory] saved {saved} settled decision(s) to store")
                 else:
                     print(f"           [arbiter] could not rule: {adj.error[:90]}")
                     # The arbiter is unreachable. Falling through to feeding
