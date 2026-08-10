@@ -4,7 +4,13 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: after backlog items 2.1, 1.4, 1.3, 2.5, 2.3, 2.4, 2.2, 5.1, 5.2, 5.3 (commit `f865ea7`).
+**Last updated**: all 17 items complete (commit `a68d774`).
+
+## ALL ITEMS COMPLETE
+
+All 17 backlog items are done. 77/77 tests pass. The agent-loop package
+is feature-complete with all 8 phases of the execution plan plus all
+deferred modes (brainstorm, docs) and consumer profiles.
 
 ---
 
