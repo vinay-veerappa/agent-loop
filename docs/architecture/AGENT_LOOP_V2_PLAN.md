@@ -192,10 +192,19 @@ already passed at baseline). 17/17 tests pass. Commit `1603a30`.
 arbiter" from "ran without". `applied_approved`/`applied_unapproved` split the old
 `applied` boolean. Quorum lets 2-of-3 unanimous APPROVE proceed.
 
-### Phase 2: Re-index the graph
+### Phase 2: Re-index the graph [COMPLETE]
 
-The `codebase-memory-mcp` graph is stale â€” it indexes `ollama_patch_loop.py` (the predecessor),
-not the current `loop.py`/`arbiter.py`/`gates.py`/`review_mode.py`. Re-index the current tree.
+The `codebase-memory-mcp` graph is indexed for the `agent-loop` repo (258 nodes,
+681 edges). `trace_call_path("run_ticket")` returns 28 callees at hop 1;
+`search_graph("adjudicate")` finds the arbiter function.
+
+**Status**: complete. Graph indexed, freshness check wired into the loop,
+`context.py` module created with `check_graph_freshness()` and
+`build_context_slice()` (Phase 3 stub). Commit `ec91be4`.
+
+**Exit criteria**: MET. `trace_call_path("run_ticket")` returns callees in
+`loop.py`. `search_graph("adjudicate")` returns the arbiter function. The loop
+prints a `[graph]` status line at startup when `graph_project` is set.
 
 **Graph freshness strategy**: lazy on first use. At loop start, check graph freshness (mtime
 of latest indexed file vs latest `.py` in `src/agent_loop/`); if stale, re-index via
