@@ -89,6 +89,67 @@ def _review(args, profile) -> int:
     return 0
 
 
+def _plan(args, profile, implementer, reviewers, arbiter) -> int:
+    """Plan mode: defect -> ticket JSON (reviewed by panel+arbiter)."""
+    from .plan_mode import run_plan
+
+    if not args.defect:
+        print("--mode plan needs --defect (the defect description)")
+        return 2
+
+    result = run_plan(
+        Path("."),
+        args.defect,
+        profile,
+        implementer,
+        reviewers,
+        arbiter_model=arbiter,
+        max_rounds=args.max_rounds,
+        fast_plan=args.fast_plan,
+    )
+    print(f"\n==== PLAN RESULT ====")
+    print(f"verdict: {result.get('verdict', '?')}")
+    if result.get("plan"):
+        print(f"plan: logs/agent_loop/PLAN/plan.json")
+    return 0 if result.get("plan") else 1
+
+
+def _test(args, profile, implementer) -> int:
+    """Test mode: defect + ticket -> failing acceptance tests."""
+    from .test_mode import run_test
+
+    if not args.defect:
+        print("--mode test needs --defect (the defect description)")
+        return 2
+    if not args.tickets:
+        print("--mode test needs --tickets (path to the ticket JSON from plan mode)")
+        return 2
+
+    spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
+    tickets = spec["tickets"]
+    ticket = tickets[0] if tickets else {}
+    if args.ticket:
+        for t in tickets:
+            if t["id"] == args.ticket[0]:
+                ticket = t
+                break
+
+    result = run_test(
+        Path("."),
+        args.defect,
+        ticket,
+        profile,
+        implementer,
+        test_file=args.test_file,
+    )
+    print(f"\n==== TEST RESULT ====")
+    if result.get("test_code"):
+        print(f"tests written to: {args.test_file}")
+    elif result.get("error"):
+        print(f"error: {result['error']}")
+    return 0 if result.get("test_code") else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m agent_loop")
     ap.add_argument("--tickets", default="tickets.json")
@@ -125,7 +186,10 @@ def main(argv=None) -> int:
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
 
     # ---- modes -----------------------------------------------------------
-    ap.add_argument("--mode", choices=("patch", "review"), default="patch")
+    ap.add_argument("--mode", choices=("patch", "review", "plan", "test"), default="patch")
+    ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
+    ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
+    ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
     ap.add_argument("--review-base", default="", help="review mode: base ref (e.g. main, HEAD~3)")
     ap.add_argument("--review-head", default="HEAD", help="review mode: head ref")
     ap.add_argument(
@@ -178,6 +242,12 @@ def main(argv=None) -> int:
 
     if args.mode == "review":
         return _review(args, profile)
+
+    if args.mode == "plan":
+        return _plan(args, profile, implementer, reviewers, arbiter)
+
+    if args.mode == "test":
+        return _test(args, profile, implementer)
 
     spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
     tickets = spec["tickets"]
