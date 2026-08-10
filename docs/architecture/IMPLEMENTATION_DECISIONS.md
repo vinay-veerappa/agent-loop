@@ -338,4 +338,72 @@ clear single responsibility.
 
 ---
 
-*End of decision log. Append new decisions as phases land.*
+## Phase 9: Learning feedback + context bloat control
+
+### Settled-decisions injection capped at 20 most recent
+**Decision**: `inject_settled()` caps auto-extracted decisions at
+`MAX_SETTLED_INJECTED=20` most recent. Older decisions stay on disk.
+**Why**: after 100 tickets with 5 decisions each, injecting all 500
+decisions would add 25K tokens to every review prompt. Capping at 20
+keeps injection at ~1K tokens regardless of ticket count.
+**Tradeoff**: decisions 21+ are not visible to reviewers. If a
+decision from ticket 5 is relevant to ticket 50, the reviewer won't
+see it unless it's in the top 20. Hand-curated decisions in
+`profile.settled` bypass this cap — they're always injected.
+
+### Learning feedback store (`learning_feedback.jsonl`)
+**Decision**: after each arbiter ruling, `save_feedback()` records
+which finding was UPHELD vs REJECTED. Before each review,
+`build_learning_context()` injects "known false positives (do NOT
+re-raise)" and "known real defects (keep flagging)" into the
+reviewer prompt. Capped at `MAX_FEEDBACK_INJECTED=10` entries.
+**Why**: the loop already learns via settled decisions (Phase 5),
+but that only prevents re-litigating *adjudicated* precedents. The
+learning feedback goes further: it tells reviewers "the arbiter
+rejected this finding on ticket X" even if the finding wasn't
+nominated as a settled decision. This reduces false-positive churn
+across tickets.
+**Tradeoff**: the feedback store grows unboundedly (one entry per
+finding per round). Old entries are not pruned automatically. A
+future upgrade should prune entries older than N tickets or
+compact the feedback store periodically.
+
+### `save_feedback` deduplicates by ticket+round+finding_hash+ruling
+**Decision**: the key is `f"{ticket_id}:{round_num}:{_hash_text(finding_text)}:{arbiter_ruling}"`.
+This means the same finding text from the same round is only saved
+once, but the same finding text from a different ticket or round is
+saved separately (it's a different learning event).
+**Why**: if ticket A rejects a "lock-scope violation" finding, and
+ticket B raises the same finding, both events are recorded. The
+reviewer on ticket C sees "this finding was rejected on tickets A
+and B" — two data points, not one.
+
+### Path traversal fix in `read_file`/`edit_file`
+**Decision**: both tools now resolve the path and check
+`str(path).startswith(str(repo.resolve()))` before reading or
+writing. If the path escapes the repo, the tool returns an error.
+**Why**: the 3-model cross-review (Phase 8.5) flagged that
+`repo / args["path"]` doesn't constrain `args["path"]` to be
+inside `repo`. An LLM (or malicious prompt) could pass
+`../../etc/passwd` or `/absolute/path` and read/write outside
+the repo.
+**Tradeoff**: symlinks inside the repo that point outside are not
+blocked. This is a known limitation; a future upgrade should
+resolve symlinks before the containment check.
+
+### `check_graph_freshness` compares mtime against persisted marker
+**Decision**: the function now compares the mtime of the newest
+source file against a persisted marker file
+(`logs/agent_loop/.graph_mtime`). If the marker is older than the
+newest source file, the graph is "stale".
+**Why**: the original implementation always returned "fresh"
+without checking anything. The cross-review flagged this as a
+no-op. The mtime comparison is a cheap proxy for "has the code
+changed since the last index?"
+**Tradeoff**: the marker is not updated after indexing. A future
+upgrade should write the current timestamp to the marker after a
+successful re-index.
+
+---
+
+*End of decision log. All phases 1-9 complete.*

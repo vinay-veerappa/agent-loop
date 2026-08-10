@@ -6,7 +6,7 @@ concrete execution plan. The current loop is documented in
 here. This doc covers: the current state machine, the issues found, the eight execution
 phases, the new states, the Developer mode spec, and the mode pipeline.
 
-**Status**: ALL 8 PHASES COMPLETE. 77/77 tests pass.
+**Status**: ALL 9 PHASES COMPLETE. 77/77 tests pass.
 
 | Phase | Status | Commit | Tests |
 |---|---|---|---|

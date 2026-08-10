@@ -4,11 +4,21 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: after review-driven fixes and v0.1.0 tag.
+**Last updated**: after Phase 9 (learning feedback + context bloat control).
 
 ## STATUS
 
-All 17 backlog items are addressed. 77/77 tests pass. Tagged `v0.1.0`.
+All 17 backlog items addressed + Phase 9 complete. 77/77 tests pass.
+Tagged `v0.1.0`.
+
+### Phase 9: Learning feedback + context bloat control
+
+| Item | Status |
+|---|---|
+| Settled-decisions injection capped at 20 most recent | Done |
+| Learning feedback store (save_feedback / build_learning_context) | Done |
+| Path traversal fix in read_file / edit_file | Done |
+| check_graph_freshness compares mtime against marker | Done |
 
 ### Note on graph re-index for tvDownloadOHLC
 

@@ -7,6 +7,8 @@ Implement -> gate -> review -> arbitrate -> apply.
 - **Multi-model adversarial panel** — different model families review concurrently; the worst verdict wins.
 - **Adjudicating arbiter** — rules on each reviewer finding; only upheld findings go back to the implementer. No other harness separates detection from adjudication.
 - **Settled-decisions cache** — adjudication precedents persist across tickets, preventing reviewers from re-litigating known false positives.
+- **Learning feedback** — the loop records which findings the arbiter UPHELD vs REJECTED across tickets, and injects "known false positives" and "known real defects" into future reviewer prompts. The loop gets smarter with every ticket.
+- **Context bloat control** — settled-decisions injection is capped at 20 most recent (~1K tokens). Learning feedback capped at 10 entries (~500 tokens). Graph context capped at 3000 tokens. Per-round input budget 40K tokens. Older data stays on disk for auditability but doesn't bloat the prompt.
 - **Language-agnostic** — the loop driver, gates, and region extractor contain zero language-specific strings. Everything lives in a `Profile`. Adding Python or TypeScript support is a new profile, not a fork.
 - **Model-by-capability registry** — declarative mapping from role to model. The arbiter must not be the same model as any reviewer.
 - **Token efficiency** — per-round input budget, per-role output caps, graph context capped.
@@ -30,6 +32,7 @@ done with fixes applied. Tagged `v0.1.0`. 77/77 tests pass.
 | Backlog: MCP client, brainstorm mode, docs mode | Done |
 | Backlog: Consumer profiles (nt8-riskguard, python-tvdownloadohlc) | Done |
 | Cross-review (glm-5.2 + deepseek-v4-pro + minimax-m3) | Done, fixes applied |
+| Phase 9: Learning feedback + context bloat control | Done |
 
 The loop bootstrapped itself: it ran a ticket against its own source,
 generated a fix, passed all gates, and both reviewers unanimously approved.
