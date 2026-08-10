@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-loop"
+version = "0.1.0"
+description = "Language-agnostic AI agent loop for software engineering: implement -> gate -> review -> arbitrate -> apply"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "Vinay Veerappa"}]
+dependencies = []
+
+[project.scripts]
+agent-loop = "agent_loop.cli:main"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+agent_loop = ["py.typed"]
