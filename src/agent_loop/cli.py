@@ -220,7 +220,7 @@ def main(argv=None) -> int:
         print(f"{r['ticket']:<5} {r.get('final_verdict','?'):<22} applied={r.get('applied')}")
     if total:
         print(f"total cost ${total:.4f}")
-    return 0 if any(r.get("final_verdict") == "APPROVE" for r in results) else 1
+    return 0 if any(r.get("final_verdict") in ("APPROVE", "ARBITER_SHIP") for r in results) else 1
 
 
 if __name__ == "__main__":
