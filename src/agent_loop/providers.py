@@ -103,6 +103,44 @@ def split_model(spec: str) -> Tuple[str, str]:
     return "ollama", spec
 
 
+def _add_cache_control(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Mark the last user message as cacheable for Anthropic prompt caching.
+
+    On cache hit (round 2+), Anthropic bills input tokens at 10%.
+    The system prompt + implement prompt + region source are stable across
+    all rounds of a ticket — textbook cacheable prefix.
+
+    Only the last user message gets `cache_control` because Anthropic
+    caches from the start up to the cache_control breakpoint. The last
+    user message is the newest content; everything before it is the
+    stable prefix from prior rounds.
+    """
+    if not turns:
+        return turns
+    result = []
+    last_user_idx = None
+    for i in range(len(turns) - 1, -1, -1):
+        if turns[i]["role"] == "user":
+            last_user_idx = i
+            break
+    for i, turn in enumerate(turns):
+        if i == last_user_idx:
+            # Wrap content in cache_control structure
+            if isinstance(turn.get("content"), str):
+                result.append({
+                    **turn,
+                    "content": [
+                        {"type": "text", "text": turn["content"],
+                         "cache_control": {"type": "ephemeral"}}
+                    ],
+                })
+            else:
+                result.append(turn)
+        else:
+            result.append(turn)
+    return result
+
+
 def _post(url: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: int) -> Dict[str, Any]:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
@@ -209,9 +247,19 @@ def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, 
     system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
     turns = [m for m in messages if m["role"] != "system"]
 
-    payload: Dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": turns}
+    # Prompt caching: mark the system message and the last user message as
+    # cacheable. On cache hit (round 2+), Anthropic bills input tokens at 10%.
+    # The system prompt + implement prompt + region source are stable across
+    # all rounds of a ticket — textbook cacheable prefix.
+    payload: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": _add_cache_control(turns),
+    }
     if system:
-        payload["system"] = system
+        payload["system"] = [
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+        ]
     if not _SAMPLING_REJECTED.match(model):
         payload["temperature"] = temperature
 

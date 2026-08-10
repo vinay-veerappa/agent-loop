@@ -76,6 +76,8 @@ class Profile:
     build_cmd: str = ""
     test_cmd: str = ""
     test_runner_regex: Tuple[str, ...] = field(default_factory=tuple)
+    # Lint gate (optional; runs between static and compile)
+    lint_cmd: str = ""
     # Lock-scope gate (optional; only for languages with a lock primitive)
     lock_name: str = ""                    # "_stateLock" for NT8; "" for Python (gate skipped)
     lock_pattern: str = ""                 # compiled per profile from lock_name

@@ -121,6 +121,49 @@ def check_static(regions, blocks: Dict[str, str], strip_code_fn, profile: Profil
 
 
 # --------------------------------------------------------------------------
+# Gate 1.5 - lint (optional, between static and compile)
+# --------------------------------------------------------------------------
+def check_lint(
+    cmd: str,
+    repo: Path,
+    timeout: int = 300,
+) -> GateResult:
+    """Run the profile's linter command if configured.
+
+    Every finding a linter can make is a finding you're paying a model to
+    make and an arbiter to adjudicate. Cheap, deterministic, and it
+    shrinks the panel's surface. The linter runs before compile (cheaper)
+    and before tests (faster feedback).
+
+    If the profile has no ``lint_cmd``, this gate is skipped (returns ok).
+    """
+    if not cmd:
+        return GateResult("lint", True, "no linter configured")
+    t0 = time.time()
+    try:
+        code, out = _run(cmd, repo, timeout)
+    except subprocess.TimeoutExpired:
+        return GateResult("lint", False, f"timed out after {timeout}s",
+                          feedback="Linter timed out.")
+    secs = round(time.time() - t0, 1)
+    if code == 0:
+        return GateResult("lint", True, "lint clean", out, secs)
+    d = _digest(out)
+    return GateResult(
+        "lint",
+        False,
+        "lint FAILED",
+        out,
+        secs,
+        feedback=(
+            "Your patch has lint errors. Fix these before the compiler runs:\n\n"
+            + d
+            + "\n\nFix every lint error and re-emit ALL blocks in full."
+        ),
+    )
+
+
+# --------------------------------------------------------------------------
 # Gate 2 - compile
 # --------------------------------------------------------------------------
 _DIAG = re.compile(r"\b(error|warning)\s+[A-Z]{2}\d{3,}")

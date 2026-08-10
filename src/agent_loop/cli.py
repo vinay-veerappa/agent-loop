@@ -263,12 +263,13 @@ def main(argv=None) -> int:
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
 
     # ---- modes -----------------------------------------------------------
-    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs"), default="patch")
+    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs", "report", "replay"), default="patch")
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
     ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
     ap.add_argument("--review-base", default="", help="review mode: base ref (e.g. main, HEAD~3)")
     ap.add_argument("--review-head", default="HEAD", help="review mode: head ref")
+    ap.add_argument("--report-last", type=int, default=0, help="report mode: show only the last N tickets (0 = all)")
     ap.add_argument(
         "--review-paths", nargs="*", default=[],
         help="review mode: limit the diff to these paths",
@@ -342,6 +343,33 @@ def main(argv=None) -> int:
 
     if args.mode == "docs":
         return _docs(args, profile, implementer)
+
+    if args.mode == "report":
+        from .report import run_report
+        return run_report(Path("."), last_n=args.report_last)
+
+    if args.mode == "replay":
+        from .replay import run_replay_corpus
+        import glob as _glob
+        # Find all ticket dirs under logs/agent_loop/
+        log_root = Path(".") / "logs" / "agent_loop"
+        corpus_dirs = sorted(
+            d for d in log_root.iterdir()
+            if d.is_dir() and (d / "result.json").exists()
+        )
+        if not corpus_dirs:
+            print("No recorded tickets found in logs/agent_loop/")
+            return 1
+        print(f"Replaying {len(corpus_dirs)} recorded ticket(s)...\n")
+        result = run_replay_corpus(
+            Path("."),
+            corpus_dirs,
+            profile,
+            reviewers,
+            arbiter,
+            max_rounds=args.max_rounds,
+        )
+        return 0 if result["flipped"] == 0 else 1
 
     spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
     tickets = spec["tickets"]

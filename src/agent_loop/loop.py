@@ -70,12 +70,13 @@ class Finding:
 
     @property
     def signature(self) -> str:
-        """Stable-ish identity for cross-round comparison. Used to detect the
-        loop thrashing: if consecutive rounds share no signatures and the count
-        does not fall, the implementer is generating new surface as fast as the
-        reviewers can attack it, and more rounds will not converge."""
-        words = re.sub(r"[^a-zA-Z ]", " ", self.text).split()
-        return " ".join(w.lower() for w in words[:8])
+        """Stable identity for cross-round comparison.
+
+        The first 200 characters of the finding text, lowercased and
+        stripped of whitespace, are a more stable identity than the
+        old word-list signature, which broke when a reviewer reworded
+        the same finding."""
+        return re.sub(r"\s+", " ", self.text[:200].strip().lower())
 
     @property
     def blocking(self) -> bool:
@@ -589,7 +590,11 @@ def run_ticket(
             touched: List[str] = []
             if gate_results[-1].ok:
                 touched = regions.apply(regs, blocks)
-                if profile.build_cmd:
+                if profile.lint_cmd:
+                    gl = gates.check_lint(profile.lint_cmd, ws.root)
+                    (art / f"r{rnd}_lint.txt").write_text(gl.detail, encoding="utf-8")
+                    gate_results.append(gl)
+                if gate_results[-1].ok and profile.build_cmd:
                     gc = gates.check_compile(profile.build_cmd, ws.root, files=touched)
                     (art / f"r{rnd}_build.txt").write_text(gc.detail, encoding="utf-8")
                     gate_results.append(gc)
