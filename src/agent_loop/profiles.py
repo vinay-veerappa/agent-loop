@@ -77,6 +77,10 @@ class Profile:
     context_token_budget: int = 3000
     # Per-round input budget (token efficiency)
     round_input_token_budget: int = 40000
+    # Graph project name for codebase-memory-mcp (Phase 2/3)
+    # When set, the loop checks graph freshness at startup and re-indexes if stale.
+    # Format: the project name as registered in codebase-memory-mcp (e.g. "C-Users-vinay-agent-loop")
+    graph_project: str = ""
     # Prompts and settled decisions
     implementer_rules: str = ""
     reviewer_priorities: str = ""

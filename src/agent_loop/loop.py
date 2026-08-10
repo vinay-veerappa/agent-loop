@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import arbiter, gates, profiles, regions, workspace
+from .context import check_graph_freshness, build_context_slice
 from .providers import Completion, ProviderError, chat
 
 # `>{2,}` rather than `>>>`: kimi-k2.7-code closed a block with `>>` on T3 and
@@ -427,6 +428,11 @@ def run_ticket(
         print(f"  REFUSED: {g0.detail}")
         append_ledger(repo, {"ticket": tid, "verdict": "TICKET_REJECTED", "detail": g0.detail})
         return result
+
+    # ---- graph freshness check (Phase 2)
+    graph_status = check_graph_freshness(repo, profile)
+    if graph_status != "no-project":
+        print(f"  [graph] {graph_status}")
 
     with workspace.open_workspace(repo, tid, keep=keep_worktree) as ws:
         print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")

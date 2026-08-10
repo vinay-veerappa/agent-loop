@@ -41,6 +41,8 @@ SELF = Profile(
     context_token_budget=3000,
     # Per-round input budget
     round_input_token_budget=40000,
+    # Graph project for codebase-memory-mcp
+    graph_project="C-Users-vinay-agent-loop",
     implementer_rules="""\
 You are a senior Python engineer working on an AI agent loop package. You make
 surgical, minimal, provably-correct edits to the agent_loop package.
