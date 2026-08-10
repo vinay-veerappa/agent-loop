@@ -238,13 +238,18 @@ def test_phase8_driver_completes(tmp_path):
             )
 
     with patch("agent_loop.developer.driver.chat", side_effect=mock_impl):
-        result = run_developer(
-            repo, "The return value is wrong", dev_profile,
-            "test-impl", ["r1"], arbiter_model="",
-            max_turns=10, apply=False,
-        )
+        with patch("agent_loop.loop.review_panel") as mock_panel:
+            from agent_loop.loop import PanelResult, Vote
+            mock_panel.return_value = PanelResult(
+                votes=[Vote("r1", "APPROVE")], verdict="APPROVE", valid=True,
+            )
+            result = run_developer(
+                repo, "The return value is wrong", dev_profile,
+                "test-impl", ["r1"], arbiter_model="",
+                max_turns=10, apply=False,
+            )
 
-    assert result["verdict"] == "DONE"
+    assert result["verdict"] in ("DONE", "APPROVE")
     assert "Changed return value" in result.get("summary", "")
     content = (repo / "src" / "target.py").read_text()
     assert "return 43" in content

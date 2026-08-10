@@ -190,11 +190,55 @@ def run_developer(
                     result["verdict"] = "BUILD_FAILED"
             if profile.test_cmd and result["verdict"] == "DONE":
                 gt, outcome = gates.check_tests(
-                    profile.test_cmd, repo, set(),  # no baseline in developer mode
+                    profile.test_cmd, repo, set(),
                 )
                 print(f"  [test] {'ok' if gt.ok else 'FAIL'} - {gt.summary}")
                 if not gt.ok:
                     result["verdict"] = "TEST_FAILED"
+
+            # Run the panel + arbiter on the diff (same moat as patch mode)
+            if result["verdict"] == "DONE" and reviewers:
+                from ..loop import review_panel, PanelResult
+                review_prompt = (
+                    f"# Developer mode review\n\n"
+                    f"## Defect\n{defect_description[:500]}\n\n"
+                    f"## Diff\n```diff\n{diff_proc.stdout[:60000]}\n```\n\n"
+                    f"Review this diff: does it close the defect? Does it introduce new issues?\n"
+                )
+                panel = review_panel(
+                    reviewers, review_prompt, profile.reviewer_system, art, 1,
+                    deadline_secs=1800,
+                )
+                desc = ", ".join(f"{v.model.split(':')[0]}={v.status}({v.blockers})" for v in panel.votes)
+                print(f"  [panel] {panel.verdict or 'INVALID'}  [{desc}]")
+
+                if not panel.valid:
+                    result["verdict"] = "PANEL_UNREACHABLE"
+                elif panel.unanimous_approve:
+                    result["verdict"] = "APPROVE"
+                    print("  panel unanimously approved")
+                elif arbiter_model and panel.votes:
+                    all_findings = [f for v in panel.votes if v.counted for f in v.finding_list]
+                    if all_findings:
+                        adj = arbiter.adjudicate(
+                            arbiter_model, {"id": tid, "title": defect_description[:100],
+                                           "defect": defect_description, "spec": ""},
+                            all_findings, "developer mode", diff_proc.stdout,
+                            settled=profile.settled,
+                        )
+                        (art / "arbiter.txt").write_text(adj.raw or adj.error, encoding="utf-8")
+                        if adj.ok:
+                            print(f"  [arbiter] {adj.summary()}")
+                            if adj.recommendation == arbiter.SHIP:
+                                result["verdict"] = "ARBITER_SHIP"
+                            elif adj.recommendation == arbiter.ESCALATE:
+                                result["verdict"] = "ESCALATED"
+                        else:
+                            result["verdict"] = "ARBITER_DEADLOCK"
+                    else:
+                        result["verdict"] = "ARBITER_SHIP"
+                else:
+                    result["verdict"] = "NEEDS_REVISION"
 
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result

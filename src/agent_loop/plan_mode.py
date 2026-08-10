@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from . import arbiter as arbiter_mod
 from . import gates, profiles, regions, workspace
 from .context import build_context_slice
+from .memory import inject_settled
 from .providers import Completion, ProviderError, chat
 
 
@@ -77,6 +78,9 @@ def run_plan(
 
     result: Dict[str, Any] = {"ticket": tid, "rounds": [], "plan": None, "verdict": ""}
 
+    # Phase 5: inject auto-extracted settled decisions
+    effective_settled = inject_settled(profile.settled, repo)
+
     prompt = f"# Defect to analyze\n\n{defect_description}\n\n"
     prompt += "## Context\n"
     prompt += f"Language: {profile.language}\n"
@@ -93,6 +97,14 @@ def run_plan(
 
     for rnd in range(1, max_rounds + 1):
         try:
+            # Phase 4: compact history before the implementer call
+            if rnd > 1:
+                from .compaction import compact_history, history_token_count
+                before = history_token_count(history)
+                history = compact_history(history, rnd, profile)
+                after = history_token_count(history)
+                if after < before:
+                    print(f"           [compaction] {before} -> {after} tokens")
             out = chat(implementer, history, max_tokens=24000)
         except ProviderError as exc:
             result["rounds"].append({"round": rnd, "error": str(exc)})
@@ -162,7 +174,7 @@ def run_plan(
             all_findings = [f for v in panel.votes if v.counted for f in v.finding_list]
             adj = arbiter_mod.adjudicate(
                 arbiter_model, ticket, all_findings,
-                "plan review", "", settled=profile.settled,
+                "plan review", "", settled=effective_settled,
             )
             (art / f"r{rnd}_arbiter.txt").write_text(adj.raw or adj.error, encoding="utf-8")
             if adj.ok:

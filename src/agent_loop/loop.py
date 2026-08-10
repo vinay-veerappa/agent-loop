@@ -396,6 +396,15 @@ class RoundRecord:
     detail: str = ""
     cost_usd: float = 0.0
     secs: float = 0.0
+    # Phase 9.3: per-role token accounting
+    impl_input_tokens: int = 0
+    impl_output_tokens: int = 0
+    reviewer_input_tokens: int = 0
+    reviewer_output_tokens: int = 0
+    arbiter_input_tokens: int = 0
+    arbiter_output_tokens: int = 0
+    cost_usd: float = 0.0
+    secs: float = 0.0
 
 
 def run_ticket(
@@ -616,11 +625,27 @@ def run_ticket(
             prompt = build_review_prompt(
                 ticket, regs, blocks, notes, profile, orchestrator_note, gate_summary
             )
+            # Phase 3: inject a smaller context slice (callers + types only)
+            # into the reviewer prompt so they can check "will this break callers?"
+            reviewer_context = build_context_slice(repo, regs, profile)
+            if reviewer_context:
+                # Use half the budget for the reviewer context
+                half_budget = profile.context_token_budget * 2  # 2 chars/token, half of 4
+                if len(reviewer_context) > half_budget:
+                    reviewer_context = reviewer_context[:half_budget] + "\n... (truncated)"
+                prompt += f"\n\n## Graph context for review (callers + types)\n{reviewer_context}"
             panel = review_panel(
                 reviewers, prompt, profile.reviewer_system, art, rnd, deadline_secs=panel_deadline
             )
             desc = ", ".join(f"{v.model.split(':')[0]}={v.status}({v.blockers})" for v in panel.votes)
             print(f"           [panel] {panel.verdict or 'INVALID'}  [{desc}]")
+
+            # Sum token usage across reviewers
+            rev_in = sum(v.input_tokens if hasattr(v, 'input_tokens') else 0 for v in panel.votes)
+            rev_out = sum(v.output_tokens if hasattr(v, 'output_tokens') else 0 for v in panel.votes)
+            # Sum token usage for implementer this round
+            impl_in = out.input_tokens if 'out' in dir() and hasattr(out, 'input_tokens') else 0
+            impl_out = out.output_tokens if 'out' in dir() and hasattr(out, 'output_tokens') else 0
 
             result["rounds"].append(
                 RoundRecord(
@@ -629,6 +654,10 @@ def run_ticket(
                     panel.unanimous_approve,
                     f"{panel.verdict or 'INVALID'} [{desc}]",
                     panel.findings[:8000],
+                    impl_input_tokens=impl_in,
+                    impl_output_tokens=impl_out,
+                    reviewer_input_tokens=rev_in,
+                    reviewer_output_tokens=rev_out,
                 ).__dict__
             )
 
@@ -732,16 +761,25 @@ def run_ticket(
                 feedback = panel.findings
 
             ws.revert(touched)
+            # PANEL_REJECT signal: if the panel's worst verdict was REJECT,
+            # tell the implementer to rethink the approach, not just tweak details.
+            is_reject = panel.verdict == "REJECT"
             history += [
                 {"role": "assistant", "content": raw},
                 {
                     "role": "user",
                     "content": (
-                        f"A review panel returned {panel.verdict}. An arbiter has already "
-                        f"discarded the findings that do not block; those below are the ones "
-                        f"that do.\n\nFINDINGS:\n{feedback}\n\n"
-                        "Fix exactly these and re-emit ALL blocks in full. Do not make unrelated "
-                        "changes -- every extra edit creates new surface for the next review."
+                        (f"A review panel REJECTED this approach. The arbiter has already "
+                         f"discarded the findings that do not block; those below are the ones "
+                         f"that do. RETHINK THE APPROACH — do not just tweak these lines.\n\n"
+                         f"FINDINGS:\n{feedback}\n\n"
+                         "Re-emit ALL blocks in full with a fundamentally different approach.\n")
+                        if is_reject else
+                        (f"A review panel returned {panel.verdict}. An arbiter has already "
+                         f"discarded the findings that do not block; those below are the ones "
+                         f"that do.\n\nFINDINGS:\n{feedback}\n\n"
+                         "Fix exactly these and re-emit ALL blocks in full. Do not make unrelated "
+                         "changes -- every extra edit creates new surface for the next review.")
                     ),
                 },
             ]

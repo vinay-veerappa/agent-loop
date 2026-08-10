@@ -94,14 +94,80 @@ def compact_history(
     total_chars = sum(len(m["content"]) for m in compacted)
     budget_chars = profile.round_input_token_budget * _CHARS_PER_TOKEN
     if total_chars > budget_chars and current_round > 2:
-        # Summarize all but the last user/assistant pair into a compact block.
-        # This is the Phase 4b LLM summarization path. For now, we do a
-        # mechanical summarization (not LLM) to avoid requiring a model call
-        # in the compaction path. A future upgrade will call the compactor
-        # model from the registry.
-        compacted = _mechanical_summary(compacted, budget_chars)
+        # Try LLM summarization via the compactor model from the registry.
+        # Falls back to mechanical summarization if no compactor is available
+        # or the call fails.
+        compacted = _llm_summary(compacted, budget_chars, profile) or _mechanical_summary(compacted, budget_chars)
 
     return compacted
+
+
+def _llm_summary(
+    history: List[Dict[str, str]],
+    budget_chars: int,
+    profile: Profile,
+) -> Optional[List[Dict[str, str]]]:
+    """Summarize prior rounds via a compactor model from the registry.
+
+    Returns None if no compactor is available or the call fails (caller
+    falls back to _mechanical_summary).
+    """
+    try:
+        from .models import DEFAULT_REGISTRY
+        config = DEFAULT_REGISTRY.get("compactor")
+    except KeyError:
+        return None
+
+    if len(history) <= 3:
+        return None
+
+    # Build the text to summarize (everything between system and last exchange)
+    system = history[0]
+    last_user_idx = None
+    for i in range(len(history) - 1, -1, -1):
+        if history[i]["role"] == "user":
+            last_user_idx = i
+            break
+    if last_user_idx is None or last_user_idx == 0:
+        return None
+
+    last_user = history[last_user_idx]
+    last_assistant = history[last_user_idx + 1] if last_user_idx + 1 < len(history) and history[last_user_idx + 1]["role"] == "assistant" else None
+    prior = history[1:last_user_idx]
+
+    # Build a summarization prompt
+    text_to_summarize = "\n\n".join(
+        f"[{m['role']}]: {m['content'][:2000]}" for m in prior
+    )
+    if not text_to_summarize.strip():
+        return None
+
+    prompt = (
+        "Summarize the following prior rounds of an implementer-reviewer loop. "
+        "Focus on what was tried, what findings were raised, and what was rejected. "
+        "Be concise (max 500 words).\n\n"
+        f"{text_to_summarize[:20000]}\n\n"
+        "Summary:"
+    )
+
+    try:
+        from .providers import chat, ProviderError
+        out = chat(config.name, [
+            {"role": "system", "content": "You are a code review summarizer. Be concise."},
+            {"role": "user", "content": prompt},
+        ], max_tokens=config.max_tokens, think=False)
+        summary = out.text.strip()
+        if not summary:
+            return None
+        # Ensure the summary fits the budget
+        if len(summary) > budget_chars // 2:
+            summary = summary[: budget_chars // 2] + "\n... (summary truncated)"
+        result = [system, {"role": "user", "content": f"[PRIOR ROUNDS SUMMARY (LLM compacted):]\n{summary}"}, last_user]
+        if last_assistant:
+            result.append(last_assistant)
+        return result
+    except Exception:
+        return None
 
 
 def _compact_findings(content: str) -> str:
