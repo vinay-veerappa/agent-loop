@@ -90,11 +90,58 @@ TOOL_SCHEMAS = [
 ]
 
 
+def render_tool_docs(available: List[str]) -> str:
+    """The tool-call protocol and argument schemas, for the system prompt.
+
+    Generated from TOOL_SCHEMAS rather than restated in prose. The prompt used
+    to name the tools but never state the call format or the argument names,
+    while the parser accepted exactly one undocumented syntax -- so the model
+    had to guess the protocol, and a wrong guess parsed as "no tool calls".
+    """
+    lines = [
+        "TOOL CALL FORMAT - emit one block per call, exactly like this:",
+        "",
+        '<<<TOOL name="read_file">>>',
+        '{"path": "src/example.py", "start_line": 1}',
+        "<<<END TOOL>>>",
+        "",
+        "The body must be a single JSON object. You may emit several blocks in one turn.",
+        "",
+        "TOOLS AVAILABLE TO YOU NOW:",
+    ]
+    for schema in TOOL_SCHEMAS:
+        if schema["name"] not in available:
+            continue
+        props = schema["parameters"].get("properties", {})
+        required = set(schema["parameters"].get("required", []))
+        args = ", ".join(
+            f"{k}{'' if k in required else '?'}: {v.get('type', 'string')}"
+            for k, v in props.items()
+        )
+        lines.append(f"- {schema['name']}({args}) - {schema['description']}")
+    return "\n".join(lines)
+
+
+def _resolve_in_repo(repo: Path, rel: str) -> Optional[Path]:
+    """Resolve `rel` inside `repo`, or None if it escapes.
+
+    `str.startswith` is not containment: it accepts /repo-backup for /repo.
+    """
+    root = repo.resolve()
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    return path
+
+
 def execute_tool(
     tool_name: str,
     args: Dict[str, Any],
     repo: Path,
     profile: Profile,
+    edited: Optional[List[str]] = None,
 ) -> str:
     """Execute a tool call and return the result as a string."""
     if tool_name == "read_file":
@@ -106,7 +153,7 @@ def execute_tool(
     elif tool_name == "edit_file":
         return _edit_file(repo, args, profile)
     elif tool_name == "run_build":
-        return _run_build(repo, profile)
+        return _run_build(repo, profile, edited)
     elif tool_name == "run_tests":
         return _run_tests(repo, profile)
     else:
@@ -115,9 +162,8 @@ def execute_tool(
 
 def _read_file(repo: Path, args: Dict[str, Any]) -> str:
     """Read a file, windowed to 100 lines."""
-    path = (repo / args["path"]).resolve()
-    # Security: prevent path traversal outside the repo
-    if not str(path).startswith(str(repo.resolve())):
+    path = _resolve_in_repo(repo, args["path"])
+    if path is None:
         return f"ERROR: path {args['path']} escapes the repo root"
     if not path.exists():
         return f"ERROR: file not found: {args['path']}"
@@ -195,16 +241,37 @@ def _trace_call_path(args: Dict[str, Any], profile: Profile) -> str:
 
 def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
     """Apply an edit to a file using exact string replacement."""
-    path = (repo / args["path"]).resolve()
-    # Security: prevent path traversal outside the repo
-    if not str(path).startswith(str(repo.resolve())):
+    path = _resolve_in_repo(repo, args["path"])
+    if path is None:
         return f"ERROR: path {args['path']} escapes the repo root"
+
+    # Gate 0 applies here too. Patch mode refuses a ticket whose regions touch
+    # the code that grades it; Developer mode picks its own targets, so without
+    # this check it could edit the very tests it must pass -- and the nt8
+    # profile's file_scope_whitelist contains the directory its *Tests.cs live
+    # in, so the scope check alone does not stop it.
+    from ..gates import check_protected_paths
+    from ..profiles import DEFAULT_PROTECTED
+
+    verdict = check_protected_paths([args["path"]], profile.protected or DEFAULT_PROTECTED)
+    if not verdict.ok:
+        return (
+            f"ERROR: {args['path']} is protected - it is part of the code that grades "
+            f"this change and may not be edited ({verdict.detail}). Fix the defect in "
+            f"the implementation instead."
+        )
+
     if not path.exists():
         return f"ERROR: file not found: {args['path']}"
 
-    content = path.read_text(encoding="utf-8")
-    old_str = args["old_str"]
-    new_str = args["new_str"]
+    # Match against LF-normalised text but write back the file's own line
+    # terminators, so editing one line of a CRLF file does not rewrite every
+    # line of it.
+    raw = path.read_text(encoding="utf-8", newline="")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    content = raw.replace("\r\n", "\n")
+    old_str = args["old_str"].replace("\r\n", "\n")
+    new_str = args["new_str"].replace("\r\n", "\n")
 
     if old_str not in content:
         return f"ERROR: old_str not found in {args['path']}. Make sure it matches exactly."
@@ -214,17 +281,24 @@ def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
         return f"ERROR: old_str found {count} times in {args['path']}. Make it unique."
 
     new_content = content.replace(old_str, new_str, 1)
-    path.write_text(new_content, encoding="utf-8")
+    if newline != "\n":
+        new_content = new_content.replace("\n", newline)
+    path.write_text(new_content, encoding="utf-8", newline="")
     return f"OK: edited {args['path']} (replaced {len(old_str)} chars with {len(new_str)} chars)"
 
 
-def _run_build(repo: Path, profile: Profile) -> str:
+def _run_build(repo: Path, profile: Profile, files: Optional[List[str]] = None) -> str:
     """Run the profile's build command."""
     if not profile.build_cmd:
         return "OK: no build command configured"
+    cmd = profile.build_cmd
+    if "{files}" in cmd:
+        if not files:
+            return "OK: no files edited yet, nothing to build"
+        cmd = cmd.replace("{files}", " ".join(f'"{f}"' for f in files))
     try:
         proc = subprocess.run(
-            profile.build_cmd, shell=True, cwd=str(repo),
+            cmd, shell=True, cwd=str(repo),
             capture_output=True, text=True, timeout=900,
         )
         if proc.returncode == 0:

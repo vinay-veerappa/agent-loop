@@ -57,9 +57,21 @@ class Profile:
     language: str                          # "csharp", "python", "typescript", "go"
     file_suffixes: Tuple[str, ...]         # (".cs",) or (".py",) or (".ts", ".tsx")
     preprocessor_directives: Tuple[str, ...] = ()  # ("#if", "#endif") for C#; () for Python
-    block_comment: Tuple[str, ...] = ("/*", "*/")  # for strip_code; ("#",) for Python
+    # Delimited comments the region locator cannot parse safely. A file
+    # containing one of these is REFUSED, so this must list only true
+    # block-comment delimiters: ("/*", "*/") for C#/TS, () for Python.
+    # Putting Python's "#" here refuses every Python file that has a comment.
+    block_comment: Tuple[str, ...] = ("/*", "*/")
     line_comment: str = "//"               # "//" for C#/TS; "#" for Python/Go
     block_kind: str = "decl"               # "decl" for brace-delimited; "indent" for Python
+    # Fence label for code blocks in prompts. Defaults to `language`, which is
+    # already the fence label for every language the loop supports; override
+    # only when they differ (e.g. language="typescript", code_fence="ts").
+    code_fence: str = ""
+    # Static gate: require ASCII-only replacement bodies. True for the NT8
+    # addon (NinjaTrader's log pane mangles non-ASCII); most languages do not
+    # care and should leave this off rather than fail a valid patch.
+    ascii_only: bool = False
     # Build and test
     build_cmd: str = ""
     test_cmd: str = ""
@@ -84,6 +96,13 @@ class Profile:
     # Prompts and settled decisions
     implementer_rules: str = ""
     reviewer_priorities: str = ""
+    # What the arbiter must weigh for THIS codebase: what "blocks" means here,
+    # and what the cost of an unsound SHIP is. Without it the arbiter is given
+    # a generic bar; with the wrong one it is given an unmeetable bar. The NT8
+    # addon's "state the sequence of events that loses money" standard cannot
+    # be met by any finding on, say, a data pipeline -- so an arbiter carrying
+    # it into a Python repo rejects everything and recommends SHIP.
+    arbiter_rules: str = ""
     settled: Tuple[str, ...] = ()
 
     @property
@@ -93,6 +112,11 @@ class Profile:
     @property
     def reviewer_system(self) -> str:
         return self.reviewer_priorities.rstrip() + "\n" + _REVIEW_CONTRACT
+
+    @property
+    def fence(self) -> str:
+        """Fence label for source blocks in prompts."""
+        return self.code_fence or self.language
 
 
 # Default protected paths used when a profile does not specify its own.

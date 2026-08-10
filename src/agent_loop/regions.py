@@ -107,17 +107,10 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
     if kind == "indent":
         return _find_indent_block(lines, start, strip_fn)
 
-    depth, seen_open = 0, False
-    for i in range(start, len(lines)):
-        for ch in strip_fn(lines[i]):
-            if ch == "{":
-                depth += 1
-                seen_open = True
-            elif ch == "}":
-                depth -= 1
-                if seen_open and depth == 0:
-                    return start, i
-    raise RegionError(f"unbalanced braces from anchor: {anchor!r}")
+    try:
+        return _brace_block(lines, start, strip_fn)
+    except RegionError:
+        raise RegionError(f"unbalanced braces from anchor: {anchor!r}")
 
 
 def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int]:
@@ -170,6 +163,63 @@ def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int
     return start, start
 
 
+def _brace_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int]:
+    """Extent of a brace-delimited declaration starting at `start`."""
+    depth, seen_open = 0, False
+    for i in range(start, len(lines)):
+        for ch in strip_fn(lines[i]):
+            if ch == "{":
+                depth += 1
+                seen_open = True
+            elif ch == "}":
+                depth -= 1
+                if seen_open and depth == 0:
+                    return start, i
+    raise RegionError(f"unbalanced braces from line {start + 1}")
+
+
+def extract_named_block(src: str, name: str, profile: Profile) -> Optional[str]:
+    """Return the full source of the declaration named `name`, or None.
+
+    Used to show reviewers the acceptance tests they are asked to judge. The
+    match must be the DECLARATION, not a call site: matching a bare `name(`
+    finds the invocation first and ships the wrong text to the reviewer.
+
+    Language handling comes from the profile -- `block_kind` picks between an
+    indentation block and a brace block, and the declaration patterns cover
+    both `def`/`class` and modifier+return-type forms. The predecessor was
+    C#-only, so on a Python profile this always returned nothing and the
+    reviewer was asked to judge test adequacy with no tests in front of it.
+    """
+    lines = src.splitlines()
+    strip_fn = lambda ln: strip_code(ln, profile)
+    patterns = [
+        # Python / Ruby style: def name(, class Name:
+        re.compile(rf"^\s*(?:async\s+)?(?:def|class)\s+{re.escape(name)}\s*[\(:]"),
+        # Go / Rust / JS style: func name(, fn name(, function name(
+        re.compile(rf"^\s*(?:pub\s+)?(?:func|fn|function)\s+{re.escape(name)}\s*[\(<]"),
+        # C# / Java style: at least one modifier, then a return type, then name(
+        re.compile(
+            r"^[ \t]*(?:(?:private|public|internal|protected|static|async|override"
+            r"|virtual|final|sealed|abstract|extern|unsafe)\s+)+"
+            rf"[\w<>\[\],\.\*\?]+\s+{re.escape(name)}\s*\("
+        ),
+    ]
+    for pat in patterns:
+        idx = next((i for i, ln in enumerate(lines) if pat.search(ln)), None)
+        if idx is None:
+            continue
+        try:
+            if profile.block_kind == "indent":
+                start, end = _find_indent_block(lines, idx, strip_fn)
+            else:
+                start, end = _brace_block(lines, idx, strip_fn)
+        except RegionError:
+            continue
+        return "\n".join(lines[start: end + 1])
+    return None
+
+
 def strip_code_default(line: str) -> str:
     """Fallback strip_code for when no profile is available (backward compat)."""
     out, i, n = [], 0, len(line)
@@ -194,6 +244,24 @@ def strip_code_default(line: str) -> str:
     return "".join(out)
 
 
+def read_source(path: Path) -> Tuple[List[str], str, bool]:
+    """Read a file as (lines, newline, had_trailing_newline).
+
+    Line splitting must be identical here and in `apply`, or the line indices
+    a region records will not address the same lines it later writes back.
+    `str.splitlines()` is NOT usable for that: it also breaks on \\x0b, \\x0c
+    and \\u2028, so a form feed anywhere in the file shifts every index after
+    it and the splice lands in the wrong place.
+    """
+    raw = path.read_text(encoding="utf-8", newline="")
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    had_trailing_newline = raw.endswith(("\n", "\r"))
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if had_trailing_newline:
+        lines.pop()
+    return lines, newline, had_trailing_newline
+
+
 def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[Region]:
     """Resolve every region spec in a ticket against the current tree."""
     out: List[Region] = []
@@ -202,9 +270,8 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
         if not path.exists():
             raise RegionError(f"{spec['id']}: file does not exist: {spec['file']}")
         language_for(path, profile)
-        src = path.read_text(encoding="utf-8")
-        guard_unsupported_syntax(path, src, profile)
-        lines = src.splitlines()
+        lines, _, _ = read_source(path)
+        guard_unsupported_syntax(path, "\n".join(lines), profile)
         kind = spec.get("kind", profile.block_kind)
         if kind in ("method", "block"):
             kind = "decl"
@@ -233,15 +300,21 @@ def apply(regions: List[Region], blocks: Dict[str, str]) -> List[str]:
     for r in regions:
         by_file.setdefault(r.path, []).append(r)
     for path, regs in by_file.items():
-        lines = path.read_text(encoding="utf-8").splitlines()
+        # Read with newline="" so the file's real line terminators survive.
+        # read_text() universalises them to "\n" and write_text() then rewrites
+        # the WHOLE file in the platform terminator -- which turns a two-line
+        # patch into a whole-file diff on any repo whose files disagree with the
+        # running platform (CRLF sources edited on Linux, or the reverse).
+        lines, newline, had_trailing_newline = read_source(path)
         changed = False
         for r in sorted(regs, key=lambda x: x.start_line, reverse=True):
             body = blocks.get(r.id)
             if body is None or body.rstrip() == r.text.rstrip():
                 continue
-            lines[r.start_line: r.end_line + 1] = body.splitlines()
+            lines[r.start_line: r.end_line + 1] = body.replace("\r\n", "\n").split("\n")
             changed = True
         if changed:
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            out = newline.join(lines) + (newline if had_trailing_newline else "")
+            path.write_text(out, encoding="utf-8", newline="")
             touched.append(regs[0].file)
     return touched

@@ -251,13 +251,112 @@ def test_phase8_driver_completes(tmp_path):
 
     assert result["verdict"] in ("DONE", "APPROVE")
     assert "Changed return value" in result.get("summary", "")
+    # Developer mode works in a disposable worktree. Without --apply the LIVE
+    # tree must be untouched -- it used to edit the live tree directly, which
+    # destroyed uncommitted work and swept unrelated edits into the patch.
     content = (repo / "src" / "target.py").read_text()
-    assert "return 43" in content
+    assert "return 42" in content, "live tree must not change without --apply"
+    assert result["patch"], "a patch must be exported"
+    assert "return 43" in Path(result["patch"]).read_text(encoding="utf-8")
+
+
+def test_phase8_driver_applies_when_asked(tmp_path):
+    """With apply=True the approved edit is promoted into the live tree."""
+    repo = _make_repo(tmp_path)
+
+    dev_profile = Profile(
+        name="test-dev-apply",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        build_cmd="python -m py_compile src/target.py",
+        test_cmd="",
+        file_scope_whitelist=("src/",),
+        protected=("test_*.py", "tests/*"),
+        implementer_rules="test", reviewer_priorities="test",
+    )
+    register(dev_profile)
+
+    call_count = [0]
+    def mock_impl(model, messages, **kw):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return Completion(
+                text='<<<TOOL name="edit_file">>>\n{"path": "src/target.py", "old_str": "return 42", "new_str": "return 43"}\n<<<END TOOL>>>',
+                model=model, input_tokens=100, output_tokens=50,
+            )
+        return Completion(text='<<<DONE>>>\nfixed\n<<<END DONE>>>', model=model)
+
+    with patch("agent_loop.developer.driver.chat", side_effect=mock_impl):
+        with patch("agent_loop.loop.review_panel") as mock_panel:
+            from agent_loop.loop import PanelResult, Vote
+            mock_panel.return_value = PanelResult(
+                votes=[Vote("r1", "APPROVE")], verdict="APPROVE", valid=True,
+            )
+            result = run_developer(
+                repo, "The return value is wrong", dev_profile,
+                "test-impl", ["r1"], arbiter_model="",
+                max_turns=10, apply=True,
+            )
+
+    assert result.get("applied") is True, f"apply=True must promote, got {result}"
+    assert "return 43" in (repo / "src" / "target.py").read_text()
+
+
+def test_phase8_driver_refuses_protected_edit(tmp_path):
+    """Developer mode may not edit the tests that grade it."""
+    repo = _make_repo(tmp_path)
+    (repo / "src" / "test_target.py").write_text("def test_x():\n    assert True\n", encoding="utf-8")
+
+    # The protected pattern and the file-scope whitelist OVERLAP here, which is
+    # the real nt8 shape: its *Tests.cs live inside the whitelisted addon
+    # directory, so the scope check alone cannot stop the loop editing them.
+    guard_profile = Profile(
+        name="test-dev-protected",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        build_cmd="", test_cmd="",
+        file_scope_whitelist=("src/",),
+        protected=("test_*.py",),
+        implementer_rules="t", reviewer_priorities="t",
+    )
+    register(guard_profile)
+
+    def mock_impl(model, messages, **kw):
+        if "edit_file result" in messages[-1].get("content", ""):
+            return Completion(text='<<<ESCALATE>>>\nblocked\n<<<END ESCALATE>>>', model=model)
+        return Completion(
+            text='<<<TOOL name="edit_file">>>\n{"path": "src/test_target.py", "old_str": "assert True", "new_str": "assert False"}\n<<<END TOOL>>>',
+            model=model,
+        )
+
+    with patch("agent_loop.developer.driver.chat", side_effect=mock_impl):
+        result = run_developer(
+            repo, "make the test pass", guard_profile,
+            "test-impl", [], arbiter_model="", max_turns=4, apply=False,
+        )
+
+    assert "assert True" in (repo / "src" / "test_target.py").read_text(), \
+        "a protected test file must not be edited"
+    assert result["verdict"] != "DONE" or not result.get("patch")
 
 
 def test_phase8_driver_escalates(tmp_path):
     """Developer mode driver handles ESCALATE correctly."""
     repo = _make_repo(tmp_path)
+
+    # No test_cmd: PROFILE's points at a tests/ directory this fixture repo does
+    # not have, and developer mode now refuses to start when it cannot establish
+    # a baseline (see test_phase8_driver_refuses_without_baseline).
+    esc_profile = Profile(
+        name="test-dev-escalate",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        build_cmd="", test_cmd="",
+        file_scope_whitelist=("src/",),
+        protected=("test_*.py", "tests/*"),
+        implementer_rules="t", reviewer_priorities="t",
+    )
+    register(esc_profile)
 
     def mock_impl(model, messages, **kw):
         return Completion(
@@ -267,12 +366,27 @@ def test_phase8_driver_escalates(tmp_path):
 
     with patch("agent_loop.developer.driver.chat", side_effect=mock_impl):
         result = run_developer(
-            repo, "Unfixable defect", PROFILE,
+            repo, "Unfixable defect", esc_profile,
             "test-impl", ["r1"], arbiter_model="",
             max_turns=5, apply=False,
         )
 
     assert result["verdict"] == "ESCALATED"
+
+
+def test_phase8_driver_refuses_without_baseline(tmp_path):
+    """A test_cmd that cannot report a summary must stop the run, not proceed
+    against an empty baseline that makes every old failure look like a new one."""
+    repo = _make_repo(tmp_path)
+
+    with patch("agent_loop.developer.driver.chat") as mock_chat:
+        result = run_developer(
+            repo, "defect", PROFILE, "test-impl", ["r1"],
+            arbiter_model="", max_turns=5, apply=False,
+        )
+
+    assert result["verdict"] == "TEST_BASELINE_UNAVAILABLE"
+    assert mock_chat.call_count == 0, "must refuse before spending a model call"
 
 
 def test_phase8_driver_scope_rejection(tmp_path):

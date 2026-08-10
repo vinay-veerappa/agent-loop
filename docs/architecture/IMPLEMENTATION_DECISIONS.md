@@ -403,7 +403,88 @@ changed since the last index?"
 **Tradeoff**: the marker is not updated after indexing. A future
 upgrade should write the current timestamp to the marker after a
 successful re-index.
+**Superseded 2026-08-10**: nothing ever wrote the marker, so the
+check returned "stale" on every ticket forever — a status that never
+varies carries no information. `mark_graph_fresh(repo)` now writes it,
+and the message distinguishes "never indexed by this loop" from
+"stale (N hours of edits since the last index)".
 
 ---
 
-*End of decision log. All phases 1-9 complete.*
+## 2026-08-10 review fixes
+
+Full findings and their locations are in `BACKLOG.md`. Recorded here are only
+the decisions where more than one fix was defensible.
+
+### Compaction pins the implement prompt instead of budgeting it
+**Decision**: `pin_count()` protects `history[0]` (system) and `history[1]`
+(the implement prompt) from both compaction phases, even when that means the
+result exceeds `round_input_token_budget`.
+**Why**: every round's instruction ends "re-emit ALL blocks in full". An
+implementer that has lost the region source cannot comply with the only thing
+it was asked to do, so a compaction that drops the ticket does not save budget,
+it wastes the whole round. The budget is a target; the ticket is a precondition.
+**Alternative rejected**: re-deriving the region text each round from disk. That
+works but changes what the model sees mid-conversation, which is exactly the
+kind of silent context mutation the loop's history exists to make auditable.
+
+### The 4b summary is an assistant turn
+**Decision**: the "prior rounds summary" is injected with `role: assistant`.
+**Why**: as a `user` turn it followed the pinned implement prompt, producing
+`[system, user, user]`. The Anthropic Messages API rejects non-alternating roles
+with a 400, and `_retryable` correctly does not retry a 400 — so compaction
+surfaced as `IMPLEMENTER_UNREACHABLE` on that backend only.
+**Alternative rejected**: merging the summary into the last user message. It
+works, but it puts words the reviewers never said inside the feedback block.
+
+### Mechanical summarization is tried before the LLM compactor
+**Decision**: 4b runs `_mechanical_summary` first and only calls the compactor
+model if the mechanical result still exceeds the budget.
+**Why**: it is free, deterministic, and usually sufficient. The previous order
+spent a model call on every over-budget round — and in the test suite it made
+a live HTTP request that only "passed" because the failure was swallowed.
+
+### A quorum-only panel gets its own verdict
+**Decision**: 2-of-3 with one reviewer unreachable yields `APPROVE_PARTIAL`,
+which exports and awaits sign-off exactly like `ARBITER_SHIP`, rather than
+`APPROVE`.
+**Why**: the panel's contract is "any reviewer may block, none may unblock on
+another's behalf". A reviewer that was never reached did not approve. Under the
+old code `--apply` recorded `applied_approved=True` for a patch one member of
+the panel never saw.
+**Alternative rejected**: hard-stopping on any unreachable reviewer. That was
+the pre-quorum behaviour and it wasted candidates the reachable panel liked.
+
+### Developer mode gets a worktree, and refuses to start without a baseline
+**Decision**: `run_developer` opens a worktree, captures a frozen baseline, and
+returns `TEST_BASELINE_UNAVAILABLE` without spending a model call when the
+profile's `test_cmd` cannot produce one.
+**Why**: it was editing the live tree with `baseline=set()`, so every
+pre-existing failure counted as a regression it had caused, and `git diff` on
+the live repo swept the user's unrelated edits into the patch reviewers were
+asked to approve. Proceeding against an empty baseline is not a weaker check,
+it is a wrong one.
+**Tradeoff**: a repo whose suite is broken cannot use developer mode until the
+suite is fixed. That is the intended pressure.
+
+### `{files}` in `build_cmd` rather than a per-profile file list
+**Decision**: `check_compile` substitutes `{files}` with the files the patch
+touched; profiles without the placeholder are unchanged.
+**Why**: the compile gate is described as "the gate that catches every invented
+symbol", but a `build_cmd` naming a fixed target passes regardless of the patch
+— and the Python profile's fixed target did not even exist, so the gate failed
+on every round instead. Either way it measured something other than the patch.
+
+### The arbiter's standard comes from the profile
+**Decision**: `Profile.arbiter_rules` supplies the domain and the definition of
+"blocks"; `arbiter.arbiter_system(rules)` composes it with the generic ruling
+contract. The NT8 text moved to the nt8-riskguard profile.
+**Why**: a shared prompt demanding that every upheld finding "loses money or
+leaves a position unprotected" does not merely misdescribe a non-trading repo —
+it sets a bar no finding there can clear, so the arbiter rejects the whole panel
+and recommends SHIP. A miscalibrated arbiter is worse than none, because it
+looks like adjudication.
+
+---
+
+*End of decision log. Phases 1-9 complete; 2026-08-10 review fixes applied.*

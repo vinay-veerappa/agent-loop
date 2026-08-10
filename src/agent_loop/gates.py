@@ -79,16 +79,26 @@ def check_static(regions, blocks: Dict[str, str], strip_code_fn, profile: Profil
         if not body.strip():
             problems.append(f"{rid}: empty replacement")
             continue
-        try:
-            body.encode("ascii")
-        except UnicodeEncodeError as exc:
-            problems.append(f"{rid}: non-ASCII output ({exc})")
-        opens = sum(strip_code_fn(ln).count("{") for ln in body.splitlines())
-        closes = sum(strip_code_fn(ln).count("}") for ln in body.splitlines())
-        if opens != closes:
-            problems.append(f"{rid}: unbalanced braces ({opens} open vs {closes} close)")
-        orig_indent = len(r.text) - len(r.text.lstrip())
-        new_indent = len(body) - len(body.lstrip())
+        if profile.ascii_only:
+            try:
+                body.encode("ascii")
+            except UnicodeEncodeError as exc:
+                problems.append(f"{rid}: non-ASCII output ({exc})")
+        # Braces delimit blocks only in brace-delimited languages. In Python a
+        # brace is a dict/set literal, so counting them proves nothing and can
+        # fail a valid patch; the compile gate catches real syntax errors.
+        if profile.block_kind == "decl":
+            opens = sum(strip_code_fn(ln).count("{") for ln in body.splitlines())
+            closes = sum(strip_code_fn(ln).count("}") for ln in body.splitlines())
+            if opens != closes:
+                problems.append(f"{rid}: unbalanced braces ({opens} open vs {closes} close)")
+        # Compare the FIRST LINE's indent, which is what this check is about.
+        # Measuring the whole block with lstrip() also eats leading newlines and
+        # reports an indent the first line does not have.
+        orig_first = (r.text.splitlines() or [""])[0]
+        new_first = (body.splitlines() or [""])[0]
+        orig_indent = len(orig_first) - len(orig_first.lstrip())
+        new_indent = len(new_first) - len(new_first.lstrip())
         if orig_indent != new_indent:
             problems.append(f"{rid}: leading indentation changed ({orig_indent} -> {new_indent})")
         if "<<<" in body:
@@ -134,8 +144,21 @@ def _digest(output: str, limit: int = 40) -> str:
     return "\n".join(uniq[:limit]) or output[-4000:]
 
 
-def check_compile(cmd: str, repo: Path, timeout: int = 900) -> GateResult:
-    """The gate that catches every invented symbol."""
+def check_compile(
+    cmd: str, repo: Path, timeout: int = 900, files: Sequence[str] = ()
+) -> GateResult:
+    """The gate that catches every invented symbol.
+
+    A `{files}` placeholder in the profile's build_cmd is substituted with the
+    files this patch actually touched. Without it a profile can only name a
+    fixed target, and a build_cmd that compiles some OTHER file passes no
+    matter what the patch did -- a gate that cannot fail, which is worse than
+    no gate at all.
+    """
+    if "{files}" in cmd:
+        if not files:
+            return GateResult("compile", True, "no files to compile")
+        cmd = cmd.replace("{files}", " ".join(f'"{f}"' for f in files))
     t0 = time.time()
     try:
         code, out = _run(cmd, repo, timeout)
@@ -165,13 +188,23 @@ def check_compile(cmd: str, repo: Path, timeout: int = 900) -> GateResult:
 # --------------------------------------------------------------------------
 # Two output formats are parsed:
 #   1. The NT8 dotnet test format: "RESULTS: Passed = N, Failed = M"
-#   2. The pytest format: "N failed, M passed" (or "M passed in N.NNs")
+#   2. The pytest terminal summary: "===== 1 failed, 16 passed in 2.31s ====="
 _FAIL_LINE = re.compile(r"^\s*\[FAIL\]\s*(?P<msg>.+?)\s*$", re.MULTILINE)
-# Also catch pytest FAILED lines: "FAILED tests/test_x.py::test_name"
+# Also catch pytest FAILED / ERROR lines: "FAILED tests/test_x.py::test_name"
 _FAIL_PYTEST = re.compile(r"^FAILED\s+(?P<msg>\S+::\S+)", re.MULTILINE)
+_ERROR_PYTEST = re.compile(r"^ERROR\s+(?P<msg>\S+)", re.MULTILINE)
 _RESULTS = re.compile(r"RESULTS:\s*Passed\s*=\s*(\d+),\s*Failed\s*=\s*(\d+)")
-# pytest summary: "1 failed, 17 passed" or "17 passed" or "1 failed, 17 passed in 4.71s"
-_PYTEST_SUMMARY = re.compile(r"(\d+)\s+failed.*?(\d+)\s+passed|(\d+)\s+passed(?!\s+in\s)", re.DOTALL)
+
+# The pytest summary is the last '='-padded line. Counts are read by KEYWORD
+# rather than by position: matching "N failed, M passed" positionally meant
+# that "17 passed, 1 warning in 2.31s" and "15 passed, 2 skipped in 1.02s" --
+# both entirely ordinary green runs -- parsed as "the runner never finished",
+# which failed the gate and made capture_baseline refuse to establish any
+# baseline at all. A warning must not be able to abort a ticket.
+_PYTEST_PADDED_LINE = re.compile(r"^=+\s*(?P<body>.*?)\s*=+\s*$", re.MULTILINE)
+_PYTEST_COUNT = re.compile(
+    r"(\d+)\s+(passed|failed|errors?|skipped|xfailed|xpassed|deselected)\b"
+)
 
 
 @dataclass
@@ -181,17 +214,40 @@ class TestOutcome:
     failed: int = 0
     ran: bool = False
     raw: str = ""
+    # Suite-level errors (pytest collection errors, fixture errors). Distinct
+    # from failures: an errored suite did not report a verdict on the tests it
+    # never reached, so it cannot serve as a baseline.
+    errors: int = 0
 
     @property
     def counted(self) -> bool:
         return self.ran
 
 
+def _pytest_counts(output: str) -> Dict[str, int]:
+    """Read counts by keyword from pytest's terminal summary line."""
+    bodies = [m.group("body") for m in _PYTEST_PADDED_LINE.finditer(output)]
+    # Consider the padded summary lines last-first, then any line carrying
+    # counts, so `-p no:cacheprovider` style output still parses.
+    candidates = list(reversed(bodies)) + list(reversed(output.splitlines()))
+    for line in candidates:
+        if "no tests ran" in line.lower():
+            return {}
+        found = _PYTEST_COUNT.findall(line)
+        if found:
+            counts: Dict[str, int] = {}
+            for n, kind in found:
+                kind = "errors" if kind.startswith("error") else kind
+                counts[kind] = counts.get(kind, 0) + int(n)
+            return counts
+    return {}
+
+
 def parse_tests(output: str) -> TestOutcome:
     # Collect failures from both NT8 [FAIL] format and pytest FAILED format
     failures = {m.group("msg") for m in _FAIL_LINE.finditer(output)}
     failures.update(m.group("msg") for m in _FAIL_PYTEST.finditer(output))
-    
+
     # Try NT8 format first
     m = _RESULTS.search(output)
     if m:
@@ -202,26 +258,22 @@ def parse_tests(output: str) -> TestOutcome:
             ran=True,
             raw=output,
         )
-    
-    # Try pytest summary format: "N failed, M passed" or just "M passed"
-    # pytest pads the summary with === on both sides; strip those.
-    for m in re.finditer(r"(\d+)\s+failed.*?(\d+)\s+passed", output):
+
+    counts = _pytest_counts(output)
+    n_err = counts.get("errors", 0)
+    if n_err:
+        failures.update(m.group("msg") for m in _ERROR_PYTEST.finditer(output))
+    if counts.keys() & {"passed", "failed", "errors"}:
         return TestOutcome(
             failures=failures,
-            passed=int(m.group(2)),
-            failed=int(m.group(1)),
-            ran=True,
+            passed=counts.get("passed", 0),
+            failed=counts.get("failed", 0) + n_err,
+            # A run that only errored reported no verdicts; it did not "run".
+            ran=bool(counts.keys() & {"passed", "failed"}),
             raw=output,
+            errors=n_err,
         )
-    for m in re.finditer(r"(\d+)\s+passed(?:\s+in\s+[\d.]+s)?\s*=*\s*$", output, re.MULTILINE):
-        return TestOutcome(
-            failures=failures,
-            passed=int(m.group(1)),
-            failed=0,
-            ran=True,
-            raw=output,
-        )
-    
+
     return TestOutcome(failures=failures, ran=False, raw=output)
 
 
@@ -231,6 +283,18 @@ def run_tests(cmd: str, repo: Path, timeout: int = 900) -> TestOutcome:
     except subprocess.TimeoutExpired:
         return TestOutcome(ran=False, raw=f"test run timed out after {timeout}s")
     return parse_tests(out)
+
+
+def names_match(name: str, failure: str) -> bool:
+    """Does `failure` name the test `name`?
+
+    Whole-identifier match, not substring: `test_foo` must not be considered
+    satisfied by a failure in `test_foo_bar`. Substring matching let a
+    misspelled or prefix-shaped expect_green entry silently satisfy the
+    test-first check, which is the one check standing between the loop and a
+    vacuous gate.
+    """
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", failure, re.IGNORECASE) is not None
 
 
 def check_tests(
@@ -250,11 +314,11 @@ def check_tests(
             GateResult(
                 "test",
                 False,
-                "runner did not reach RESULTS (aborted or timed out)",
+                "runner produced no parseable result summary (aborted or timed out)",
                 out.raw[-4000:],
                 secs,
                 feedback="The test runner did not finish. Its output ends without a "
-                "RESULTS line, so no conclusion can be drawn about your patch.",
+                "result summary, so no conclusion can be drawn about your patch.",
             ),
             out,
         )
@@ -267,7 +331,7 @@ def check_tests(
 
     still_red = [
         t for t in expect_green
-        if any(t.lower() in f.lower() for f in out.failures)
+        if any(names_match(t, f) for f in out.failures)
     ]
     if still_red and not new:
         return (

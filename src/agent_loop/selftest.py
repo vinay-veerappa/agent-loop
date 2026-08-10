@@ -3,7 +3,7 @@ selftest.py
 ===========
 Offline end-to-end exercise of the loop, with the model calls stubbed.
 
-    python -m scripts.agent_loop.selftest
+    python -m agent_loop.selftest
 
 A tool whose job is gating code on tests should not itself be untested. Model
 responses are canned, so this costs nothing, is deterministic, and exercises
@@ -25,11 +25,26 @@ from .providers import Completion, ProviderError
 
 REPO = Path(__file__).resolve().parents[2]
 
-# A minimal test profile for the selftest (Python)
+# A minimal test profile for the selftest (Python).
+#
+# A hermetic test command: it reports one known failure and never touches a
+# real suite, so the baseline is deterministic and every run is offline.
+#
+# It must exist at all. Without a test_cmd the whole `if profile.test_cmd:`
+# block in run_ticket is skipped -- including the test-first refusal -- so the
+# "expect_green naming a test that already passes -> refused" case below could
+# never fire and asserted nothing for as long as it has existed.
+_FAKE_TEST_CMD = (
+    "python -c \"print('FAILED tests/selftest_fake.py::test_known_red'); "
+    "print('==== 1 failed, 2 passed in 0.01s ====')\""
+)
+
 _SELFTEST_PROFILE = profiles.Profile(
     name="selftest",
     language="python", file_suffixes=(".py",),
     line_comment="#", block_comment=(), block_kind="indent",
+    test_cmd=_FAKE_TEST_CMD,
+    test_sources=("tests/acceptance/*.py",),
     implementer_rules="test", reviewer_priorities="test",
 )
 
@@ -212,32 +227,43 @@ def main() -> int:
     # Keep artifacts out of the real ticket directories.
     t3 = dict(t3, id="SELFTEST")
 
+    # The state-machine scenarios below assert panel/arbiter transitions, so they
+    # must not also be subject to the acceptance gate: the ticket file's
+    # expect_green names a test that is green in the hermetic baseline, which
+    # (correctly) refuses the ticket before any panel runs. The expect_green
+    # property has its own two cases at the end of this function.
+    t3_states = {k: v for k, v in t3.items() if k != "expect_green"}
+
     R = ["rev-a", "rev-b"]
     results = [
         scenario(
             "unchanged source + unanimous APPROVE -> approved",
-            t3,
+            t3_states,
             R,
             {"rev-a": APPROVE_BODY, "rev-b": APPROVE_BODY},
             "APPROVE",
         ),
         scenario(
-            "one reviewer dissents -> rounds exhausted, nothing applied",
-            t3,
+            # ARBITER_NEVER_RAN, not MAX_ROUNDS_EXHAUSTED: this scenario passes
+            # no arbiter model, and the loop distinguishes "the arbiter tried and
+            # could not converge" from "the arbiter never had a chance". The
+            # expectation here was left at the old name when that split landed.
+            "one reviewer dissents, no arbiter -> rounds exhausted, nothing applied",
+            t3_states,
             R,
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY},
-            "MAX_ROUNDS_EXHAUSTED",
+            "ARBITER_NEVER_RAN",
         ),
         scenario(
             "one reviewer returns EMPTY (the T2 bug) -> panel invalid, NOT a rejection",
-            t3,
+            t3_states,
             R,
             {"rev-a": APPROVE_BODY, "rev-b": "EMPTY"},
             "PANEL_UNREACHABLE",
         ),
         scenario(
             "both reviewers 502 (T2 round 4) -> panel invalid",
-            t3,
+            t3_states,
             R,
             {"rev-a": "RAISE", "rev-b": "RAISE"},
             "PANEL_UNREACHABLE",
@@ -248,26 +274,26 @@ def main() -> int:
     results += [
         scenario(
             "dissent + arbiter rejects every finding -> ARBITER_SHIP (human signs off)",
-            t3, R,
+            t3_states, R,
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "REJECTED", "SHIP")},
             "ARBITER_SHIP", arbiter_model=ARB,
         ),
         scenario(
             "dissent + arbiter upholds -> keeps revising, never auto-ships",
-            t3, R,
+            t3_states, R,
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "UPHELD", "REVISE")},
             "MAX_ROUNDS_EXHAUSTED", arbiter_model=ARB,
         ),
         scenario(
             "arbiter says ESCALATE -> stops immediately, no further spend",
-            t3, R,
+            t3_states, R,
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "UPHELD", "ESCALATE")},
             "ESCALATED", arbiter_model=ARB,
         ),
     ]
 
     # A ticket aimed at the verifier must be refused before any model runs.
-    evil = dict(t3, id="SELFTEST_EVIL", regions=[
+    evil = dict(t3_states, id="SELFTEST_EVIL", regions=[
         {"id": "X", "file": "scripts/ninjatrader/addons/RiskGuardAddOnTests.cs", "anchor": "class"}
     ])
     print("\n--- ticket targeting the test file -> refused before any model call")
@@ -280,21 +306,32 @@ def main() -> int:
     # is refused. Guards the vacuous-gate case -- a typo'd name would otherwise
     # make expect_green silently unfalsifiable.
     print("\n--- expect_green naming a test that already passes -> refused")
-    bad = dict(t3, id="SELFTEST_EXPECT", expect_green=["TestThatDoesNotExistAnywhere"])
+    bad = dict(t3_states, id="SELFTEST_EXPECT", expect_green=["TestThatDoesNotExistAnywhere"])
     res = loop.run_ticket(REPO, bad, _SELFTEST_PROFILE, "x", ["y"], max_rounds=1)
     ok = res.get("final_verdict") == "TICKET_REJECTED"
     print(f"    expect=TICKET_REJECTED  got={res.get('final_verdict')}  {'PASS' if ok else 'FAIL'}")
     results.append(ok)
 
-    # And the extractor must return the DECLARATION, not the call site in Main().
-    print("\n--- acceptance-test extractor returns the method body")
+    # The other half of the same property: a name that IS red at baseline is
+    # accepted, and then the acceptance gate can still fail. Asserting only the
+    # refusal would pass even if the check refused everything.
+    print("\n--- expect_green red at baseline -> accepted, and the gate can fail")
+    results.append(scenario(
+        "acceptance test stays red -> gate fails, never approves",
+        dict(t3_states, id="SELFTEST_STILL_RED", expect_green=["test_known_red"]),
+        R,
+        {"rev-a": APPROVE_BODY, "rev-b": APPROVE_BODY},
+        "ARBITER_NEVER_RAN",
+    ))
+
+    # And the extractor must return the DECLARATION, not a call site.
+    print("\n--- acceptance-test extractor returns the declaration body")
+    name = "test_p1_7_quorum_partial_panel"
     src = loop.extract_test_sources(
-        REPO,
-        ["TestCopyPath_LockedFollowerReceivesNoCopy"],
-        _SELFTEST_PROFILE.test_sources,
+        REPO, [name], _SELFTEST_PROFILE.test_sources, _SELFTEST_PROFILE
     )
-    ok = "private static void TestCopyPath_LockedFollowerReceivesNoCopy" in src and "Assert(" in src
-    print(f"    {'PASS' if ok else 'FAIL'}  {len(src)} chars, {src.count('Assert(')} assertion(s)")
+    ok = f"def {name}(" in src and "assert " in src
+    print(f"    {'PASS' if ok else 'FAIL'}  {len(src)} chars, {src.count('assert ')} assertion(s)")
     results.append(ok)
 
     results.append(parser_fixtures())

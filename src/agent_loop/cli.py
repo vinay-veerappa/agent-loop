@@ -59,13 +59,24 @@ def _review(args, profile) -> int:
     gate_summary = ""
     if args.review_verify:
         print("  verifying build + tests before review ...")
-        b = gates.check_compile(profile.build_cmd, Path("."))
-        t = gates.run_tests(profile.test_cmd, Path("."))
-        gate_summary = (
-            f"build: {'PASS' if b.ok else 'FAIL'} ({b.summary})\n"
-            f"tests: {t.passed} passed, {len(t.failures)} failed"
-            f"{'' if t.reached_results else ' (RUNNER DID NOT REACH RESULTS - treat as unknown)'}"
-        )
+        parts = []
+        if profile.build_cmd:
+            b = gates.check_compile(profile.build_cmd, Path("."))
+            parts.append(f"build: {'PASS' if b.ok else 'FAIL'} ({b.summary})")
+        else:
+            parts.append("build: (no build_cmd in profile)")
+        if profile.test_cmd:
+            t = gates.run_tests(profile.test_cmd, Path("."))
+            # `ran`, not `reached_results`: TestOutcome has never had a
+            # reached_results attribute, so --review-verify raised
+            # AttributeError before it could report anything.
+            parts.append(
+                f"tests: {t.passed} passed, {len(t.failures)} failed"
+                + ("" if t.ran else " (RUNNER PRODUCED NO SUMMARY - treat as unknown)")
+            )
+        else:
+            parts.append("tests: (no test_cmd in profile)")
+        gate_summary = "\n".join(parts)
         print("  " + gate_summary.replace("\n", "\n  "))
 
     try:
@@ -145,9 +156,11 @@ def _test(args, profile, implementer) -> int:
     print(f"\n==== TEST RESULT ====")
     if result.get("test_code"):
         print(f"tests written to: {args.test_file}")
-    elif result.get("error"):
+    if result.get("error"):
         print(f"error: {result['error']}")
-    return 0 if result.get("test_code") else 1
+    # An error is a failure even when test code was written: the tests exist
+    # but were never confirmed red at baseline, so they are not yet evidence.
+    return 0 if (result.get("test_code") and not result.get("error")) else 1
 
 
 def _developer(args, profile, implementer, reviewers, arbiter) -> int:
@@ -293,7 +306,7 @@ def main(argv=None) -> int:
     # Resolve model defaults from the registry
     registry = DEFAULT_REGISTRY
     implementer = args.implementer or registry.get("implementer").name
-    reviewers_str = args.reviewers or ",".join([registry.get("reviewer").name])
+    reviewers_str = args.reviewers or ",".join(c.name for c in registry.get_all("reviewer"))
     arbiter = args.arbiter or registry.get("arbiter").name
 
     # Validate the model mix
@@ -303,6 +316,14 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"  MODEL VALIDATION ERROR: {exc}")
         return 2
+    if len(reviewers) < 2:
+        # The panel's whole claim is that different families miss different
+        # things. One reviewer is not a panel, and nothing else says so.
+        print(
+            f"  WARNING: panel has one member ({reviewers[0] if reviewers else 'none'}). "
+            "Pass --reviewers with two models from different families for an "
+            "adversarial panel."
+        )
 
     if args.mode == "review":
         return _review(args, profile)
@@ -329,6 +350,10 @@ def main(argv=None) -> int:
         return _list(tickets, profile)
 
     wanted = args.ticket or [t["id"] for t in tickets]
+    unknown = [w for w in wanted if not any(t["id"] == w for t in tickets)]
+    if unknown:
+        print(f"  unknown ticket id(s): {', '.join(unknown)}")
+        return 2
     results = []
     for t in tickets:
         if t["id"] not in wanted:
@@ -363,7 +388,14 @@ def main(argv=None) -> int:
         print(f"{r['ticket']:<5} {r.get('final_verdict','?'):<22} applied={r.get('applied')}")
     if total:
         print(f"total cost ${total:.4f}")
-    return 0 if any(r.get("final_verdict") in ("APPROVE", "ARBITER_SHIP") for r in results) else 1
+    # Every requested ticket must have produced a promotable candidate. `any`
+    # meant a run of four tickets exited 0 when one passed and three failed,
+    # which reads as success to every caller and to CI.
+    ok = ("APPROVE", "APPROVE_PARTIAL", "ARBITER_SHIP")
+    failed = [r for r in results if r.get("final_verdict") not in ok]
+    if failed:
+        print(f"{len(failed)} of {len(results)} ticket(s) did not produce a promotable candidate")
+    return 1 if failed or not results else 0
 
 
 if __name__ == "__main__":

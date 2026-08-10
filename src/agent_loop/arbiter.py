@@ -36,23 +36,34 @@ from .providers import ProviderError, chat
 UPHELD, REJECTED, OUT_OF_SCOPE = "UPHELD", "REJECTED", "OUT_OF_SCOPE"
 SHIP, REVISE, ESCALATE = "SHIP", "REVISE", "ESCALATE"
 
-ARBITER_SYSTEM = """You are the arbiter for a patch to a NinjaTrader 8 risk-guard AddOn that
-protects real funded futures accounts.
+# The domain paragraph a profile does not supply. Deliberately generic: the
+# previous text described a NinjaTrader risk-guard AddOn and demanded that an
+# UPHELD finding "state the concrete sequence of events that loses money or
+# leaves a position unprotected". Carried into a repo that does not move money,
+# that is not a high bar but an unmeetable one -- no finding can clear it, so
+# the arbiter rejects everything it is shown and recommends SHIP. The domain
+# and its stakes now come from Profile.arbiter_rules.
+DEFAULT_ARBITER_RULES = """You are the arbiter for a patch to a production codebase.
 
-Two adversarial reviewers have raised findings against a patch that has ALREADY passed every
-mechanical gate: it compiles, the full test suite runs with no regressions, and no broker call is
-reachable while the state lock is held. Those results are facts and you may not contradict them.
+An UPHELD finding must name a concrete, reachable failure: specific inputs or sequence of events,
+and the wrong behaviour that results. "Could be clearer", "might be safer", and "consider also
+handling" are NOT upheld.
+
+An unsound SHIP here reaches production, so prefer ESCALATE over a confident wrong answer."""
+
+
+_ARBITER_CONTRACT = """
+Adversarial reviewers have raised findings against a patch that has ALREADY passed every
+mechanical gate that applies to it. Those gate results are facts and you may not contradict them.
 
 Your job is NOT to find new defects. Do not review the code afresh. Your job is to rule on the
 findings you are given, because the reviewers cannot: they were instructed to assume the
 implementer is confident and wrong, so they systematically over-produce, and nothing downstream
-distinguishes a finding that would lose money from one that is merely conceivable.
+distinguishes a finding that matters from one that is merely conceivable.
 
 Rule on EVERY finding, using its number:
 
-  UPHELD       - real, caused by this patch, and blocks. You must be able to state the concrete
-                 sequence of events that loses money or leaves a position unprotected. "Could be
-                 clearer", "might be safer", and "consider also handling" are NOT upheld.
+  UPHELD       - real, caused by this patch, and blocks. State the concrete failure.
   REJECTED     - wrong. The claimed mechanism does not hold, it contradicts a mechanical gate,
                  the code already handles it, or it restates a settled decision.
   OUT_OF_SCOPE - real, but pre-existing or belonging to a different ticket. This patch does not
@@ -60,14 +71,13 @@ Rule on EVERY finding, using its number:
                  introducing new ones.
 
 Then recommend:
-  SHIP     - no upheld findings. The patch closes its defect and introduces no new naked risk.
+  SHIP     - no upheld findings. The patch closes its defect and introduces no new risk.
   REVISE   - upheld findings remain; the implementer gets ONLY those.
   ESCALATE - you cannot rule safely: the reviewers disagree on a load-bearing fact, the patch is
              too large to reason about, or the ticket itself looks wrong. Say what a human must
              decide.
 
-Prefer ESCALATE over a confident wrong answer. You are the last automated gate before a human,
-not a rubber stamp, and an unsound SHIP here reaches a live trading account.
+You are the last automated gate before a human, not a rubber stamp.
 
 OUTPUT FORMAT - obey exactly:
 <<<RULINGS>>>
@@ -84,6 +94,15 @@ SHIP | REVISE | ESCALATE
   permanently settled, one per line (write "- NONE" if none)
 <<<END SETTLED>>>
 """
+
+
+def arbiter_system(rules: str = "") -> str:
+    """The arbiter system prompt for a given codebase."""
+    return (rules.strip() or DEFAULT_ARBITER_RULES) + "\n" + _ARBITER_CONTRACT
+
+
+# Kept for callers that want the generic prompt without a profile.
+ARBITER_SYSTEM = arbiter_system()
 
 # Bracket punctuation around the verdict is decoration, not signal: the ruling
 # is identified by the leading "-", the verdict keyword and the "#n". Requiring
@@ -172,6 +191,7 @@ def build_prompt(
     patch_diff: str,
     settled: Sequence[str],
     round_history: str = "",
+    context: str = "",
 ) -> str:
     parts = [
         f"# TICKET {ticket['id']}: {ticket['title']}",
@@ -191,6 +211,11 @@ def build_prompt(
         ] + [f"- {s}" for s in settled] + [""]
     if round_history:
         parts += ["## Convergence history", round_history, ""]
+    if context:
+        # Phase 3 says the ranked slice reaches the implementer, the reviewer
+        # AND the arbiter. It never reached the arbiter, which is the one role
+        # ruling on "will this break callers?" claims without seeing callers.
+        parts += ["## Graph context (callers, callees, tests)", context, ""]
     parts += ["## Findings to rule on", ""]
     for i, f in enumerate(findings, 1):
         parts.append(f"#{i} [{f.severity}] (from {f.model})\n{f.text}\n")
@@ -215,16 +240,27 @@ def adjudicate(
     round_history: str = "",
     max_tokens: int = 24000,
     timeout: int = 900,
+    context: str = "",
+    rules: str = "",
 ) -> Adjudication:
     """Rule on findings. Never raises -- an unreachable arbiter yields ok=False,
-    which the caller must treat as "not adjudicated", never as approval."""
+    which the caller must treat as "not adjudicated", never as approval.
+
+    `rules` is the consumer's Profile.arbiter_rules: what "blocks" means in
+    this codebase and what an unsound SHIP costs there.
+    """
     if not findings:
         return Adjudication(True, SHIP, rationale="No findings to adjudicate.")
-    prompt = build_prompt(ticket, findings, gate_summary, patch_diff, settled, round_history)
+    prompt = build_prompt(
+        ticket, findings, gate_summary, patch_diff, settled, round_history, context
+    )
     try:
         out = chat(
             model,
-            [{"role": "system", "content": ARBITER_SYSTEM}, {"role": "user", "content": prompt}],
+            [
+                {"role": "system", "content": arbiter_system(rules)},
+                {"role": "user", "content": prompt},
+            ],
             max_tokens=max_tokens,
             timeout=timeout,
             think=False,

@@ -682,6 +682,19 @@ than the hand-picked defaults.
 (`regions.py`), and the arbiter (`arbiter.py`) must contain zero language-specific strings.
 Everything language-specific lives in a `Profile` and is injected at call time.
 
+**Status (2026-08-10)**: met, after the review found four places where it was not.
+`loop.py` hardcoded ` ```csharp ` fences and a C#-only acceptance-test extractor
+(so Python reviewers were shown no tests at all); `arbiter.py` carried an entire
+NinjaTrader system prompt whose UPHELD bar — "state the sequence of events that
+loses money" — is unmeetable outside a trading repo, which made the arbiter reject
+every finding and recommend SHIP; `gates.check_static` enforced brace balance and
+ASCII-only on all languages; and `context.py` understood only `def`/`class`, so
+every graph query on the C# profile was junk. The profile now carries `code_fence`,
+`ascii_only`, and `arbiter_rules`, and the loop asserts the property by test
+(`test_arbiter_prompt_is_not_hardcoded_to_ninjatrader`,
+`test_static_gate_is_language_aware`,
+`test_graph_name_extraction_is_language_neutral`).
+
 **What a language-agnostic Profile looks like**:
 
 ```python
@@ -692,7 +705,12 @@ class Profile:
     language: str                          # "csharp", "python", "typescript"
     file_suffixes: tuple                    # (".cs",) or (".py",) or (".ts", ".tsx")
     preprocessor_directives: tuple = ()     # ("#if", "#endif") for C#; () for Python
-    block_comment: tuple = ("/*", "*/")    # for strip_code; ("#",) for Python
+    # DELIMITED comments the region locator cannot parse safely: ("/*", "*/")
+    # for C#, () for Python. This is not "the comment syntax" -- a file
+    # containing one of these tokens is REFUSED, so listing Python's "#" here
+    # refuses every Python file that has a comment. (Corrected 2026-08-10; the
+    # earlier "("#",) for Python" note here and in the README was wrong.)
+    block_comment: tuple = ("/*", "*/")
     # Build and test
     build_cmd: str = ""
     test_cmd: str = ""

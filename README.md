@@ -9,14 +9,18 @@ Implement -> gate -> review -> arbitrate -> apply.
 - **Settled-decisions cache** — adjudication precedents persist across tickets, preventing reviewers from re-litigating known false positives.
 - **Learning feedback** — the loop records which findings the arbiter UPHELD vs REJECTED across tickets, and injects "known false positives" and "known real defects" into future reviewer prompts. The loop gets smarter with every ticket.
 - **Context bloat control** — settled-decisions injection is capped at 20 most recent (~1K tokens). Learning feedback capped at 10 entries (~500 tokens). Graph context capped at 3000 tokens. Per-round input budget 40K tokens. Older data stays on disk for auditability but doesn't bloat the prompt.
-- **Language-agnostic** — the loop driver, gates, and region extractor contain zero language-specific strings. Everything lives in a `Profile`. Adding Python or TypeScript support is a new profile, not a fork.
+- **Language-agnostic** — the loop driver, gates, region extractor, and arbiter contain zero language-specific strings. Everything lives in a `Profile`: the code-fence label, the declaration forms, whether braces delimit blocks, whether ASCII-only is enforced, and the arbiter's standard for what "blocks" in this codebase. Adding Python or TypeScript support is a new profile, not a fork.
 - **Model-by-capability registry** — declarative mapping from role to model. The arbiter must not be the same model as any reviewer.
 - **Token efficiency** — per-round input budget, per-role output caps, graph context capped.
 
 ## Status
 
 All 8 phases complete, all 17 backlog items addressed, 3-model cross-review
-done with fixes applied. Tagged `v0.1.0`. 77/77 tests pass.
+done with fixes applied, plus a line-by-line review of the whole package
+(2026-08-10) whose findings are fixed and pinned by tests. 129/129 tests pass.
+
+`v0.1.0` is tagged but predates Phase 9 and the review fixes — install from
+`main` until the next tag.
 
 | Phase | Status |
 |---|---|
@@ -33,6 +37,7 @@ done with fixes applied. Tagged `v0.1.0`. 77/77 tests pass.
 | Backlog: Consumer profiles (nt8-riskguard, python-tvdownloadohlc) | Done |
 | Cross-review (glm-5.2 + deepseek-v4-pro + minimax-m3) | Done, fixes applied |
 | Phase 9: Learning feedback + context bloat control | Done |
+| Full-package review (2026-08-10): 22 defects fixed, 52 regression tests added | Done |
 
 The loop bootstrapped itself: it ran a ticket against its own source,
 generated a fix, passed all gates, and both reviewers unanimously approved.
@@ -72,17 +77,32 @@ MY_PROFILE = Profile(
     language="python",
     file_suffixes=(".py",),
     line_comment="#",
-    block_comment=("#",),
+    # DELIMITED comments only, and Python has none. Listing "#" here refuses
+    # every Python file that contains a comment: block_comment is the set of
+    # tokens the region locator cannot parse safely, not the comment syntax.
+    block_comment=(),
+    block_kind="indent",          # "decl" for brace-delimited languages
     preprocessor_directives=(),
-    build_cmd="python -m compileall src/",
-    test_cmd="python -m pytest tests/ -v",
+    # {files} is replaced with the files the patch touched. A fixed target here
+    # makes the compile gate pass no matter what the patch did.
+    build_cmd="python -m py_compile {files}",
+    test_cmd="python -m pytest tests/ -q",
     protected=("test_*.py", "conftest.py", "agent_loop/*"),
     implementer_rules="You are a senior Python engineer...",
     reviewer_priorities="You are an adversarial code reviewer...",
+    # What "blocks" means here, and what an unsound SHIP costs. Omit it and the
+    # arbiter gets a generic bar; give it the wrong one and no finding can clear
+    # it, so the arbiter rejects everything and recommends SHIP.
+    arbiter_rules="Blocking means a wrong result reaches a caller...",
 )
 
 register(MY_PROFILE)
 ```
+
+Your `test_cmd` must produce a parseable summary and must not report suite-level
+errors — the loop freezes its failures as the expected-failure baseline and
+refuses to run against a broken suite, because a baseline captured from one
+lets a patch inherit it as its success criterion.
 
 2. **Write a ticket**:
 

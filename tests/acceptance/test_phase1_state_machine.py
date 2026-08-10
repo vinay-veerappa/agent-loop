@@ -222,6 +222,13 @@ def test_p1_7_quorum_partial_panel(tmp_path):
     with _patched_loop(repo, panel_result=panel):
         result = loop.run_ticket(repo, ticket, TEST_PROFILE, "test-impl",
                                  ["r1", "r2", "r3"], max_rounds=1, apply=False, arbiter_model="")
-    assert result["final_verdict"] == "APPROVE", \
-        f"2-of-3 unanimous APPROVE should proceed, got {result['final_verdict']}"
-    assert result.get("panel_partial") == True, "panel_partial metadata must be set"
+    # A quorum approval proceeds, but it is NOT recorded as a unanimous one:
+    # the reviewer that was never reached did not approve, and a verdict of
+    # plain APPROVE would have promoted as applied_approved under --apply.
+    assert result["final_verdict"] == "APPROVE_PARTIAL", \
+        f"2-of-3 unanimous APPROVE should proceed as PARTIAL, got {result['final_verdict']}"
+    assert result.get("panel_partial") is True, "panel_partial metadata must be set"
+    assert result.get("panel_partial_missing") == ["r3"], \
+        "the reviewer that never voted must be named"
+    assert result.get("applied_approved") is False, \
+        "a quorum-only approval must not be recorded as an approved apply"

@@ -129,6 +129,24 @@ def _ollama_host() -> str:
     return host
 
 
+def _fit_num_ctx(messages, max_tokens: int, num_ctx: int) -> int:
+    """Widen num_ctx so the prompt AND the requested output both fit.
+
+    num_ctx bounds prompt + completion, num_predict bounds the completion
+    alone, so a caller asking for 48000 output tokens under the old fixed
+    32768 window was asking for something arithmetically impossible: the
+    server silently truncated, and the loop read the truncation as "the model
+    returned nothing". The implementer's 48k budget and the 40k round input
+    budget are both larger than that window on their own.
+    """
+    prompt_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+    needed = int((prompt_tokens + max_tokens) * 1.15) + 1024  # headroom for the chat template
+    if needed <= num_ctx:
+        return num_ctx
+    # Round up to the next 8K boundary; servers allocate KV cache in blocks.
+    return ((needed + 8191) // 8192) * 8192
+
+
 def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, think=None):
     payload = {
         "model": model,
@@ -136,7 +154,11 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
         "stream": False,
         # num_predict was previously omitted, so max_tokens was silently ignored
         # and the budget was whatever the server defaulted to.
-        "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": max_tokens},
+        "options": {
+            "temperature": temperature,
+            "num_ctx": _fit_num_ctx(messages, max_tokens, num_ctx),
+            "num_predict": max_tokens,
+        },
     }
     # think=False disables chain-of-thought on reasoning models. Worth doing
     # wherever the caller wants a structured answer rather than deliberation:

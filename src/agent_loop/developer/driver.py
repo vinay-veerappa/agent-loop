@@ -24,17 +24,21 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .. import arbiter, gates, profiles, regions, workspace
 from ..providers import Completion, ProviderError, chat
-from .tools import TOOL_SCHEMAS, execute_tool
+from .tools import execute_tool, render_tool_docs
 
 
 DEVELOPER_SYSTEM = """You are an autonomous software engineer fixing a defect in a codebase.
-You have tools to read files, search code, trace call paths, edit files, and run builds/tests.
 
 WORK IN TWO PHASES:
 1. EXPLORE: Use read_file, search_code, and trace_call_path to understand the defect.
    Find the files and functions that need to change. Do NOT edit yet.
 2. EDIT: Use edit_file to make changes. Use run_build and run_tests to verify.
    If the build or tests fail, fix the issue and try again.
+   Calling edit_file moves you into the EDIT phase; search_code and
+   trace_call_path are no longer available after that, so finish exploring first.
+
+You may not edit the tests or the build files that grade your change. If you
+believe a test is wrong, say so in your summary rather than editing it.
 
 When you are done, emit:
 <<<DONE>>>
@@ -48,7 +52,9 @@ why you could not fix it
 """
 
 EXPLORE_TOOLS = ["read_file", "search_code", "trace_call_path"]
-EDIT_TOOLS = ["edit_file", "run_build", "run_tests"]
+# read_file stays available while editing: verifying the text you just wrote is
+# not exploration, and withdrawing it forces the model to edit blind.
+EDIT_TOOLS = ["read_file", "edit_file", "run_build", "run_tests"]
 
 
 def run_developer(
@@ -82,8 +88,56 @@ def run_developer(
 
     result: Dict[str, Any] = {"ticket": tid, "turns": [], "verdict": "", "patch": None}
 
+    # Developer mode used to edit the LIVE tree: it took no run lock, captured
+    # no baseline, and read `git diff` from the repo -- so it destroyed
+    # uncommitted work, treated every pre-existing failure as its own
+    # regression, and swept the user's unrelated edits into the patch it asked
+    # reviewers to approve. It gets the same disposable worktree as patch mode.
+    with workspace.open_workspace(repo, tid) as ws:
+        print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")
+        if profile.test_cmd:
+            try:
+                workspace.capture_baseline(ws, profile.test_cmd, gates.parse_tests)
+                print(f"  [baseline] {ws.baseline_note}; {len(ws.baseline)} expected failure(s)")
+            except workspace.WorkspaceError as exc:
+                # No baseline means no regression check. Refuse rather than
+                # measure the patch against an empty set and call it clean.
+                result["verdict"] = "TEST_BASELINE_UNAVAILABLE"
+                result["error"] = str(exc)
+                print(f"  REFUSED: {exc}")
+                (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+                return result
+        return _run_turns(
+            ws, art, tid, defect_description, profile, implementer, reviewers,
+            arbiter_model, max_turns, apply, result,
+        )
+
+
+def _run_turns(
+    ws: "workspace.Workspace",
+    art: Path,
+    tid: str,
+    defect_description: str,
+    profile: profiles.Profile,
+    implementer: str,
+    reviewers: Sequence[str],
+    arbiter_model: str,
+    max_turns: int,
+    apply: bool,
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The tool-calling loop, inside the worktree."""
+    repo = ws.root
+    edited: List[str] = []
+
+    # The tool-calling loop
+    phase = "explore"  # "explore" or "edit"
+    available_tools = list(EXPLORE_TOOLS)
+
     history = [
-        {"role": "system", "content": DEVELOPER_SYSTEM},
+        {"role": "system", "content": DEVELOPER_SYSTEM + "\n" + render_tool_docs(
+            sorted(set(EXPLORE_TOOLS + ["edit_file"]))
+        )},
         {"role": "user", "content": f"# Defect to fix\n\n{defect_description}\n\n"
          f"Language: {profile.language}\n"
          f"File scope: {', '.join(profile.file_scope_whitelist) or '(all)'}\n"
@@ -91,10 +145,6 @@ def run_developer(
          f"Test: {profile.test_cmd or '(none)'}\n\n"
          f"Start by exploring the codebase to find the code that needs to change."},
     ]
-
-    # The tool-calling loop
-    phase = "explore"  # "explore" or "edit"
-    available_tools = EXPLORE_TOOLS if phase == "explore" else EDIT_TOOLS
 
     for turn in range(1, max_turns + 1):
         try:
@@ -124,12 +174,18 @@ def run_developer(
                 result["summary"] = m.group(1).strip()
             break
 
-        # Check for tool calls in the response
-        # Note: edit_file is always available (not filtered by phase) so the
-        # LLM can transition from explore to edit. The phase transition
-        # happens when edit_file is first called, not when it's filtered.
-        tool_calls = _parse_tool_calls(raw, available_tools + ["edit_file"])
-        if not tool_calls:
+        # edit_file is offered in both phases: calling it is what moves the
+        # model from explore to edit.
+        offered = sorted(set(available_tools + ["edit_file"]))
+        tool_calls = _parse_tool_calls(raw, offered)
+        # A call to a tool this phase does not offer must be ANSWERED, not
+        # dropped. Silently discarding it looked identical to "the model made
+        # no tool calls", so the model was told to continue with no hint that
+        # its request had been refused, and could repeat it until max_turns.
+        rejected = [
+            c["name"] for c in _parse_tool_calls(raw, None) if c["name"] not in offered
+        ]
+        if not tool_calls and not rejected:
             # No tool calls and not done -- ask the LLM to continue
             history += [
                 {"role": "assistant", "content": raw},
@@ -139,6 +195,12 @@ def run_developer(
 
         # Execute tool calls
         tool_results = []
+        for name in rejected:
+            print(f"           [{name}] REFUSED (not available in {phase} phase)")
+            tool_results.append(
+                f"[{name} result]: ERROR: {name} is not available in the {phase} phase. "
+                f"Available now: {', '.join(offered)}."
+            )
         for tc in tool_calls:
             print(f"           [{tc['name']}] {tc.get('args', {})}")
             # Check file scope for edit_file BEFORE executing (the edit is
@@ -152,17 +214,22 @@ def run_developer(
                     # Transition phase even on rejection (the LLM tried to edit)
                     if phase == "explore":
                         phase = "edit"
-                        available_tools = EDIT_TOOLS
+                        available_tools = list(EDIT_TOOLS)
                         print(f"           [phase] explore -> edit")
                     continue
-            tc_result = execute_tool(tc["name"], tc.get("args", {}), repo, profile)
+            tc_result = execute_tool(tc["name"], tc.get("args", {}), repo, profile, edited)
             tool_results.append(f"[{tc['name']} result]: {tc_result[:2000]}")
 
-            # Transition from explore to edit phase when edit_file is first called
-            if tc["name"] == "edit_file" and phase == "explore":
-                phase = "edit"
-                available_tools = EDIT_TOOLS
-                print(f"           [phase] explore -> edit")
+            if tc["name"] == "edit_file":
+                if tc_result.startswith("OK"):
+                    path = tc.get("args", {}).get("path", "")
+                    if path and path not in edited:
+                        edited.append(path)
+                # Transition from explore to edit phase on the first edit call
+                if phase == "explore":
+                    phase = "edit"
+                    available_tools = list(EDIT_TOOLS)
+                    print(f"           [phase] explore -> edit")
 
         history += [
             {"role": "assistant", "content": raw},
@@ -171,26 +238,26 @@ def run_developer(
 
     # After the loop: run gate ladder on the diff
     if result["verdict"] == "DONE":
-        # Build the diff
-        import subprocess
-        diff_proc = subprocess.run(
-            ["git", "diff"], cwd=str(repo), capture_output=True, text=True
-        )
-        if diff_proc.stdout.strip():
+        diff = ws.diff()
+        result["edited"] = list(edited)
+        if diff.strip():
             patch_path = art / "final.patch"
-            patch_path.write_text(diff_proc.stdout, encoding="utf-8")
+            patch_path.write_text(diff, encoding="utf-8")
             result["patch"] = str(patch_path)
             print(f"  patch: {patch_path}")
 
             # Run the gate ladder
             if profile.build_cmd:
-                gc = gates.check_compile(profile.build_cmd, repo)
+                gc = gates.check_compile(profile.build_cmd, repo, files=edited)
                 print(f"  [compile] {'ok' if gc.ok else 'FAIL'} - {gc.summary}")
                 if not gc.ok:
                     result["verdict"] = "BUILD_FAILED"
             if profile.test_cmd and result["verdict"] == "DONE":
+                # Against the FROZEN baseline captured before any edit, not an
+                # empty set: with set() every test that was already red counted
+                # as a regression this patch caused.
                 gt, outcome = gates.check_tests(
-                    profile.test_cmd, repo, set(),
+                    profile.test_cmd, repo, ws.baseline,
                 )
                 print(f"  [test] {'ok' if gt.ok else 'FAIL'} - {gt.summary}")
                 if not gt.ok:
@@ -202,7 +269,7 @@ def run_developer(
                 review_prompt = (
                     f"# Developer mode review\n\n"
                     f"## Defect\n{defect_description[:500]}\n\n"
-                    f"## Diff\n```diff\n{diff_proc.stdout[:60000]}\n```\n\n"
+                    f"## Diff\n```diff\n{diff[:60000]}\n```\n\n"
                     f"Review this diff: does it close the defect? Does it introduce new issues?\n"
                 )
                 panel = review_panel(
@@ -223,8 +290,9 @@ def run_developer(
                         adj = arbiter.adjudicate(
                             arbiter_model, {"id": tid, "title": defect_description[:100],
                                            "defect": defect_description, "spec": ""},
-                            all_findings, "developer mode", diff_proc.stdout,
+                            all_findings, "developer mode", diff,
                             settled=profile.settled,
+                            rules=profile.arbiter_rules,
                         )
                         (art / "arbiter.txt").write_text(adj.raw or adj.error, encoding="utf-8")
                         if adj.ok:
@@ -240,17 +308,37 @@ def run_developer(
                 else:
                     result["verdict"] = "NEEDS_REVISION"
 
+            # --apply was accepted and then ignored, so a caller who asked for
+            # promotion silently got none -- while the edits happened to be live
+            # anyway, in the tree they had not asked the loop to touch.
+            if apply and result["verdict"] in ("APPROVE", "ARBITER_SHIP", "DONE"):
+                moved = ws.promote(edited)
+                result["applied"] = True
+                result["applied_approved"] = result["verdict"] == "APPROVE"
+                result["touched"] = moved
+                print(f"  APPLIED -> {', '.join(moved)}")
+                print("  review with `git diff` and commit explicit paths; nothing is staged.")
+            elif apply:
+                print(f"  NOT APPLIED: verdict={result['verdict']}")
+            elif result["patch"]:
+                print(f"  not applied (no --apply). Patch: {result['patch']}")
+
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 
-def _parse_tool_calls(raw: str, available_tools: List[str]) -> List[Dict[str, Any]]:
+def _parse_tool_calls(
+    raw: str, available_tools: Optional[List[str]]
+) -> List[Dict[str, Any]]:
     """Parse tool calls from the LLM response.
 
     The LLM emits tool calls in a simple format:
     <<<TOOL name="tool_name">>>
     {"arg1": "value1", "arg2": "value2"}
     <<<END TOOL>>>
+
+    `available_tools=None` returns every call found, so the caller can tell
+    "asked for a tool it may not use here" apart from "made no tool call".
     """
     calls = []
     for m in re.finditer(
@@ -258,7 +346,7 @@ def _parse_tool_calls(raw: str, available_tools: List[str]) -> List[Dict[str, An
         raw, re.DOTALL,
     ):
         name = m.group("name")
-        if name not in available_tools:
+        if available_tools is not None and name not in available_tools:
             continue
         try:
             args = json.loads(m.group("args"))

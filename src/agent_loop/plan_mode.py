@@ -175,6 +175,7 @@ def run_plan(
             adj = arbiter_mod.adjudicate(
                 arbiter_model, ticket, all_findings,
                 "plan review", "", settled=effective_settled,
+                rules=profile.arbiter_rules,
             )
             (art / f"r{rnd}_arbiter.txt").write_text(adj.raw or adj.error, encoding="utf-8")
             if adj.ok:

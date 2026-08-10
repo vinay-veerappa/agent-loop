@@ -258,18 +258,11 @@ def save_feedback(
         "key": key,
     }
 
-    # Atomic append
-    temp_fd, temp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix="feedback_"
-    )
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            if path.exists():
-                f.write(path.read_text(encoding="utf-8"))
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        os.replace(temp_path, str(path))
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
+    # Append a single line. Copying the whole store to a temp file per finding
+    # made recording a round quadratic in the store's size for no benefit: a
+    # line-buffered append of one line is what the JSONL format is for.
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     return 1
 
@@ -337,18 +330,33 @@ def build_learning_context(repo: Path) -> str:
     if not rejected and not upheld:
         return ""
 
+    def distinct(entries: List[Dict[str, str]], limit: int = 5) -> List[str]:
+        """First `limit` distinct finding texts. The store keys by round, so
+        the same finding raised in three rounds is three entries; injecting it
+        three times would spend the whole cap on one lesson."""
+        seen, out = set(), []
+        for entry in entries:
+            text = (entry.get("finding", "") or "").strip()[:120]
+            if not text or text.lower() in seen:
+                continue
+            seen.add(text.lower())
+            out.append(text)
+            if len(out) >= limit:
+                break
+        return out
+
     parts = ["## LEARNING FEEDBACK (from prior tickets)"]
 
-    if rejected:
-        parts.append(f"\n### Known false positives (arbiter REJECTED these — do NOT re-raise):")
-        for entry in rejected[:5]:  # cap at 5 for token budget
-            finding = entry.get("finding", "")[:120]
-            parts.append(f"- REJECTED: {finding}")
+    rejected_texts = distinct(rejected)
+    if rejected_texts:
+        parts.append("\n### Known false positives (arbiter REJECTED these - do NOT re-raise):")
+        parts += [f"- REJECTED: {t}" for t in rejected_texts]
 
-    if upheld:
-        parts.append(f"\n### Known real defects (arbiter UPHELD these — keep flagging if you see them):")
-        for entry in upheld[:5]:
-            finding = entry.get("finding", "")[:120]
-            parts.append(f"- UPHELD: {finding}")
+    upheld_texts = distinct(upheld)
+    if upheld_texts:
+        parts.append("\n### Known real defects (arbiter UPHELD these - keep flagging if you see them):")
+        parts += [f"- UPHELD: {t}" for t in upheld_texts]
 
+    if len(parts) == 1:
+        return ""
     return "\n".join(parts)

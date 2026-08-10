@@ -7,16 +7,26 @@ The implementer's history grows unboundedly across rounds. Each round adds
 the implementer's raw output, the reviewer findings, the arbiter ruling,
 and the feedback message. By round 4, the history can exceed 400K tokens.
 
-Phase 4a: prune verbose old outputs above a token threshold. Prior rounds'
+Phase 4a: prune verbose old outputs above a token threshold. PRIOR rounds'
 implementer output, reviewer findings, and build/test logs that exceed the
 threshold are replaced with truncation markers that preserve per-finding
 structure (reviewer name, severity, one-line summary, arbiter ruling) --
 not just aggregate counts.
 
-Phase 4b: LLM summarization. If the pruned history still exceeds the
-profile's round_input_token_budget (default 40K), summarize rounds 1..N-1
-via a cheaper model into a compact "what was tried and rejected" block.
-Keep round N full.
+Phase 4b: if the pruned history still exceeds the profile's
+round_input_token_budget (default 40K), replace rounds 1..N-1 with a single
+summary of "what was tried and rejected" -- mechanical first because it is free
+and deterministic, and a cheap-model summary only if the mechanical one still
+does not fit.
+
+Two things are never compacted, at any budget:
+
+  * the system prompt and the IMPLEMENT PROMPT (history[0] and history[1]).
+    Every round ends "re-emit ALL blocks in full", so an implementer that has
+    lost the ticket and the region source cannot do the one thing it was asked
+    to do. See pin_count().
+  * the newest exchange -- the candidate under revision and the feedback about
+    it. That is the text the next round edits.
 """
 from __future__ import annotations
 
@@ -34,6 +44,30 @@ _CHARS_PER_TOKEN = 4
 _PER_ARTIFACT_THRESHOLD_CHARS = 5000  # ~1250 tokens
 
 
+def pin_count(history: List[Dict[str, str]]) -> int:
+    """How many leading messages are never compacted.
+
+    history[0] is the system prompt and history[1] is the IMPLEMENT PROMPT --
+    the ticket, the spec and the verbatim source of every region. Both are
+    load-bearing for every later round, because each round's instruction ends
+    "re-emit ALL blocks in full": an implementer that has lost the region text
+    cannot comply with the only thing it was asked to do. Compaction used to
+    fold history[1] into a one-line summary, so from round 3 the model was
+    asked to re-emit blocks it could no longer see.
+    """
+    if len(history) > 1 and history[1].get("role") == "user":
+        return 2
+    return 1
+
+
+def _truncate_middle(content: str) -> str:
+    return (
+        content[:500]
+        + f"\n\n... [COMPACTED: {len(content)} chars -> {len(content) - 1000} chars pruned] ...\n\n"
+        + content[-500:]
+    )
+
+
 def compact_history(
     history: List[Dict[str, str]],
     current_round: int,
@@ -41,13 +75,13 @@ def compact_history(
 ) -> List[Dict[str, str]]:
     """Compact the implementer history before round N.
 
-    Phase 4a: prune verbose old assistant messages above the per-artifact
-    threshold. Keep the latest round's full exchange. Prior rounds get
-    truncated to per-finding summaries.
+    Phase 4a: prune verbose messages from PRIOR rounds above the per-artifact
+    threshold. The system prompt, the implement prompt, and the newest exchange
+    are kept verbatim.
 
-    Phase 4b: if the total history still exceeds the round_input_token_budget,
-    summarize all prior rounds into a compact block. (Not yet implemented --
-    returns the 4a-pruned history for now.)
+    Phase 4b: if the pruned history still exceeds round_input_token_budget,
+    replace the prior rounds with a single summary -- mechanical first, and an
+    LLM summary only if the mechanical one is still too big to fit.
 
     Args:
         history: the full message history (system + alternating user/assistant)
@@ -60,46 +94,44 @@ def compact_history(
     if current_round <= 1:
         return history  # nothing to compact on round 1
 
-    # Phase 4a: prune verbose assistant messages from prior rounds.
-    # The history is [system, user, assistant, user, assistant, ...].
-    # We keep the system message and the latest user/assistant pair.
-    # Prior assistant messages that are very long get truncated.
-    compacted = []
-    for i, msg in enumerate(history):
-        if msg["role"] == "system":
-            compacted.append(msg)
-            continue
+    pinned = pin_count(history)
+    # The newest exchange is the candidate under revision plus the feedback
+    # about it. Truncating that is self-defeating -- it is the text the next
+    # round edits -- and the old loop truncated it because it walked every
+    # message including the last.
+    protected_from = max(pinned, len(history) - 2)
 
+    compacted: List[Dict[str, str]] = list(history[:pinned])
+    for i in range(pinned, len(history)):
+        msg = history[i]
         content = msg["content"]
-        if len(content) > _PER_ARTIFACT_THRESHOLD_CHARS and msg["role"] == "assistant":
-            # Truncate verbose implementer output from prior rounds.
-            # Keep the first 500 chars (the blocks) and the last 500 chars
-            # (the notes), replace the middle with a truncation marker.
-            truncated = (
-                content[:500]
-                + f"\n\n... [COMPACTED: {len(content)} chars -> {len(content) - 1000} chars pruned] ...\n\n"
-                + content[-500:]
-            )
-            compacted.append({"role": msg["role"], "content": truncated})
-        elif len(content) > _PER_ARTIFACT_THRESHOLD_CHARS and msg["role"] == "user":
-            # Truncate verbose reviewer findings/feedback from prior rounds.
-            # Preserve per-finding structure: extract finding lines and keep
-            # a compact summary.
-            compacted_content = _compact_findings(content)
-            compacted.append({"role": msg["role"], "content": compacted_content})
-        else:
+        if i >= protected_from or len(content) <= _PER_ARTIFACT_THRESHOLD_CHARS:
             compacted.append(msg)
+        elif msg["role"] == "assistant":
+            # Verbose implementer output from a prior round: keep the head
+            # (the blocks) and the tail (the notes).
+            compacted.append({"role": "assistant", "content": _truncate_middle(content)})
+        else:
+            # Reviewer findings/feedback from a prior round: keep per-finding
+            # structure rather than an aggregate count.
+            compacted.append({"role": "user", "content": _compact_findings(content)})
 
-    # Phase 4b: check total size against the budget
-    total_chars = sum(len(m["content"]) for m in compacted)
+    # Phase 4b: check total size against the budget.
     budget_chars = profile.round_input_token_budget * _CHARS_PER_TOKEN
-    if total_chars > budget_chars and current_round > 2:
-        # Try LLM summarization via the compactor model from the registry.
-        # Falls back to mechanical summarization if no compactor is available
-        # or the call fails.
-        compacted = _llm_summary(compacted, budget_chars, profile) or _mechanical_summary(compacted, budget_chars)
+    if _chars(compacted) > budget_chars and current_round > 2:
+        # Mechanical summarization first: it is free and deterministic. Only
+        # pay for a model call if the free path still does not fit.
+        mechanical = _mechanical_summary(compacted, budget_chars)
+        if _chars(mechanical) > budget_chars:
+            compacted = _llm_summary(compacted, budget_chars, profile) or mechanical
+        else:
+            compacted = mechanical
 
     return compacted
+
+
+def _chars(history: List[Dict[str, str]]) -> int:
+    return sum(len(m["content"]) for m in history)
 
 
 def _llm_summary(
@@ -118,22 +150,9 @@ def _llm_summary(
     except KeyError:
         return None
 
-    if len(history) <= 3:
+    head, prior, last_user, last_assistant = _split_for_summary(history)
+    if not prior:
         return None
-
-    # Build the text to summarize (everything between system and last exchange)
-    system = history[0]
-    last_user_idx = None
-    for i in range(len(history) - 1, -1, -1):
-        if history[i]["role"] == "user":
-            last_user_idx = i
-            break
-    if last_user_idx is None or last_user_idx == 0:
-        return None
-
-    last_user = history[last_user_idx]
-    last_assistant = history[last_user_idx + 1] if last_user_idx + 1 < len(history) and history[last_user_idx + 1]["role"] == "assistant" else None
-    prior = history[1:last_user_idx]
 
     # Build a summarization prompt
     text_to_summarize = "\n\n".join(
@@ -162,10 +181,9 @@ def _llm_summary(
         # Ensure the summary fits the budget
         if len(summary) > budget_chars // 2:
             summary = summary[: budget_chars // 2] + "\n... (summary truncated)"
-        result = [system, {"role": "user", "content": f"[PRIOR ROUNDS SUMMARY (LLM compacted):]\n{summary}"}, last_user]
-        if last_assistant:
-            result.append(last_assistant)
-        return result
+        return _assemble(
+            head, f"[PRIOR ROUNDS SUMMARY (LLM compacted):]\n{summary}", last_user, last_assistant
+        )
     except Exception:
         return None
 
@@ -207,37 +225,57 @@ def _compact_findings(content: str) -> str:
     return "\n".join(lines)
 
 
-def _mechanical_summary(history: List[Dict[str, str]], budget_chars: int) -> List[Dict[str, str]]:
-    """Mechanically summarize all but the last exchange.
+def _split_for_summary(history):
+    """(pinned head, prior rounds, last user message, trailing assistant).
 
-    This is the fallback for Phase 4b when no LLM compactor is available.
-    It replaces all but the system message and the last user/assistant pair
-    with a compact summary of what was tried and rejected.
+    `prior` is empty when there is nothing between the pinned head and the
+    newest exchange, which is the signal not to summarize at all.
     """
-    if len(history) <= 3:
-        return history
-
-    # Keep: system message, summary of prior rounds, last exchange
-    # The last exchange is the final user message (and its assistant response
-    # if present). We want to preserve the last user message exactly.
-    system = history[0]
-    # Find the last user message
+    pinned = pin_count(history)
     last_user_idx = None
-    for i in range(len(history) - 1, -1, -1):
+    for i in range(len(history) - 1, pinned - 1, -1):
         if history[i]["role"] == "user":
             last_user_idx = i
             break
-    if last_user_idx is None or last_user_idx == 0:
-        return history
-
-    last_user = history[last_user_idx]
-    # Check if there's an assistant response after the last user
+    if last_user_idx is None or last_user_idx < pinned:
+        return list(history[:pinned]), [], None, None
     last_assistant = None
     if last_user_idx + 1 < len(history) and history[last_user_idx + 1]["role"] == "assistant":
         last_assistant = history[last_user_idx + 1]
+    return (
+        list(history[:pinned]),
+        list(history[pinned:last_user_idx]),
+        history[last_user_idx],
+        last_assistant,
+    )
 
-    # Build summary from everything between system and last_user
-    prior = history[1:last_user_idx]
+
+def _assemble(head, summary: str, last_user, last_assistant) -> List[Dict[str, str]]:
+    """head + summary + newest exchange, keeping roles strictly alternating.
+
+    The summary is an ASSISTANT turn on purpose. Emitting it as a second user
+    turn after the pinned implement prompt produced [system, user, user], which
+    the Anthropic Messages API rejects with a 400 -- and a 400 is not retried,
+    so compaction turned into IMPLEMENTER_UNREACHABLE on that backend.
+    """
+    result = list(head) + [{"role": "assistant", "content": summary}]
+    if last_user is not None:
+        result.append(last_user)
+    if last_assistant is not None:
+        result.append(last_assistant)
+    return result
+
+
+def _mechanical_summary(history: List[Dict[str, str]], budget_chars: int) -> List[Dict[str, str]]:
+    """Mechanically summarize the prior rounds.
+
+    Replaces everything between the pinned head (system + implement prompt) and
+    the newest exchange with a compact summary of what was tried and rejected.
+    """
+    head, prior, last_user, last_assistant = _split_for_summary(history)
+    if not prior:
+        return history
+
     summary_lines = ["[PRIOR ROUNDS SUMMARY (mechanically compacted):]"]
     for msg in prior:
         if msg["role"] == "assistant":
@@ -255,10 +293,7 @@ def _mechanical_summary(history: List[Dict[str, str]], budget_chars: int) -> Lis
     if len(summary) > budget_chars // 2:
         summary = summary[: budget_chars // 2] + "\n... (summary truncated)"
 
-    result = [system, {"role": "user", "content": summary}, last_user]
-    if last_assistant:
-        result.append(last_assistant)
-    return result
+    return _assemble(head, summary, last_user, last_assistant)
 
 
 def estimate_tokens(text: str) -> int:

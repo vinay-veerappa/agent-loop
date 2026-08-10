@@ -216,7 +216,8 @@ def run_review(
             "spec": "Judge the diff as shipped. There is no ticket spec to conform to.",
         }
         adj = arbiter.adjudicate(
-            arbiter_model, synthetic, flat, gate_summary, diff, profile.settled
+            arbiter_model, synthetic, flat, gate_summary, diff, profile.settled,
+            rules=profile.arbiter_rules,
         )
         (art / "arbiter.txt").write_text(adj.raw or adj.error or "", encoding="utf-8")
         print(f"  arbiter: {adj.summary()}")

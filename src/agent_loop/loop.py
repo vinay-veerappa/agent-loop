@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -31,8 +32,7 @@ from . import arbiter, gates, profiles, regions, workspace
 from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
 from .memory import (
-    extract_settled, save_settled, inject_settled,
-    save_feedback, build_learning_context,
+    save_settled, inject_settled, save_feedback, build_learning_context,
 )
 from .providers import Completion, ProviderError, chat
 
@@ -96,6 +96,12 @@ class Vote:
     error: str = ""
     usage: str = ""
     finding_list: List[Finding] = field(default_factory=list)
+    # Token usage, so per-role accounting in the ledger reports what the panel
+    # actually cost. The ledger used to read these off Vote when Vote had no
+    # such fields, behind a hasattr() guard that turned the mistake into a
+    # permanent, silent zero.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def counted(self) -> bool:
@@ -131,7 +137,9 @@ def parse_review(text: str, model: str) -> Vote:
 # --------------------------------------------------------------------------
 # Prompts
 # --------------------------------------------------------------------------
-def build_implement_prompt(ticket: Dict[str, Any], regs: Sequence[regions.Region]) -> str:
+def build_implement_prompt(
+    ticket: Dict[str, Any], regs: Sequence[regions.Region], profile: profiles.Profile
+) -> str:
     parts = [
         f"# TICKET {ticket['id']}: {ticket['title']}",
         "",
@@ -150,7 +158,7 @@ def build_implement_prompt(ticket: Dict[str, Any], regs: Sequence[regions.Region
             "",
             f'### REGION id="{r.id}"  file={r.file}  lines {r.lines_1based}',
             f"Purpose: {r.note}" if r.note else "",
-            "```csharp",
+            f"```{profile.fence}",
             r.text,
             "```",
         ]
@@ -158,12 +166,18 @@ def build_implement_prompt(ticket: Dict[str, Any], regs: Sequence[regions.Region
     return "\n".join(p for p in parts if p)
 
 
-def extract_test_sources(repo: Path, names: Sequence[str], globs: Sequence[str]) -> str:
+def extract_test_sources(
+    repo: Path, names: Sequence[str], globs: Sequence[str], profile: profiles.Profile
+) -> str:
     """Pull the named test methods out of the (read-only) test sources.
 
     Reviewers cannot judge whether the suite is complete without seeing it, and
-    the suite is a first-class artifact here, not an assumption. Brace-matched
-    from the signature so the whole method comes across intact.
+    the suite is a first-class artifact here, not an assumption.
+
+    The declaration matching and block extent both come from the profile, via
+    regions.extract_named_block. The predecessor hardcoded C# (a modifier and a
+    return type, then brace matching), so on a Python profile it matched nothing
+    and every reviewer was asked to judge test adequacy with no tests shown.
     """
     if not names or not globs:
         return ""
@@ -172,32 +186,9 @@ def extract_test_sources(repo: Path, names: Sequence[str], globs: Sequence[str])
         for path in sorted(repo.glob(g)):
             src = path.read_text(encoding="utf-8", errors="replace")
             for name in names:
-                # Must be the DECLARATION, not a call site: require at least one
-                # modifier and a return type ahead of the name. Matching bare
-                # `Name(` finds the invocation in Main() first and ships the
-                # wrong text to the reviewer.
-                m = re.search(
-                    r"^[ \t]*(?:(?:private|public|internal|protected|static|async|override|virtual)"
-                    rf"\s+)+[\w<>\[\],\.]+\s+{re.escape(name)}\s*\(",
-                    src,
-                    re.MULTILINE,
-                )
-                if not m:
-                    continue
-                start = m.start()
-                brace = src.find("{", m.end())
-                if brace < 0:
-                    continue
-                depth, i = 0, brace
-                while i < len(src):
-                    if src[i] == "{":
-                        depth += 1
-                    elif src[i] == "}":
-                        depth -= 1
-                        if depth == 0:
-                            break
-                    i += 1
-                out.append(f"// --- {path.name}: {name} ---\n{src[start:i + 1]}")
+                body = regions.extract_named_block(src, name, profile)
+                if body:
+                    out.append(f"{profile.line_comment} --- {path.name}: {name} ---\n{body}")
     return "\n\n".join(out)
 
 
@@ -209,6 +200,7 @@ def build_review_prompt(
     profile: profiles.Profile,
     orchestrator_note: str,
     gate_summary: str,
+    settled_decisions: Sequence[str] = (),
 ) -> str:
     parts = [
         f"# TICKET {ticket['id']}: {ticket['title']}",
@@ -224,7 +216,10 @@ def build_review_prompt(
         # Reviewers used to review blind to whether the patch compiled or passed
         # tests, and wasted findings asserting it did not.
         parts += ["## Mechanical gates already passed", gate_summary, ""]
-    settled = list(profile.settled)
+    # Auto-extracted decisions from prior tickets arrive via settled_decisions;
+    # they used to be computed, printed and then dropped, so the store the
+    # arbiter writes to was never read back into a prompt.
+    settled = list(settled_decisions or profile.settled)
     if orchestrator_note:
         settled.append(orchestrator_note.strip())
     if settled:
@@ -246,7 +241,7 @@ def build_review_prompt(
             "These were written BEFORE the patch and were failing at baseline; they now pass.",
             "Judge their completeness and accuracy, and name any behaviour they do not cover.",
             "",
-            "```csharp",
+            f"```{profile.fence}",
             tests_src,
             "```",
             "",
@@ -257,11 +252,11 @@ def build_review_prompt(
             "",
             f'## REGION "{r.id}" ({r.file})',
             "### BEFORE",
-            "```csharp",
+            f"```{profile.fence}",
             r.text,
             "```",
             "### AFTER (proposed)",
-            "```csharp",
+            f"```{profile.fence}",
             blocks.get(r.id, "(MISSING - implementer did not return this region)"),
             "```",
         ]
@@ -330,6 +325,8 @@ def review_panel(
         v = parse_review(out.text, model)
         v.secs = out.secs
         v.usage = out.usage_line()
+        v.input_tokens = out.input_tokens
+        v.output_tokens = out.output_tokens
         return v
 
     votes: List[Vote] = []
@@ -470,7 +467,7 @@ def run_ticket(
             expect_green = list(ticket.get("expect_green", ()))
             not_red = [
                 t for t in expect_green
-                if not any(t.lower() in f.lower() for f in ws.baseline)
+                if not any(gates.names_match(t, f) for f in ws.baseline)
             ]
             if not_red:
                 print(f"  REFUSED: expect_green test(s) not failing at baseline: {not_red}")
@@ -484,7 +481,7 @@ def run_ticket(
             if expect_green:
                 print(f"  [test-first] {len(expect_green)} acceptance test(s) red at baseline")
                 ticket = dict(ticket, _acceptance_tests_src=extract_test_sources(
-                    ws.root, expect_green, profile.test_sources))
+                    ws.root, expect_green, profile.test_sources, profile))
 
         regs = regions.extract(ws.root, ticket["regions"], profile)
         for r in regs:
@@ -496,11 +493,14 @@ def run_ticket(
         # or the profile has no graph_project, this returns "".
         # The cache lives in the MAIN repo (not the worktree) because the
         # graph indexes the main repo's code.
+        # Built once per ticket and reused by the implementer, reviewer and
+        # arbiter prompts. Building it per prompt meant every round fired the
+        # same set of live graph queries two or three times over.
         context_slice = build_context_slice(repo, regs, profile)
         if context_slice:
             print(f"  [graph] injected {len(context_slice)} chars of context")
 
-        impl_prompt = build_implement_prompt(ticket, regs)
+        impl_prompt = build_implement_prompt(ticket, regs, profile)
         if context_slice:
             impl_prompt += f"\n\n## Graph context (from code knowledge graph)\n{context_slice}"
         if orchestrator_note:
@@ -517,6 +517,10 @@ def run_ticket(
         blocks: Dict[str, str] = {}
         final = "MAX_ROUNDS_EXHAUSTED"
         arbiter_consulted = False
+        # The promote hint below is built from the round that produced the
+        # candidate. Reading the loop variable after the loop breaks when the
+        # loop never ran (--max-rounds 0), so track it explicitly.
+        last_round = 0
 
         # Purge ALL stale per-round artifacts from prior runs before the loop
         # starts. A prior run may have left r{N}_* files on disk; a resume with
@@ -529,6 +533,7 @@ def run_ticket(
             stale.unlink()
 
         for rnd in range(1, max_rounds + 1):
+            last_round = rnd
             out = None  # may not be set on resume-raw path
             # ---- purge stale artifacts from prior runs
             # A prior run may have left r{rnd}_* files on disk; a resume with
@@ -585,7 +590,7 @@ def run_ticket(
             if gate_results[-1].ok:
                 touched = regions.apply(regs, blocks)
                 if profile.build_cmd:
-                    gc = gates.check_compile(profile.build_cmd, ws.root)
+                    gc = gates.check_compile(profile.build_cmd, ws.root, files=touched)
                     (art / f"r{rnd}_build.txt").write_text(gc.detail, encoding="utf-8")
                     gate_results.append(gc)
                 if gate_results[-1].ok and profile.test_cmd:
@@ -625,16 +630,19 @@ def run_ticket(
             # ---- panel
             gate_summary = "; ".join(f"{x.name}: {x.summary}" for x in gate_results)
             prompt = build_review_prompt(
-                ticket, regs, blocks, notes, profile, orchestrator_note, gate_summary
+                ticket, regs, blocks, notes, profile, orchestrator_note, gate_summary,
+                settled_decisions=effective_settled,
             )
-            # Phase 3: inject a smaller context slice (callers + types only)
-            # into the reviewer prompt so they can check "will this break callers?"
-            reviewer_context = build_context_slice(repo, regs, profile)
-            if reviewer_context:
-                # Use half the budget for the reviewer context
-                half_budget = profile.context_token_budget * 2  # 2 chars/token, half of 4
-                if len(reviewer_context) > half_budget:
-                    reviewer_context = reviewer_context[:half_budget] + "\n... (truncated)"
+            # Phase 3: the reviewer gets the same slice at half the budget, so
+            # it can check "will this break callers?" without crowding out the
+            # diff it is here to read.
+            if context_slice:
+                half_budget = profile.context_token_budget * 4 // 2
+                reviewer_context = (
+                    context_slice
+                    if len(context_slice) <= half_budget
+                    else context_slice[:half_budget] + "\n... (truncated)"
+                )
                 prompt += f"\n\n## Graph context for review (callers + types)\n{reviewer_context}"
             # Phase 9: inject learning feedback (rejected/upheld findings from prior tickets)
             learning_ctx = build_learning_context(repo)
@@ -647,11 +655,11 @@ def run_ticket(
             print(f"           [panel] {panel.verdict or 'INVALID'}  [{desc}]")
 
             # Sum token usage across reviewers
-            rev_in = sum(v.input_tokens if hasattr(v, 'input_tokens') else 0 for v in panel.votes)
-            rev_out = sum(v.output_tokens if hasattr(v, 'output_tokens') else 0 for v in panel.votes)
-            # Sum token usage for implementer this round (out may not be set on resume-raw)
-            impl_in = out.input_tokens if out is not None and hasattr(out, 'input_tokens') else 0
-            impl_out = out.output_tokens if out is not None and hasattr(out, 'output_tokens') else 0
+            rev_in = sum(v.input_tokens for v in panel.votes)
+            rev_out = sum(v.output_tokens for v in panel.votes)
+            # Implementer usage; `out` is unset on the resume-raw path.
+            impl_in = out.input_tokens if out is not None else 0
+            impl_out = out.output_tokens if out is not None else 0
 
             result["rounds"].append(
                 RoundRecord(
@@ -673,12 +681,20 @@ def run_ticket(
                 # A 2-of-3 panel where both answered APPROVE is different from
                 # a 0-of-3 panel; hard-stopping on quorum-met unanimous APPROVE
                 # wastes a candidate that the panel approved.
-                import math
                 counted = [v for v in panel.votes if v.counted]
                 quorum = math.ceil(2 * len(reviewers) / 3) if reviewers else 1
                 if len(counted) >= quorum and all(v.status == APPROVE for v in counted):
+                    # A quorum approval is NOT a unanimous one: a reviewer that
+                    # was never reached cannot approve on the panel's behalf, so
+                    # this is recorded as partial and promotes as unapproved.
                     result["panel_partial"] = True
-                    final = "APPROVE"
+                    result["panel_partial_missing"] = [v.model for v in panel.unreachable]
+                    final = "APPROVE_PARTIAL"
+                    print(
+                        f"           panel quorum {len(counted)}/{len(reviewers)} all APPROVE; "
+                        f"recorded as PARTIAL (unreached: "
+                        f"{', '.join(v.model for v in panel.unreachable)})"
+                    )
                     break
 
                 # A reviewer that could not be reached has not voted. This is
@@ -711,8 +727,10 @@ def run_ticket(
                     all_findings,
                     gate_summary,
                     ws.diff(),
-                    settled=profile.settled,
+                    settled=effective_settled,
                     round_history=_history_note(convergence),
+                    context=context_slice,
+                    rules=profile.arbiter_rules,
                 )
                 (art / f"r{rnd}_arbiter.txt").write_text(
                     adj.raw or adj.error, encoding="utf-8"
@@ -727,15 +745,24 @@ def run_ticket(
                         if saved:
                             print(f"           [memory] saved {saved} settled decision(s) to store")
 
-                    # Phase 9: save learning feedback for each finding's ruling
+                    # Phase 9: save learning feedback for each finding's ruling.
+                    # The ruling carries an INDEX, not a finding: join back to
+                    # all_findings to record the finding's own text, severity
+                    # and author. Recording ruling.reason as the finding text
+                    # (and every severity as BLOCKER) meant later reviewers were
+                    # shown the arbiter's rationale labelled as a known false
+                    # positive -- the opposite of the intended lesson.
                     for ruling in adj.rulings:
+                        if not 1 <= ruling.index <= len(all_findings):
+                            continue
+                        f = all_findings[ruling.index - 1]
                         save_feedback(
                             repo,
                             tid,
                             rnd,
-                            ruling.model if hasattr(ruling, "model") else "?",
-                            ruling.reason[:200],
-                            "BLOCKER",  # severity unknown from ruling; approximate
+                            f.model,
+                            f.text,
+                            f.severity,
                             ruling.verdict,  # UPHELD / REJECTED / OUT_OF_SCOPE
                         )
                 else:
@@ -845,13 +872,23 @@ def run_ticket(
                     regions.apply(regs, blocks)
                 patch = ws.export_patch(art / "final.patch")
                 ws.revert(sorted({r.file for r in regs}))
-                if final == "ARBITER_SHIP":
+                if final in ("ARBITER_SHIP", "APPROVE_PARTIAL"):
                     # Deliberately not auto-applied. The arbiter filters and
-                    # recommends; on an addon that moves real money a human
-                    # signs off. Promote with --allow-unapproved --apply.
-                    print(f"  ARBITER RECOMMENDS SHIP - awaiting human sign-off.")
+                    # recommends; a human signs off. Same for a quorum-only
+                    # approval, where one reviewer never voted at all.
+                    if final == "ARBITER_SHIP":
+                        print("  ARBITER RECOMMENDS SHIP - awaiting human sign-off.")
+                    else:
+                        print(
+                            "  PANEL APPROVED ON QUORUM ONLY "
+                            f"({len(result.get('panel_partial_missing', []))} reviewer(s) never voted)"
+                            " - awaiting human sign-off."
+                        )
                     print(f"    review: {patch}")
-                    print(f"    promote: --resume-raw {art / f'r{rnd}_impl_raw.txt'} --allow-unapproved --apply")
+                    print(
+                        f"    promote: --resume-raw {art / f'r{last_round}_impl_raw.txt'} "
+                        "--allow-unapproved --apply"
+                    )
                 else:
                     print(f"  NOT APPLIED: verdict={final}. Patch for review: {patch}")
 

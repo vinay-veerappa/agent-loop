@@ -32,30 +32,57 @@ from typing import Any, Dict, List, Optional, Sequence
 from .profiles import Profile
 
 
+def _marker_path(repo: Path) -> Path:
+    return repo / "logs" / "agent_loop" / ".graph_mtime"
+
+
+def mark_graph_fresh(repo: Path) -> None:
+    """Record that the graph has been indexed as of now.
+
+    Nothing ever wrote this marker, so the freshness check compared every
+    source file against 0.0 and reported "stale" on every ticket forever --
+    a status line that is always the same carries no information.
+    """
+    path = _marker_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(time.time()), encoding="utf-8")
+
+
 def check_graph_freshness(repo: Path, profile: Profile, timeout: int = 60) -> str:
-    """Check whether the codebase-memory-mcp graph is fresh for this repo.
+    """Report whether the codebase-memory-mcp graph is fresh for this repo.
 
     Compares the mtime of the newest source file against a persisted marker.
-    Returns 'fresh', 'stale', 'no-project', or 'error: ...'.
+    Returns 'fresh', 'stale (...)', 'no-project', or 'error: ...'.
+
+    This REPORTS; it does not re-index. Re-indexing a large repo takes minutes,
+    and silently spending that before every ticket is not a decision this
+    function should make on the caller's behalf -- the returned string names the
+    command to run instead.
     """
     if not profile.graph_project:
         return "no-project"
     try:
-        newest_py = _newest_source_mtime(repo, profile)
-        if newest_py is None:
+        newest = _newest_source_mtime(repo, profile)
+        if newest is None:
             return "fresh"
 
-        marker_path = repo / "logs" / "agent_loop" / ".graph_mtime"
+        marker_path = _marker_path(repo)
+        last_indexed = 0.0
         if marker_path.exists():
             try:
                 last_indexed = float(marker_path.read_text(encoding="utf-8").strip())
             except (ValueError, OSError):
                 last_indexed = 0.0
-        else:
-            last_indexed = 0.0
 
-        if newest_py > last_indexed:
-            return "stale"
+        if newest > last_indexed:
+            if not last_indexed:
+                return (
+                    f"never indexed by this loop (project {profile.graph_project!r}); "
+                    "graph context may be stale. Re-index via codebase-memory-mcp "
+                    "index_repository, then call context.mark_graph_fresh(repo)"
+                )
+            age = (newest - last_indexed) / 3600.0
+            return f"stale ({age:.1f}h of edits since the last recorded index)"
         return "fresh"
     except Exception as exc:
         return f"error: {exc}"
@@ -219,32 +246,53 @@ def _build_context_via_mcp(regions: Sequence[Any], profile: Profile) -> str:
     return "\n".join(parts) if parts else ""
 
 
+_ANCHOR_KEYWORDS = {
+    "if", "for", "while", "try", "with", "else", "elif", "switch", "case",
+    "return", "using", "namespace", "public", "private", "protected", "internal",
+    "static", "async", "await", "override", "virtual", "sealed", "abstract",
+    "void", "new", "lock", "class", "struct", "def", "func", "fn", "function",
+}
+
+
 def _extract_names_from_region(region: Any) -> List[str]:
-    """Extract function/class names from a region's anchor text."""
-    anchor = getattr(region, "anchor", "")
-    # Common patterns:
-    # "def function_name(" -> function_name
-    # "class ClassName:" -> ClassName
-    # "for x in y:" -> skip (not a function)
-    # "if condition:" -> skip
-    import re
-    names = []
-    # def pattern
-    m = re.match(r"(?:async\s+)?def\s+(\w+)", anchor)
+    """Extract the symbol name(s) a region's anchor refers to.
+
+    Language-neutral. The predecessor understood only `def`/`class` and
+    otherwise passed the whole anchor through as a "name", so a C# anchor like
+    `private void OnOrderUpdate(` was sent to the graph as the literal string
+    "private void OnOrderUpdate" -- which matches nothing, so every graph query
+    on the NT8 profile was wasted.
+    """
+    anchor = (getattr(region, "anchor", "") or "").strip()
+    if anchor.startswith("re:"):
+        anchor = anchor[3:]
+    if not anchor:
+        return []
+
+    names: List[str] = []
+    # Declaration keyword forms: def/class (Python), func/fn/function (Go, Rust, JS).
+    m = re.search(r"(?:async\s+)?(?:def|class|struct|func|fn|function)\s+(\w+)", anchor)
     if m:
         names.append(m.group(1))
-    # class pattern
-    m = re.match(r"class\s+(\w+)", anchor)
-    if m:
+    # Signature form: the identifier immediately before "(" is the callee name,
+    # whatever modifiers and return type precede it. An optional generic
+    # parameter list sits between them (`TryCopy<T>(`).
+    m = re.search(r"(\w+)\s*(?:<[^<>()]*>)?\s*\(", anchor)
+    if m and m.group(1) not in _ANCHOR_KEYWORDS:
         names.append(m.group(1))
-    # If no def/class, use the anchor itself as a search term
-    if not names and anchor:
-        # Remove common keywords and punctuation
-        clean = re.sub(r"^(for|if|while|try|with|else|elif)\s+", "", anchor)
-        clean = clean.split("(")[0].split(":")[0].strip()
-        if clean and not clean.startswith("#") and len(clean) < 50:
-            names.append(clean)
-    return names
+    if not names:
+        # A bare symbol anchor (a field, a constant). Keep plausible
+        # identifiers only; single letters come from regex escapes, not code.
+        names += [
+            tok for tok in re.findall(r"[A-Za-z_]\w*", anchor)
+            if tok not in _ANCHOR_KEYWORDS and len(tok) >= 3
+        ]
+
+    out: List[str] = []
+    for n in names:
+        if n not in out and len(n) < 50:
+            out.append(n)
+    return out
 
 
 def _build_region_context(repo: Path, region: Any, profile: Profile) -> str:

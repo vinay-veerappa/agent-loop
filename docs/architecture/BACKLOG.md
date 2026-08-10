@@ -4,21 +4,65 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: after Phase 9 (learning feedback + context bloat control).
+**Last updated**: after the 2026-08-10 full-package review.
 
 ## STATUS
 
-All 17 backlog items addressed + Phase 9 complete. 77/77 tests pass.
-Tagged `v0.1.0`.
+All 17 backlog items addressed + Phase 9 complete + review fixes applied.
+129/129 tests pass. `v0.1.0` is tagged but predates Phase 9 and these fixes.
 
-### Phase 9: Learning feedback + context bloat control
+### 2026-08-10 review — 22 defects found and fixed
 
-| Item | Status |
-|---|---|
-| Settled-decisions injection capped at 20 most recent | Done |
-| Learning feedback store (save_feedback / build_learning_context) | Done |
-| Path traversal fix in read_file / edit_file | Done |
-| check_graph_freshness compares mtime against marker | Done |
+A line-by-line review of all 6,001 lines. The suite was green throughout,
+which is the finding behind the findings: it exercised the state machine
+against fakes and never crossed a boundary — a real pytest summary, a real
+`git stash`, a real second language, a real promote, a real install.
+
+Blocking:
+
+| Defect | Where | Fix |
+|---|---|---|
+| `--mode test` stashed the live tree and never restored it (`_git` returns a str; the 2-tuple unpack raised before `stash pop`), then exited 0 | `test_mode.py:125` | baseline verified in a throwaway worktree; live tree never touched |
+| The pytest parser read `17 passed, 1 warning` and `15 passed, 2 skipped` as "runner never finished", so any warning aborted the ticket at baseline capture | `gates.py:206` | counts read by keyword from the summary line; `errors` tracked separately |
+| `python-tvdownloadohlc` could not run one ticket: `test_cmd` produced 15 collection errors and `build_cmd` named a file that does not exist | consumer profile | green suites (64 pass, 1 frozen failure); `build_cmd` uses `{files}` |
+| `--mode review --review-verify` raised AttributeError on `TestOutcome.reached_results` | `cli.py:67` | `.ran`; build/test steps skipped when the profile has no command |
+| Developer mode had no protected-path gate and edited the live tree against an empty baseline; `--apply` was accepted and ignored | `developer/` | worktree + frozen baseline + gate 0 in `_edit_file`; `--apply` promotes |
+
+High:
+
+| Defect | Where | Fix |
+|---|---|---|
+| Phase 4a/4b compaction folded away the implement prompt — the ticket, spec and region source — then asked for "ALL blocks in full" | `compaction.py` | `pin_count()` pins system + implement prompt through both phases |
+| Compaction truncated the candidate under revision (the newest exchange) | `compaction.py:68` | newest exchange kept verbatim |
+| The 4b summary was a second `user` turn, giving `[system, user, user]` → non-retryable Anthropic 400 | `compaction.py` | summary emitted as an `assistant` turn; alternation asserted by test |
+| Learning feedback stored `ruling.reason` as the finding text, every severity as `BLOCKER`, and `"?"` as the author | `loop.py:739` | rulings joined back to `all_findings` by index |
+| Reviewer token accounting was permanently zero behind a `hasattr` guard on fields `Vote` never had | `loop.py:650` | `Vote.input_tokens/output_tokens`, populated in `review_panel` |
+| The arbiter prompt was hardcoded to NinjaTrader; its UPHELD bar ("loses money or leaves a position unprotected") is unmeetable elsewhere, so the arbiter rejected everything and recommended SHIP | `arbiter.py:39` | `Profile.arbiter_rules`; generic default; NT8 text moved to its profile |
+| `loop.py` hardcoded ` ```csharp `; `extract_test_sources` was C#-only, so Python reviewers saw no acceptance tests | `loop.py` | `Profile.fence`, `regions.extract_named_block` (indent + decl) |
+| `effective_settled` was computed, printed, and then discarded — the settled store was never read back into a prompt | `loop.py:452` | passed to the review prompt and the arbiter |
+
+Medium / minor: `promote()` overwrote uncommitted work; a quorum-only panel was
+recorded as a unanimous approval; `ModelRegistry` overwrote by role so a
+two-family panel collapsed to one member; `cost_summary` priced input at the
+output rate; ollama `num_ctx` (32768) was smaller than the requested output
+budget (48000); the developer tool-call protocol was never documented to the
+model while out-of-phase calls were dropped silently; `any()` made a
+multi-ticket run exit 0 when one of four tickets passed; `check_graph_freshness`
+reported "stale" forever because nothing wrote the marker; the graph name
+extractor understood only `def`/`class`, so every NT8 query was junk;
+`build_context_slice` ran twice per round; the arbiter never received the graph
+context Phase 3 promised it; `save_feedback` rewrote the whole store per
+finding; `expect_green` matched substrings so `test_foo` was satisfied by
+`test_foo_bar`; `regions.apply` normalised line endings and added trailing
+newlines; path containment used `str.startswith`; the README and the `Profile`
+docstring recommended `block_comment=("#",)` for Python, which refuses every
+Python file containing a comment.
+
+Deliberately NOT changed (needs a decision):
+
+- `logs/agent_loop/` is written into the consumer repo. Fine for tvDownloadOHLC, awkward for a library.
+- `guard_unsupported_syntax` still refuses any C# file containing `/*`. Correct but coarse; a real parser (tree-sitter) is the fix.
+- The `v0.1.0` tag predates Phase 9 and these fixes, and `requirements.txt` in tvDownloadOHLC pins it. Needs a new tag + push.
 
 ### Note on graph re-index for tvDownloadOHLC
 

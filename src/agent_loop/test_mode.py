@@ -119,21 +119,43 @@ def run_test(
     test_path.write_text(test_code, encoding="utf-8")
     print(f"  wrote {len(test_code)} chars of tests to {test_file}")
 
-    # Verify tests fail at baseline (the test-first check)
+    result["test_code"] = test_code
+
+    # Verify the new tests fail at baseline (the test-first check).
+    #
+    # This used to `git stash` the LIVE repo, run the suite, and `git stash pop`.
+    # Three things were wrong with that, and the third was destructive: a stash
+    # hides the user's unrelated work in progress; `_git` returns a string, so
+    # the two-value unpack raised ValueError BEFORE the pop ran and the stash
+    # was never restored; and the caller reported success anyway because
+    # test_code was set. A throwaway worktree gets the same clean baseline
+    # without touching the live tree at all -- which is what workspace.py is for.
     if profile.test_cmd:
         try:
-            _, test_output = workspace._git(repo, "stash")  # stash any changes
-            outcome = gates.run_tests(profile.test_cmd, repo)
-            workspace._git(repo, "stash", "pop", check=False)
-            result["tests_pass_baseline"] = outcome.ran and not outcome.failures
-            if outcome.failures:
-                print(f"  [test-first] {len(outcome.failures)} test(s) failing at baseline (correct)")
+            with workspace.open_workspace(repo, f"{tid}-testgen") as ws:
+                dest = ws.root / test_file
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(test_code, encoding="utf-8")
+                outcome = gates.run_tests(profile.test_cmd, ws.root)
+            if not outcome.ran:
+                result["error"] = (
+                    "cannot verify the generated tests: the runner produced no "
+                    "parseable result summary at baseline"
+                )
+                print(f"  [test-first] WARNING: {result['error']}")
             else:
-                print(f"  [test-first] WARNING: tests pass at baseline (they should fail)")
+                failing = [f for f in outcome.failures if any(
+                    gates.names_match(t, f) for t in (ticket.get("expect_green") or [])
+                )] or sorted(outcome.failures)
+                result["tests_pass_baseline"] = not outcome.failures
+                if outcome.failures:
+                    print(f"  [test-first] {len(failing)} test(s) failing at baseline (correct)")
+                else:
+                    print("  [test-first] WARNING: tests pass at baseline (they should fail)")
         except Exception as exc:
-            result["error"] = f"test verification failed: {exc}"
+            result["error"] = f"test verification failed: {type(exc).__name__}: {exc}"
+            print(f"  [test-first] {result['error']}")
 
-    result["test_code"] = test_code
     return result
 
 

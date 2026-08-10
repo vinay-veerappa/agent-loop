@@ -145,13 +145,27 @@ class Workspace:
         dest.write_text(d, encoding="utf-8")
         return dest
 
-    def promote(self, files: Sequence[str]) -> List[str]:
+    def promote(self, files: Sequence[str], force: bool = False) -> List[str]:
         """Copy approved files back into the live repo.
 
         Deliberately a plain file copy rather than a merge or cherry-pick: the
         loop makes no commits in the worktree, so there is nothing to cherry-
         pick, and the user stages and commits the result themselves.
+
+        A plain copy is also how the hazard this module exists to remove gets
+        back in: overwriting a live file that has uncommitted edits destroys
+        them exactly as `git checkout --` did. So promotion refuses a target
+        the human has unsaved work in, and says what to do about it.
         """
+        if not force:
+            dirty = [f for f in files if self._live_is_dirty(f)]
+            if dirty:
+                raise WorkspaceError(
+                    "refusing to promote over uncommitted changes in: "
+                    + ", ".join(dirty)
+                    + ". The patch would overwrite work that is not in git. "
+                    "Commit or stash those files first, then promote."
+                )
         moved: List[str] = []
         for f in files:
             src = self.root / f
@@ -162,6 +176,11 @@ class Workspace:
             shutil.copy2(src, dst)
             moved.append(f)
         return moved
+
+    def _live_is_dirty(self, path: str) -> bool:
+        """Does the LIVE repo have uncommitted changes to this path?"""
+        out = _git(self.repo, "status", "--porcelain", "--", path, check=False)
+        return bool(out.strip())
 
 
 def list_stale(repo: Path) -> List[str]:
@@ -226,10 +245,22 @@ def capture_baseline(ws: Workspace, test_cmd: str, parse_tests, timeout: int = 9
         )
     _, out = ws.run(test_cmd, timeout=timeout)
     outcome = parse_tests(out)
+    # Errors first: an errored run DID produce a summary, so reporting it as
+    # "no parseable summary" would send the reader looking for the wrong fault.
+    # A collection or fixture error never reported a verdict on the tests it did
+    # not reach, and freezing that as "expected" would let the patch inherit a
+    # broken suite as its success criterion.
+    if getattr(outcome, "errors", 0):
+        raise WorkspaceError(
+            f"baseline test run reported {outcome.errors} suite-level error(s); "
+            "the test command is broken independently of any patch, so it cannot "
+            f"establish a baseline. Fix the suite first. Last output:\n{outcome.raw[-1500:]}"
+        )
     if not outcome.ran:
         raise WorkspaceError(
-            "baseline test run did not reach a RESULTS line -- cannot establish "
-            "which failures are expected, so no regression check is possible"
+            "baseline test run produced no parseable result summary -- cannot "
+            "establish which failures are expected, so no regression check is "
+            f"possible. Last output:\n{outcome.raw[-1500:]}"
         )
     ws.baseline = set(outcome.failures)
     ws.baseline_note = f"{outcome.passed} passed, {outcome.failed} failed at {ws.base_commit[:8]}"
