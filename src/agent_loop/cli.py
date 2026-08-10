@@ -150,6 +150,33 @@ def _test(args, profile, implementer) -> int:
     return 0 if result.get("test_code") else 1
 
 
+def _developer(args, profile, implementer, reviewers, arbiter) -> int:
+    """Developer mode: defect -> autonomous localization + edit -> diff."""
+    from .developer.driver import run_developer
+
+    if not args.defect:
+        print("--mode developer needs --defect (the defect description)")
+        return 2
+
+    result = run_developer(
+        Path("."),
+        args.defect,
+        profile,
+        implementer,
+        reviewers,
+        arbiter_model=arbiter,
+        max_turns=args.max_rounds * 5,  # developer mode needs more turns
+        apply=args.apply,
+    )
+    print(f"\n==== DEVELOPER RESULT ====")
+    print(f"verdict: {result.get('verdict', '?')}")
+    if result.get("patch"):
+        print(f"patch: {result['patch']}")
+    if result.get("summary"):
+        print(f"summary: {result['summary']}")
+    return 0 if result.get("verdict") == "DONE" else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m agent_loop")
     ap.add_argument("--tickets", default="tickets.json")
@@ -186,7 +213,7 @@ def main(argv=None) -> int:
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
 
     # ---- modes -----------------------------------------------------------
-    ap.add_argument("--mode", choices=("patch", "review", "plan", "test"), default="patch")
+    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer"), default="patch")
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
     ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
@@ -248,6 +275,9 @@ def main(argv=None) -> int:
 
     if args.mode == "test":
         return _test(args, profile, implementer)
+
+    if args.mode == "developer":
+        return _developer(args, profile, implementer, reviewers, arbiter)
 
     spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
     tickets = spec["tickets"]

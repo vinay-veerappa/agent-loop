@@ -125,7 +125,10 @@ def run_developer(
             break
 
         # Check for tool calls in the response
-        tool_calls = _parse_tool_calls(raw, available_tools)
+        # Note: edit_file is always available (not filtered by phase) so the
+        # LLM can transition from explore to edit. The phase transition
+        # happens when edit_file is first called, not when it's filtered.
+        tool_calls = _parse_tool_calls(raw, available_tools + ["edit_file"])
         if not tool_calls:
             # No tool calls and not done -- ask the LLM to continue
             history += [
@@ -138,13 +141,21 @@ def run_developer(
         tool_results = []
         for tc in tool_calls:
             print(f"           [{tc['name']}] {tc.get('args', {})}")
-            tc_result = execute_tool(tc["name"], tc.get("args", {}), repo, profile)
-            # Check file scope for edit_file
+            # Check file scope for edit_file BEFORE executing (the edit is
+            # irreversible once applied; the scope check must prevent it).
             if tc["name"] == "edit_file":
                 path = tc.get("args", {}).get("path", "")
                 if not _check_file_scope(path, profile):
                     tc_result = f"ERROR: file {path} is outside the allowed scope ({', '.join(profile.file_scope_whitelist) or 'all'})"
                     print(f"           [scope] REJECTED: {path}")
+                    tool_results.append(f"[{tc['name']} result]: {tc_result[:2000]}")
+                    # Transition phase even on rejection (the LLM tried to edit)
+                    if phase == "explore":
+                        phase = "edit"
+                        available_tools = EDIT_TOOLS
+                        print(f"           [phase] explore -> edit")
+                    continue
+            tc_result = execute_tool(tc["name"], tc.get("args", {}), repo, profile)
             tool_results.append(f"[{tc['name']} result]: {tc_result[:2000]}")
 
             # Transition from explore to edit phase when edit_file is first called
