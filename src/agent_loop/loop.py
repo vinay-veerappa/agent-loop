@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import arbiter, gates, profiles, regions, workspace
+from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
 from .providers import Completion, ProviderError, chat
 
@@ -528,6 +529,16 @@ def run_ticket(
                 print(f"  round {rnd}: resumed from {Path(resume_raw).name}")
             else:
                 try:
+                    # Phase 4: compact history before the implementer call.
+                    # Prior rounds' verbose outputs are pruned to truncation
+                    # markers; if the total still exceeds the budget, a
+                    # mechanical summary replaces all prior rounds.
+                    if rnd > 1:
+                        before = history_token_count(history)
+                        history = compact_history(history, rnd, profile)
+                        after = history_token_count(history)
+                        if after < before:
+                            print(f"           [compaction] {before} -> {after} tokens (pruned {before - after})")
                     # Implementer keeps thinking (it is planning a patch, not
                     # filling a template) but needs headroom: kimi spent 104k
                     # chars reasoning and still emitted 27.9k output tokens.
