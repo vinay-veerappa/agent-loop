@@ -4,7 +4,7 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: after phase 8 completion (commit `b5d6bf4`).
+**Last updated**: after backlog items 2.1, 1.4, 1.3, 2.5, 2.3, 2.4, 2.2, 5.1, 5.2, 5.3 (commit `f865ea7`).
 
 ---
 
@@ -31,60 +31,27 @@ section or decision log entry that motivates it.
   functions. Rank by structural distance, truncate to `context_token_budget`.
   The cache-file design can remain as a fallback for offline operation.
 
-### 1.3 Phase 4b LLM summarization
-- **Where**: `src/agent_loop/compaction.py:49`
-- **Status**: mechanical only — uses `_mechanical_summary()`, not a
-  compactor model from the registry
-- **Plan ref**: §3 Phase 4b, §9.3 token efficiency rule 2
-- **Effort**: small
-- **Fix**: when `history_token_count > round_input_token_budget`, call the
-  compactor model from `DEFAULT_REGISTRY` (the "compactor" role) to
-  summarize prior rounds. Fall back to `_mechanical_summary()` when no
-  compactor is registered or the call fails.
+### 1.3 Phase 4b LLM summarization — DONE (commit `072241a`)
+- **Where**: `src/agent_loop/compaction.py`
+- **Status**: done — `_llm_summary()` calls the compactor model from the registry, falls back to `_mechanical_summary()`
 
-### 1.4 PANEL_REJECT signal
-- **Where**: `src/agent_loop/loop.py` (arbiter call site)
-- **Status**: not implemented — REJECT goes to arbiter with the same prompt
-  as REVISE, no "rethink, don't tweak" distinction
-- **Plan ref**: §2 Issue 5, §4 "Not states (internal signals)"
-- **Effort**: small
-- **Fix**: when the panel's worst verdict is REJECT, pass a flag to the
-  arbiter prompt builder indicating the panel rejected the approach (not
-  just the details). The arbiter's feedback to the implementer should say
-  "rethink the approach" not "fix this line." The terminal state is
-  whatever the arbiter recommends — PANEL_REJECT is a signal, not a state.
+### 1.4 PANEL_REJECT signal — DONE (commit `072241a`)
+- **Where**: `src/agent_loop/loop.py` (feedback to implementer)
+- **Status**: done — REJECT feedback says "RETHINK THE APPROACH" not "fix these lines"
 
 ---
 
 ## 2. Missing wiring (components built but not connected)
 
-### 2.1 Developer mode panel + arbiter
+### 2.1 Developer mode panel + arbiter — DONE (commit `072241a`)
 - **Where**: `src/agent_loop/developer/driver.py`
-- **Status**: not wired — the driver runs the gate ladder (compile, test)
-  but does NOT run the panel + arbiter after the edit phase. The docstring
-  says it should; the code doesn't.
-- **Plan ref**: §5 Developer mode spec, "Panel + arbiter: Same."
-- **Effort**: medium
-- **Fix**: after the edit phase completes (DONE) and the gate ladder
-  passes, build a review prompt from the diff and call `review_panel()`.
-  If the panel does not unanimously approve, call `arbiter.adjudicate()`.
-  The review prompt for Developer mode uses the diff (not regions) — same
-  as `review_mode.py` but scoped to the files the LLM edited.
+- **Status**: done — the driver now runs `review_panel()` after the gate ladder, then `arbiter.adjudicate()` if the panel does not unanimously approve
 
-### 2.2 Reviewer prompt graph context
+### 2.2 Reviewer prompt graph context — DONE (commit `072241a`)
 - **Where**: `src/agent_loop/loop.py` (review prompt builder)
-- **Status**: not wired — graph context is injected into the implementer
-  prompt only (by design), but the reviewer prompt should also get
-  callers/types context to check "will this break callers?"
-- **Plan ref**: §3 Phase 3, decision log "Context injected into
-  implementer prompt only, not reviewer/arbiter"
-- **Effort**: medium
-- **Fix**: inject a smaller context slice (callers + types only, not
-  callees — the reviewer doesn't need to know what the code calls, it
-  needs to know what depends on it) into `build_review_prompt()`.
-  Budget: half of `context_token_budget` (default 1500 tokens).
+- **Status**: done — reviewer prompt gets a smaller context slice (half budget)
 
-### 2.3 Plan mode settled-decisions injection
+### 2.3 Plan mode settled-decisions injection — DONE (commit `072241a`)
 - **Where**: `src/agent_loop/plan_mode.py`
 - **Status**: not wired — plan mode doesn't call `inject_settled()` to
   include prior adjudication precedents in the plan review
@@ -93,7 +60,7 @@ section or decision log entry that motivates it.
 - **Fix**: call `inject_settled(profile.settled, repo)` at the start of
   `run_plan()` and pass the effective settled list to the arbiter.
 
-### 2.4 Plan mode compaction
+### 2.4 Plan mode compaction — DONE (commit `072241a`)
 - **Where**: `src/agent_loop/plan_mode.py`
 - **Status**: not wired — plan mode doesn't call `compact_history()`
   between rounds
@@ -102,7 +69,7 @@ section or decision log entry that motivates it.
 - **Fix**: call `compact_history(history, rnd, profile)` before each
   implementer call in `run_plan()`, same as `loop.py` does.
 
-### 2.5 Per-role token accounting in ledger
+### 2.5 Per-role token accounting in ledger — DONE (commit `072241a`)
 - **Where**: `src/agent_loop/loop.py` (ledger append)
 - **Status**: partial — the ledger records `cost_usd` per ticket but not
   per-role token counts (implementer/reviewer/arbiter/compactor) as
@@ -152,23 +119,14 @@ section or decision log entry that motivates it.
 
 ## 5. Hardening / production readiness
 
-### 5.1 `selftest.py` runs against the new package
-- **Status**: not verified — the selftest was copied from tvDownloadOHLC
-  and may reference old paths (`scripts/agent_loop/` instead of
-  `src/agent_loop/`)
-- **Effort**: small
-- **Fix**: run `python -m agent_loop.selftest` and fix any path issues
+### 5.1 `selftest.py` runs against the new package — DONE (commit `f865ea7`)
+- **Status**: done — path references fixed, test profile added, runs without crashing (2/11 pass; the rest need C# tickets)
 
-### 5.2 `verify_backfill_reverts.py` runs against the new package
-- **Status**: not verified — same as above
-- **Effort**: small
+### 5.2 `verify_backfill_reverts.py` runs against the new package — DONE (commit `f865ea7`)
+- **Status**: done — no path references found; no changes needed
 
-### 5.3 `review_mode.py` uses the generalized profile
-- **Status**: not verified — may still reference hardcoded C# patterns
-  instead of the profile's `lock_name`, `risk_calls`, etc.
-- **Effort**: small
-- **Fix**: audit `review_mode.py` for any remaining hardcoded patterns
-  and replace with profile field references
+### 5.3 `review_mode.py` uses the generalized profile — DONE (commit `f865ea7`)
+- **Status**: done — audited, no hardcoded C# patterns found
 
 ### 5.4 `populate_graph_context.py` queries live MCP
 - **Where**: `scripts/populate_graph_context.py`
