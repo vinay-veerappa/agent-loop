@@ -470,7 +470,19 @@ def run_ticket(
         for r in regs:
             print(f"    region {r.id:<24} {r.file} lines {r.lines_1based}")
 
+        # Phase 3: build graph-augmented context slice for the prompts.
+        # This is passive injection (Aider-style) -- the LLM receives richer
+        # context but never calls graph tools. When the graph cache is empty
+        # or the profile has no graph_project, this returns "".
+        # The cache lives in the MAIN repo (not the worktree) because the
+        # graph indexes the main repo's code.
+        context_slice = build_context_slice(repo, regs, profile)
+        if context_slice:
+            print(f"  [graph] injected {len(context_slice)} chars of context")
+
         impl_prompt = build_implement_prompt(ticket, regs)
+        if context_slice:
+            impl_prompt += f"\n\n## Graph context (from code knowledge graph)\n{context_slice}"
         if orchestrator_note:
             impl_prompt += (
                 "\n\n## ORCHESTRATOR DIRECTIVE (overrides the reviewer if they conflict)\n"
