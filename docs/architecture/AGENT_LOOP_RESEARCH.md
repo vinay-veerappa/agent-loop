@@ -22,7 +22,8 @@ status: proven) and is not re-described here.
 
 ## 1. Executive summary
 
-**Where we sit.** The agent loop in `scripts/agent_loop/` is a **phased, scaffold-driven
+**Where we sit.** The agent loop in `src/agent_loop/` (this repo, `agent-loop`)
+is a **phased, scaffold-driven
 patch harness** with a five-rung gate ladder, a concurrent adversarial panel, and an adjudicating
 arbiter that filters false-positive findings before they reach the implementer. Against the
 13-harness taxonomy it sits in the same family as AutoCodeRover (phased, scaffold-driven) but

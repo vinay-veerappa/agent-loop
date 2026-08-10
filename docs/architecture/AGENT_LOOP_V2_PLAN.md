@@ -1,4 +1,4 @@
-# Agent Loop v2 — Execution Plan
+﻿# Agent Loop v2 â€” Execution Plan
 
 **Purpose**: turn the research in [AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) into a
 concrete execution plan. The current loop is documented in
@@ -6,13 +6,30 @@ concrete execution plan. The current loop is documented in
 here. This doc covers: the current state machine, the issues found, the eight execution
 phases, the new states, the Developer mode spec, and the mode pipeline.
 
-**Status**: draft for review. No implementation has started.
+**Status**: phase 1 in progress. The bootstrapping infrastructure is in place:
+
+| Component | Status | Location |
+|---|---|---|
+| Self-profile (Python) | Done | `profiles/self.py` |
+| Acceptance tests (7 issues) | 5 fail, 2 pass | `tests/acceptance/test_phase1_state_machine.py` |
+| Tickets (5, test-first) | Done | `tickets/phase1_state_machine.json` |
+| Indent-based region finder | Done | `src/agent_loop/regions.py` `kind="indent"` |
+| Model registry | Done | `src/agent_loop/models.py` |
+| Language-agnostic profiles | Done | `src/agent_loop/profiles.py` |
+
+The loop can now run tickets against its own `src/agent_loop/` source. The 5 failing
+acceptance tests define the work for phase 1.
+
+**Repo**: this package was extracted from `tvDownloadOHLC/src/agent_loop/` into the
+standalone `agent-loop` repo at `github.com/vinay-veerappa/agent-loop`. The package lives in
+`src/agent_loop/`; consumers (e.g. tvDownloadOHLC) install it as a pip dependency and
+register their own profiles.
 
 ---
 
 ## 1. Current state machine
 
-The loop in `scripts/agent_loop/loop.py:480-665` runs this flow per round:
+The loop in `src/agent_loop/loop.py` runs this flow per round:
 
 ```
 TICKET ENTRY
@@ -84,7 +101,7 @@ line in the round loop, before the implement step.
 
 **Symptom**: `loop.py:602` guards with `if arbiter_model and all_findings`. If the arbiter is
 unreachable (`adj.ok == False`), the loop prints a warning (`loop.py:620`) and falls through to
-feeding ALL findings back — exactly the T2 failure mode the arbiter exists to prevent.
+feeding ALL findings back â€” exactly the T2 failure mode the arbiter exists to prevent.
 
 **Root cause**: no state for arbiter-unreachable. The loop silently reverts to pre-arbiter
 behavior (every finding blocks).
@@ -108,7 +125,7 @@ and panel returned REVISE).
 **Symptom**: `result["applied"] = True` is set whenever `apply` and (`APPROVE` or
 `allow_unapproved`). So `MAX_ROUNDS_EXHAUSTED + applied=true` is legal and means "we applied
 a patch that was never approved." The ledger records this faithfully, but `cli.py:214` only
-returns exit 0 on `final_verdict == "APPROVE"` — so `ARBITER_SHIP` with `--apply` returns exit 1,
+returns exit 0 on `final_verdict == "APPROVE"` â€” so `ARBITER_SHIP` with `--apply` returns exit 1,
 which is wrong.
 
 **Fix**: split `applied` into `applied_approved` (final was APPROVE) and
@@ -118,12 +135,12 @@ which is wrong.
 ### Issue 5: PANEL_REJECT gets the same path as REVISE
 
 **Symptom**: if the panel's worst verdict is REJECT (not just REVISE), the loop still goes to
-arbitration. But REJECT is stronger — a reviewer thinks the patch is fundamentally wrong, not
+arbitration. But REJECT is stronger â€” a reviewer thinks the patch is fundamentally wrong, not
 that it needs tweaks. There is no short-circuit; a REJECT gets the same REVISE feedback path
 as a dissenting REVISE.
 
 **Fix**: add `PANEL_REJECT` state. When the panel's worst verdict is REJECT, the arbiter still
-runs (preserving the moat — detection separated from adjudication) but with a "rethink, don't
+runs (preserving the moat â€” detection separated from adjudication) but with a "rethink, don't
 tweak" prompt that tells the implementer the approach is fundamentally wrong. If the arbiter
 upholds a REJECT-level finding, the feedback is "rethink the approach" not "fix this line."
 This keeps adjudication in the loop for the strongest negative signal rather than removing it.
@@ -140,7 +157,7 @@ disk in `rN_impl_raw.txt`; the worktree should be clean.
 ### Issue 7: No quorum for partial panels
 
 **Symptom**: `valid = all(v.counted for v in votes) and len(votes) == len(reviewers)`. A 2-of-3
-panel where the two who answered both APPROVE is `valid=False` → `PANEL_UNREACHABLE` → break.
+panel where the two who answered both APPROVE is `valid=False` â†’ `PANEL_UNREACHABLE` â†’ break.
 But a 2-of-3 unanimous APPROVE is different from a 0-of-3 panel.
 
 **Fix**: add `PANEL_PARTIAL` state with quorum logic. If `>= ceil(2/3 * len(reviewers))`
@@ -151,13 +168,13 @@ answered and all are APPROVE, proceed as APPROVE. If quorum not met, break with
 
 ## 3. The eight execution phases
 
-**Phases are numbered in execution order.** The sequencing rationale in §8 explains why this
+**Phases are numbered in execution order.** The sequencing rationale in Â§8 explains why this
 order. Dependencies: phase N depends on all phases before it unless noted. Phase 7 (active
 tools) can be built in parallel with phases 4-6 but is not useful until phase 8.
 
 ### Phase 1: Fix the state machine
 
-Fix all 7 issues from §2. Pure correctness, no new capability. Adds 4 new states (see §4).
+Fix all 7 issues from Â§2. Pure correctness, no new capability. Adds 4 new states (see Â§4).
 Touches `loop.py`, `cli.py`.
 
 **Exit criteria**: T4/T5 artifacts re-run produces a `result.json` that matches the on-disk
@@ -166,19 +183,19 @@ round artifacts. Arbiter-unreachable produces `ARBITER_DEADLOCK`, not silent fal
 
 ### Phase 2: Re-index the graph
 
-The `codebase-memory-mcp` graph is stale — it indexes `ollama_patch_loop.py` (the predecessor),
+The `codebase-memory-mcp` graph is stale â€” it indexes `ollama_patch_loop.py` (the predecessor),
 not the current `loop.py`/`arbiter.py`/`gates.py`/`review_mode.py`. Re-index the current tree.
 
 **Graph freshness strategy**: lazy on first use. At loop start, check graph freshness (mtime
-of latest indexed file vs latest `.py` in `scripts/agent_loop/`); if stale, re-index via
+of latest indexed file vs latest `.py` in `src/agent_loop/`); if stale, re-index via
 `codebase-memory-mcp index_repository`. Alternative: git hook on commit that touches
-`scripts/agent_loop/*.py` or `scripts/ninjatrader/addons/*.cs`.
+`src/agent_loop/*.py` or `scripts/ninjatrader/addons/*.cs`.
 
 **Startup latency**: `index_repository` across 39,600+ nodes takes 15-45 seconds. Running this
 inline at loop startup on stale detection could feel unresponsive. Mitigation: output clear
 CLI progress feedback during re-index (`[Graph] Indexing codebase changes before ticket
 start...` with a spinner or elapsed-time counter). If the latency proves unacceptable in
-practice, the mtime check can run asynchronously — start the re-index in a background thread
+practice, the mtime check can run asynchronously â€” start the re-index in a background thread
 and let the loop proceed with the stale graph for the first round (the graph is an enhancement,
 not a gate; a stale graph is better than no graph and better than a 45-second startup wait).
 The preferred path is synchronous-with-progress; async is the fallback.
@@ -200,14 +217,14 @@ context. Matches our 0-tools pattern.
 
 **Token budget**: high-centrality functions (e.g., `OnBarUpdate` or `OnExecution` in C# AddOns,
 or core profiler handlers) have dozens of callers/callees. Passively dumping full AST
-traversals could easily consume 20K+ tokens per prompt. Implement a strict token cap — max
-3,000 tokens for injected graph context per prompt — using PageRank/usage frequency ranking
+traversals could easily consume 20K+ tokens per prompt. Implement a strict token cap â€” max
+3,000 tokens for injected graph context per prompt â€” using PageRank/usage frequency ranking
 to truncate low-relevance callers before injection. The cap is a profile setting
 (`context_token_budget`, default 3000) so it can be tuned per language/domain.
 
-**How**: a new `context.py` module in `scripts/agent_loop/` that takes the regions and returns
+**How**: a new `context.py` module in `src/agent_loop/` that takes the regions and returns
 a ranked context slice. Uses `codebase-memory-mcp trace_call_path`, `search_graph`,
-`get_code_snippet`. These are **scaffold-side queries, not LLM-callable tools** — the loop
+`get_code_snippet`. These are **scaffold-side queries, not LLM-callable tools** â€” the loop
 calls the graph MCP directly and injects the results into the implementer/reviewer/arbiter
 prompts as context. The LLM never calls graph tools; it receives richer context. The slice is
 added to `build_implement_prompt` and `build_review_prompt`.
@@ -217,27 +234,27 @@ callers of `OnExecution` and the tests that cover it, without any LLM tool calls
 
 **Implementation reference**: Aider's PageRank repo map (`github.com/Aider-AI/aider`,
 `aider/repomap.py:365-574`) is the reference for the ranking algorithm. Key patterns: (1)
-tree-sitter tags → NetworkX dependency graph → PageRank centrality; (2) identifiers
+tree-sitter tags â†’ NetworkX dependency graph â†’ PageRank centrality; (2) identifiers
 mentioned in the conversation get 10x boost, chat files 50x; (3) binary search fills the
 token budget in rank order. We do not adopt Aider's tree-sitter (we already have
-`codebase-memory-mcp` with its own graph); we borrow the ranking idea — weight the callees,
+`codebase-memory-mcp` with its own graph); we borrow the ranking idea â€” weight the callees,
 callers, tests, and types by their structural distance from the regions being edited. See
-also [AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) §6.3.
+also [AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) Â§6.3.
 
 ### Phase 4: Compaction (OpenCode two-phase)
 
 Add round-level history pruning so long tickets do not crash or degrade.
 
-**Phase 4a — prune verbose old outputs above a token threshold**: after round N, for each
+**Phase 4a â€” prune verbose old outputs above a token threshold**: after round N, for each
 prior round's implementer output, reviewer findings, and build/test logs that exceed a token
 threshold (e.g., 5K tokens per artifact), replace the raw text with truncation markers that
 preserve per-finding structure (reviewer name, finding severity, one-line summary, arbiter
-ruling) — not just aggregate counts. For example: "[round 2: glm-5.2 APPROVE(0);
-deepseek-v4-pro REVISE(4): #1 [BLOCKER] OnExecution lock-scope — UPHELD; #2 [MAJOR] race
-condition — REJECTED; ...]". This matches the OpenCode pattern: prune only verbose outputs
+ruling) â€” not just aggregate counts. For example: "[round 2: glm-5.2 APPROVE(0);
+deepseek-v4-pro REVISE(4): #1 [BLOCKER] OnExecution lock-scope â€” UPHELD; #2 [MAJOR] race
+condition â€” REJECTED; ...]". This matches the OpenCode pattern: prune only verbose outputs
 above a threshold, preserve message structure, not all old rounds unconditionally.
 
-**Phase 4b — LLM summarization**: if the pruned history still exceeds a token threshold
+**Phase 4b â€” LLM summarization**: if the pruned history still exceeds a token threshold
 (e.g., 50K total), summarize rounds 1..N-1 via a cheaper model into a compact "what was tried
 and rejected" block. Keep round N full.
 
@@ -249,12 +266,12 @@ history by round 4, with no loss of the latest round's detail.
 before building this. Key patterns to borrow: (1) checkpoint at each iteration top (between
 tool turns and before a new turn); (2) usage signal captured per round-trip (`context_tokens`;
 chars/4 estimate when never reported); (3) the summarizer runs off-loop through the normal
-provider router — so the compactor model can be a cheap model from the registry (§9.2), not
+provider router â€” so the compactor model can be a cheap model from the registry (Â§9.2), not
 the implementer or arbiter; (4) failure policy: retry once attended, auto-trim unattended;
 (5) `CompactionState` persisted on the session record so reloads keep the compacted view.
 Their "cap the compacted block's user-message list at 40 with an honest omitted count" is the
 same idea as our per-finding truncation markers. See also the OpenCode two-phase pattern in
-[AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) §7.2.
+[AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) Â§7.2.
 
 ### Phase 5: Persistent memory (auto-extract arbiter SETTLED)
 
@@ -282,11 +299,11 @@ ticket's review panel sees those decisions in its `settled` list without any hum
 `github.com/andrewyng/openworker`) is the memory V1 pattern to study. Key patterns to borrow:
 (1) SQLite-backed with a summary column (in-place migration, same defensive parse as their
 other grants); (2) knowledge is session-stable, the save switch is per-message; (3) "standing
-instructions ride along" — their standing instructions map directly to our settled-decisions
+instructions ride along" â€” their standing instructions map directly to our settled-decisions
 injection into `profile.settled`. The Codex CLI background-extraction pipeline (two-phase:
 extract from rollouts, then consolidate via sub-agent) is the more sophisticated reference for
 later; our scoped version (extract `<<<SETTLED>>>` only) is simpler. See also
-[AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) §7.3.
+[AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) Â§7.3.
 
 ### Phase 6: Plan + Test modes
 
@@ -298,22 +315,22 @@ decision; `brainstorm` and `docs` modes are deferred to a later phase.
 (passive injection, phase 3) to localize the defect and propose regions. No code changes.
 The output is reviewed by the panel + arbiter for completeness (did it find the right regions?
 did it name the right tests?) before being promoted to a ticket file. This panel+arbiter
-review of `plan` output is a new requirement specific to this loop — the research doc §11 has
+review of `plan` output is a new requirement specific to this loop â€” the research doc Â§11 has
 been updated to reflect it. **Feedback loop**: if the panel+arbiter rejects the plan (REVISE
-verdict), the plan agent revises and resubmits — same round loop as `patch` mode, but the
+verdict), the plan agent revises and resubmits â€” same round loop as `patch` mode, but the
 "blocks" are ticket JSON fields, not code regions. If the arbiter ESCALATES, the pipeline
 halts for human review. Max rounds is the same as `patch` mode (default 4).
 
 **Latency and cost**: running a full multi-model panel + arbiter cycle to verify a plan
 ticket JSON adds ~2 minutes of latency and ~$0.30-$1.00 of API cost per planning iteration.
 For rapid prototyping of defect tickets, support a `--fast-plan` flag that uses a single
-reviewer model (from the registry §9.2) instead of the full panel + arbiter. The `--fast-plan`
-path skips the arbiter entirely — a single APPROVE from the designated reviewer promotes the
+reviewer model (from the registry Â§9.2) instead of the full panel + arbiter. The `--fast-plan`
+path skips the arbiter entirely â€” a single APPROVE from the designated reviewer promotes the
 plan. This trades verification depth for speed; the full panel+arbiter path is the default for
 plans that will drive real patches.
 
 **`test` mode**: input is a defect description + a ticket JSON (from `plan` mode). The ticket
-JSON provides the regions and acceptance test names — `test` mode needs to know what to test
+JSON provides the regions and acceptance test names â€” `test` mode needs to know what to test
 and where the code under test lives. Output is failing acceptance tests written to a test file.
 The LLM uses the graph to find the test patterns and the code under test. The tests must fail
 at baseline (the loop's test-first check, `loop.py:442-457`, already enforces this).
@@ -321,13 +338,13 @@ at baseline (the loop's test-first check, `loop.py:442-457`, already enforces th
 **Exit criteria**: `plan -> test` pipeline works end to end. A defect goes in; `plan` produces
 a ticket JSON with regions and acceptance test names (reviewed by panel+arbiter); `test`
 produces failing acceptance tests. (`patch` mode already exists and is not part of phase 6's
-exit criteria — the full `plan -> test -> patch` pipeline is validated when `patch` consumes
+exit criteria â€” the full `plan -> test -> patch` pipeline is validated when `patch` consumes
 the ticket JSON and makes the tests pass, but that is testing `patch`, not building it.)
 
 ### Phase 7: Active graph tools (for Developer mode)
 
 Give the LLM graph-traversal tools for Developer mode. This is the Prometheus pattern, scoped
-to our minimal tool set. See §5 for the Developer mode spec. Can be built in parallel with
+to our minimal tool set. See Â§5 for the Developer mode spec. Can be built in parallel with
 phases 4-6 but is not useful until phase 8.
 
 **Exit criteria**: Developer mode can localize a defect by querying the graph
@@ -341,35 +358,35 @@ query `FileNode`, `ASTNode`, `TextNode` entities; (2) tool names are structure-a
 ASTs covering 20 languages. We do NOT adopt Prometheus's Neo4j (we use `codebase-memory-mcp`);
 we borrow the tool naming and the `search_class`/`search_method` pattern for our
 `search_code` tool. The Moatless Tools embedding-based retrieval (`code_index.py:57`, FAISS
-via LlamaIndex) is the alternative if graph traversal proves insufficient — see
-[AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) §6.5.
+via LlamaIndex) is the alternative if graph traversal proves insufficient â€” see
+[AGENT_LOOP_RESEARCH.md](AGENT_LOOP_RESEARCH.md) Â§6.5.
 
 ### Phase 8: Developer mode
 
 The autonomous localization+edit path. This is phase 8 and depends on phases 1, 2, 3, 4, 5,
 and 7 (state machine honest, graph fresh, passive retrieval wired, compaction for long sessions,
-memory for settled decisions, and active tools available). See §5 for the full spec.
+memory for settled decisions, and active tools available). See Â§5 for the full spec.
 
 **Exit criteria**: a defect description goes in; the LLM localizes via graph, edits via
 tools, gates pass, panel approves (or arbiter SHIPs); a patched diff comes out. No human
 localization.
 
 **Implementation references**:
-- **SWE-agent ACI** (`github.com/SWE-agent/SWE-agent`, `docs/background/aci.md`) — the
+- **SWE-agent ACI** (`github.com/SWE-agent/SWE-agent`, `docs/background/aci.md`) â€” the
   agent-computer interface design principles: linter on edit, 100-line file viewer windows,
   custom search that lists match files succinctly, "tools for agents not humans." Our
-  Developer mode tool set (§5) follows these. Read this before building the tools.
-- **OpenWorker `coworker/permissions.py`** (`github.com/andrewyng/openworker`) — the safety
+  Developer mode tool set (Â§5) follows these. Read this before building the tools.
+- **OpenWorker `coworker/permissions.py`** (`github.com/andrewyng/openworker`) â€” the safety
   hardening to study before building the tool gating. Key patterns: (1) argv-aware matching
   that rejects any command containing shell operators (`; & | > < backtick $ (` and newlines)
   before consulting the allowlist; (2) dropped language interpreters (python, node, npm)
   from the allowlist because allowlisting an interpreter allowlists arbitrary code
   (`python3 -c "..."`). Our Developer mode excludes `run_command` entirely; this reference is
   for validating that `run_build` and `run_tests` cannot be chained into arbitrary execution.
-- **AutoCodeRover** (`github.com/AutoCodeRover/AutoCodeRover`) — the phased tool-scoping
+- **AutoCodeRover** (`github.com/AutoCodeRover/AutoCodeRover`) â€” the phased tool-scoping
   pattern: search agent has 8 read-only tools, no edit/execute; patch agent has no search
   tools. Our Developer mode adopt this: explore phase is read-only, edit phase has no search.
-- **aisuite Agents API** (`github.com/andrewyng/aisuite`) — the `max_turns` tool-calling loop
+- **aisuite Agents API** (`github.com/andrewyng/aisuite`) â€” the `max_turns` tool-calling loop
   is the reference for the LLM-driven tool loop in Developer mode. We do NOT adopt the full
   Agents API (our loop is deliberately minimal); but reading how they handle tool-call
   parsing, `intermediate_messages` history, and `RequireApprovalPolicy` is worth doing before
@@ -388,15 +405,15 @@ diagram below but only the three terminal states appear in the state table.
 |---|---|---|---|
 | `ARBITER_DEADLOCK` | Arbiter unreachable; cannot adjudicate | `adj.ok == False` | Silent fall-through to all-findings-block |
 | `ARBITER_NEVER_RAN` | Loop ended without arbiter being consulted | `--max-rounds 1` + panel REVISE | Part of `MAX_ROUNDS_EXHAUSTED` |
-| `PANEL_PARTIAL` | Some reviewers answered, quorum met, all APPROVE — recorded as metadata, final is still `APPROVE` | `>= ceil(2/3 * len(reviewers))` answered | `PANEL_UNREACHABLE` for quorum-met cases |
+| `PANEL_PARTIAL` | Some reviewers answered, quorum met, all APPROVE â€” recorded as metadata, final is still `APPROVE` | `>= ceil(2/3 * len(reviewers))` answered | `PANEL_UNREACHABLE` for quorum-met cases |
 
 **Not states (internal signals and actions)**:
-- `PANEL_REJECT` — internal signal: when the panel's worst verdict is REJECT, the arbiter
+- `PANEL_REJECT` â€” internal signal: when the panel's worst verdict is REJECT, the arbiter
   runs with a "rethink, don't tweak" prompt. The loop does not break; the arbiter still
   adjudicates. If the arbiter upholds a REJECT-level finding, the feedback tells the
   implementer to rethink the approach. The terminal state is whatever the arbiter recommends
   (REVISE, ESCALATE, SHIP), not PANEL_REJECT itself.
-- Stale-artifact purge — round-start action, not a state.
+- Stale-artifact purge â€” round-start action, not a state.
 
 ### Updated state flow (after phase 1)
 
@@ -445,7 +462,7 @@ honest, graph fresh, passive retrieval wired, active tools available).
 
 A defect description (same as `brainstorm` or `plan` mode input). No pre-declared regions.
 
-### Tool set (minimal, per §10.4 of the research doc)
+### Tool set (minimal, per Â§10.4 of the research doc)
 
 | Tool | Signature | Notes |
 |---|---|---|
@@ -473,17 +490,17 @@ The explore phase is read-only (AutoCodeRover pattern: search agent cannot edit)
 phase has no search tools (AutoCodeRover pattern: patch agent cannot search). This phase
 separation prevents the LLM from editing before it understands. The implementer's first turn
 in the edit phase must include a brief plan (which files, which functions, what changes) in
-its notes — this is not a separate phase with its own gates, just a structural requirement in
+its notes â€” this is not a separate phase with its own gates, just a structural requirement in
 the edit-phase prompt so the LLM commits to an approach before generating edits.
 
 ### Gate ladder
 
-Same 5 rungs: protected → static → compile → test → lock-scope. The static gate and
+Same 5 rungs: protected â†’ static â†’ compile â†’ test â†’ lock-scope. The static gate and
 lock-scope gate both need adaptation for Developer mode.
 
 **Static gate** (gate 1): in patch mode it checks that returned blocks match declared
 regions (brace balance, ASCII, indentation, #if/#endif balance, no leaked markers). In
-Developer mode there are no declared regions — the LLM edits files directly via `edit_file`.
+Developer mode there are no declared regions â€” the LLM edits files directly via `edit_file`.
 The static gate runs on each `edit_file` call's result (the edited file content), checking:
 - **ASCII only** in string literals and comments (same as patch mode)
 - **Balanced braces** (same as patch mode)
@@ -496,14 +513,14 @@ These are the same checks as patch mode's gate 1, applied per-edit instead of pe
 compile and test gates are unchanged (they run on the worktree, not on blocks).
 
 **Lock-scope gate** (gate 5) becomes a **File-Level Scope Gate** in Developer mode. In patch
-mode, gate 5 scans for broker calls reachable inside `lock(_stateLock)` — a line-level check
+mode, gate 5 scans for broker calls reachable inside `lock(_stateLock)` â€” a line-level check
 bounded by the declared regions. In Developer mode, line regions are dynamic (the LLM
 chooses what to edit), so the line-level lock-scope check is replaced by a file-level scope
 check: the LLM may only edit files within the profile's `file_scope_whitelist` (a new profile
 field, defaulting to the directories the profile governs, e.g., `scripts/ninjatrader/addons/`
-for `nt8-riskguard`, `scripts/agent_loop/` for a python-loop profile). Edits to files outside
+for `nt8-riskguard`, `src/agent_loop/` for a python-loop profile). Edits to files outside
 the whitelist are rejected by the gate before the compile gate runs. The protected-paths
-check (gate 0) still applies — `*Tests.cs`, `*.csproj`, etc. remain unreachable. If the
+check (gate 0) still applies â€” `*Tests.cs`, `*.csproj`, etc. remain unreachable. If the
 profile has a `lock_name` (C#), the line-level lock-scope scan also runs on the edited file's
 content (not on declared regions); if the profile has no `lock_name` (Python), this check is
 skipped entirely.
@@ -516,7 +533,7 @@ decisions cache applies. This is the moat and it is unchanged.
 ### Output
 
 A patched diff in the worktree, exported via `ws.export_patch()`. Same promotion path as
-patch mode: `ARBITER_SHIP` → human review → `--apply`.
+patch mode: `ARBITER_SHIP` â†’ human review â†’ `--apply`.
 
 ---
 
@@ -586,7 +603,7 @@ The `codebase-memory-mcp` graph is stale right now. Two options:
 | **Git hook on commit** | Always fresh; no startup latency | Hook maintenance; re-indexes on every commit that touches .py, even if the loop is not run |
 
 **Recommended**: lazy on first use. At loop start, check `index_status` for the project; if
-the latest indexed file mtime is older than the latest `.py` in `scripts/agent_loop/` or
+the latest indexed file mtime is older than the latest `.py` in `src/agent_loop/` or
 `scripts/ninjatrader/addons/`, call `index_repository` in fast mode before proceeding. This
 keeps the graph fresh without any external automation. A git hook is a recommended
 alternative for teams that want zero startup latency.
@@ -595,32 +612,32 @@ alternative for teams that want zero startup latency.
 
 ## 8. Sequencing rationale
 
-Why this order (phase numbers match §3):
+Why this order (phase numbers match Â§3):
 
-1. **Phase 1 (state machine) first** — every subsequent phase depends on the loop's recorded
+1. **Phase 1 (state machine) first** â€” every subsequent phase depends on the loop's recorded
    state being honest. If `result.json` can lie (T4/T5 bug), we cannot measure whether later
    phases help.
 
-2. **Phase 2 (re-index) second** — phases 3 and 7 depend on the graph being fresh. Re-indexing
+2. **Phase 2 (re-index) second** â€” phases 3 and 7 depend on the graph being fresh. Re-indexing
    is cheap and unblocks everything downstream.
 
-3. **Phase 3 (passive retrieval) third** — cheapest graph win. No new tools, no new modes, just
+3. **Phase 3 (passive retrieval) third** â€” cheapest graph win. No new tools, no new modes, just
    richer prompts. Immediate benefit to every existing ticket.
 
-4. **Phase 4 (compaction) fourth** — before adding modes that produce more history, fix the
+4. **Phase 4 (compaction) fourth** â€” before adding modes that produce more history, fix the
    one that can crash. Long tickets are the failure mode today.
 
-5. **Phase 5 (memory) fifth** — the arbiter already produces SETTLED decisions; persisting
+5. **Phase 5 (memory) fifth** â€” the arbiter already produces SETTLED decisions; persisting
    them is a small change with compounding value across tickets.
 
-6. **Phase 6 (Plan + Test) sixth** — closes the test-first loop. Depends on passive retrieval
+6. **Phase 6 (Plan + Test) sixth** â€” closes the test-first loop. Depends on passive retrieval
    (phase 3) for localization in `plan` mode. Panel+arbiter review of `plan` output reuses
    the existing verification stack.
 
-7. **Phase 7 (active tools) seventh** — only needed for Developer mode. Can be built in
+7. **Phase 7 (active tools) seventh** â€” only needed for Developer mode. Can be built in
    parallel with phases 4-6 but is not useful until phase 8.
 
-8. **Phase 8 (Developer mode) last** — depends on everything: honest state machine (phase 1),
+8. **Phase 8 (Developer mode) last** â€” depends on everything: honest state machine (phase 1),
    fresh graph (phase 2), passive retrieval (phase 3), compaction (phase 4) for long
    autonomous sessions, memory (phase 5) for settled decisions across developer runs, and
    active tools (phase 7). Building it before the foundations would reproduce the field's
@@ -634,17 +651,17 @@ Two design principles that cut across all phases. Both are currently violated; b
 fixed before the loop can serve any codebase other than the NT8 AddOn or any model mix other
 than the hand-picked defaults.
 
-### 9.1 Language agnosticism — the loop must not know what language it is patching
+### 9.1 Language agnosticism â€” the loop must not know what language it is patching
 
 **Current state**: the loop is hardcoded to C# / NinjaTrader in five places:
 
 | Where | What is language-specific | Should be |
 |---|---|---|
-| `profiles.py` `NT8_RISKGUARD` | `implementer_rules` mentions "C# 8.0", ".NET Framework 4.8", "_stateLock", "NinjaTrader 8 AddOn", "Account.Flatten/Cancel/Submit/CreateOrder" | All of this belongs in the profile, which is correct — but the profile is the ONLY one that exists |
+| `profiles.py` `NT8_RISKGUARD` | `implementer_rules` mentions "C# 8.0", ".NET Framework 4.8", "_stateLock", "NinjaTrader 8 AddOn", "Account.Flatten/Cancel/Submit/CreateOrder" | All of this belongs in the profile, which is correct â€” but the profile is the ONLY one that exists |
 | `profiles.py` `SUPPORTED_SUFFIXES` | `regions.py` only supports `.cs` files (`SUPPORTED_SUFFIXES = (".cs",)`) | Must be per-profile; a Python profile supports `.py`, a TS profile supports `.ts` |
-| `gates.py` `check_lock_scope` | Scans for `lock(_stateLock)` and broker calls (`Flatten/Cancel/Submit/CreateOrder`) — C#-specific syntax and domain-specific calls | The gate itself is generic; the patterns must come from the profile (`lock_pattern`, `risk_calls`) |
-| `gates.py` `check_static` | Checks `#if`/`#endif` balance — a C# preprocessor directive | Must be conditional on the profile's `preprocessor_directives` setting (C# has `#if/#endif`; Python has none; Go has `//go:build`) |
-| `profiles.py` `protected` | `*Tests.cs`, `*.csproj` — C# test file patterns | Must be per-profile (`*Tests.py`, `*Test.ts`, etc.) |
+| `gates.py` `check_lock_scope` | Scans for `lock(_stateLock)` and broker calls (`Flatten/Cancel/Submit/CreateOrder`) â€” C#-specific syntax and domain-specific calls | The gate itself is generic; the patterns must come from the profile (`lock_pattern`, `risk_calls`) |
+| `gates.py` `check_static` | Checks `#if`/`#endif` balance â€” a C# preprocessor directive | Must be conditional on the profile's `preprocessor_directives` setting (C# has `#if/#endif`; Python has none; Go has `//go:build`) |
+| `profiles.py` `protected` | `*Tests.cs`, `*.csproj` â€” C# test file patterns | Must be per-profile (`*Tests.py`, `*Test.ts`, etc.) |
 
 **Principle**: the loop driver (`loop.py`), the gates (`gates.py`), the regions extractor
 (`regions.py`), and the arbiter (`arbiter.py`) must contain zero language-specific strings.
@@ -664,12 +681,12 @@ class Profile:
     # Build and test
     build_cmd: str = ""
     test_cmd: str = ""
-    test_runner_regex: tuple               # (fail_line_re, results_re) — language-specific
+    test_runner_regex: tuple               # (fail_line_re, results_re) â€” language-specific
     # Lock-scope gate (optional; only for languages with a lock primitive)
     lock_name: str = ""                    # "_stateLock" for NT8; "" for Python (gate skipped)
-    lock_pattern: str = ""                # "lock\\s*\\(\\s*{lock_name}\\s*\\)" — compiled per profile
+    lock_pattern: str = ""                # "lock\\s*\\(\\s*{lock_name}\\s*\\)" â€” compiled per profile
     risk_calls: tuple = ()                 # (".Flatten", ".Cancel", ...) for NT8; () for Python
-    # File-level scope gate (Developer mode; see §5 Gate ladder)
+    # File-level scope gate (Developer mode; see Â§5 Gate ladder)
     file_scope_whitelist: tuple = ()       # ("scripts/ninjatrader/addons/",) for nt8; Developer mode rejects edits outside
     # Protected paths and test sources
     protected: tuple = ()
@@ -694,10 +711,10 @@ class Profile:
 | `go-service` | Go | `go build` | `go test` | no |
 
 **Phase placement**: this refactor is part of phase 1 (state machine fixes) because it touches
-`gates.py`, `regions.py`, and `profiles.py` — the same files phase 1 already modifies. It is
+`gates.py`, `regions.py`, and `profiles.py` â€” the same files phase 1 already modifies. It is
 not a separate phase; it is a constraint on how phase 1 is implemented.
 
-### 9.2 Model-by-capability — match models to roles by capability and cost
+### 9.2 Model-by-capability â€” match models to roles by capability and cost
 
 **Current state**: models are configured as CLI flags with hardcoded defaults:
 
@@ -709,8 +726,8 @@ not a separate phase; it is a constraint on how phase 1 is implemented.
 
 **Problems**:
 1. The arbiter defaults to the same model as one of the reviewers (`glm-5.2:cloud`). The
-   research doc §8.6 and the `cli.py:117` help text both say the arbiter "wants to be stronger
-   than the panel and from a different family" — but the default violates this.
+   research doc Â§8.6 and the `cli.py:117` help text both say the arbiter "wants to be stronger
+   than the panel and from a different family" â€” but the default violates this.
 2. There is no per-role cost/capability specification. The user must know which model is good at
    which role and manually pass the right names. A wrong default wastes money (strong model on
    a cheap task) or quality (weak model on a hard task).
@@ -718,9 +735,9 @@ not a separate phase; it is a constraint on how phase 1 is implemented.
    - `plan` mode needs a strong reasoner (localization is hard)
    - `test` mode needs a strong coder (tests must compile and fail)
    - `developer` mode explore phase needs a strong reasoner; edit phase needs a strong coder
-   - `compaction` (phase 4) should use a cheap model (the research doc §7.2 says "a cheaper
+   - `compaction` (phase 4) should use a cheap model (the research doc Â§7.2 says "a cheaper
      compaction agent")
-4. There is no concept of a "model registry" — a declarative mapping from role to model, with
+4. There is no concept of a "model registry" â€” a declarative mapping from role to model, with
    cost and capability metadata, so the loop can pick the right model per role without the user
    memorizing model names.
 
@@ -771,11 +788,11 @@ MODEL_REGISTRY = {
 in `cli.py` and adds the validation rule (arbiter != reviewer). The per-mode roles (`planner`,
 `tester`, `explorer`, `compactor`) are added as their phases land.
 
-### 9.3 Token efficiency — minimize token usage as a first-class goal
+### 9.3 Token efficiency â€” minimize token usage as a first-class goal
 
 **Why this is a principle, not a feature**: token usage is the dominant cost driver and the
 dominant latency driver. A ticket that takes 4 rounds with 48K-token implementer outputs, 24K-
-token reviewer findings, and 24K-token arbiter rulings consumes ~400K tokens per round — and
+token reviewer findings, and 24K-token arbiter rulings consumes ~400K tokens per round â€” and
 that is the *cheap* subscription path. On paid models (Anthropic, OpenAI) the same ticket can
 cost $5-15. Token efficiency is not an optimization; it is a constraint that shapes every
 phase.
@@ -783,7 +800,7 @@ phase.
 **Current state**: the loop has no token budget enforcement. The implementer gets
 `max_tokens=48000` per call; reviewers get 24000; the arbiter gets 24000. The implementer
 prompt includes every prior round's raw output, every reviewer's findings, and every arbiter
-ruling — unbounded growth across rounds. A 4-round ticket can exceed 400K tokens of history by
+ruling â€” unbounded growth across rounds. A 4-round ticket can exceed 400K tokens of history by
 round 4. There is no per-round token budget, no history-trimming before the prompt is built,
 no feedback to the implementer that its output is too large.
 
@@ -793,13 +810,13 @@ no feedback to the implementer that its output is too large.
    40K input, configurable via the profile's `round_input_token_budget`). If the prompt exceeds
    the budget, compaction (phase 4) runs *before* the implementer call, not after. The
    implementer never sees a 400K-token prompt.
-2. **Per-role output budget enforcement.** The `max_tokens` in the `ModelConfig` (§9.2) is a
+2. **Per-role output budget enforcement.** The `max_tokens` in the `ModelConfig` (Â§9.2) is a
    hard cap, not a suggestion. A reviewer that returns 24K tokens of findings when 8K would
    do is wasting tokens; the reviewer system prompt asks for concise findings, and the
    `max_tokens` cap enforces it. The arbiter gets a tighter cap (16K) than the implementer
    (48K) because the arbiter's output is structured rulings, not reasoning.
 3. **Differential truncation.** Not all history is equally valuable. The latest round's full
-   exchange is always kept in full. Prior rounds are pruned (phase 4a) — verbose outputs above
+   exchange is always kept in full. Prior rounds are pruned (phase 4a) â€” verbose outputs above
    a threshold become truncation markers that preserve per-finding structure (reviewer name,
    severity, one-line summary, arbiter ruling) without the bulk. This is already in phase 4;
    the principle here is that it applies *before* every implementer/reviewer/arbiter call, not
@@ -809,7 +826,7 @@ no feedback to the implementer that its output is too large.
    as the full text of each decision. A settled decision that is 3 sentences becomes 1 line.
    The full text lives in the settled-decisions store (phase 5); the prompt gets the summary.
 5. **Graph context is capped (phase 3, already specified).** The `context_token_budget`
-   (default 3000, §9.1) caps injected graph context per prompt. High-centrality functions with
+   (default 3000, Â§9.1) caps injected graph context per prompt. High-centrality functions with
    dozens of callers get ranked and truncated, not dumped.
 6. **`--fast-plan` for plan mode (phase 6, already specified).** A single reviewer instead of
    a full panel + arbiter cuts plan verification from ~2 minutes + ~$0.30-1.00 to seconds +
@@ -861,7 +878,7 @@ are worth borrowing, the code is not worth importing.
 
 | Phase | Reference | What to study |
 |---|---|---|
-| 3 (passive retrieval) | Aider `aider/repomap.py:365-574` (`github.com/Aider-AI/aider`) | PageRank repo map: tree-sitter tags → NetworkX dependency graph → centrality ranking; conversation identifier 10x boost; binary search fills token budget |
+| 3 (passive retrieval) | Aider `aider/repomap.py:365-574` (`github.com/Aider-AI/aider`) | PageRank repo map: tree-sitter tags â†’ NetworkX dependency graph â†’ centrality ranking; conversation identifier 10x boost; binary search fills token budget |
 | 4 (compaction) | OpenWorker `coworker/compaction.py` (`github.com/andrewyng/openworker`) | Off-loop summarizer via provider router; checkpoint at iteration top; usage signal per round-trip; failure policy (retry attended, auto-trim unattended); CompactionState persisted |
 | 4 (compaction) | OpenCode two-phase surgical (`github.com/sst/opencode`) | Prune verbose old tool outputs >40k tokens first (preserve structure, truncation markers), then LLM summarization via cheaper compaction agent |
 | 5 (memory) | OpenWorker `coworker/memory/` (`github.com/andrewyng/openworker`) | SQLite-backed with summary column; session-stable; per-message save switch; "standing instructions ride along" maps to settled-decisions injection |
@@ -872,17 +889,17 @@ are worth borrowing, the code is not worth importing.
 | 8 (Developer mode) | OpenWorker `coworker/permissions.py` (`github.com/andrewyng/openworker`) | Argv-aware shell allowlist: reject operators (`; & | > < backtick $ (`); drop interpreters (python, node, npm) from allowlist. Validates that `run_build`/`run_tests` cannot be chained into arbitrary execution |
 | 8 (Developer mode) | AutoCodeRover (`github.com/AutoCodeRover/AutoCodeRover`) | Phased tool-scoping: search agent has 8 read-only tools, no edit/execute; patch agent has no search tools |
 | 8 (Developer mode) | aisuite Agents API (`github.com/andrewyng/aisuite`) | `max_turns` tool-calling loop; `intermediate_messages` history; `RequireApprovalPolicy`. We do NOT adopt the full API; we read it before building our minimal loop |
-| 9.2 (model registry) | Codex CLI Guardian (`github.com/openai/codex`, `guardian.rs`) | Separate LLM (`gpt-5.4`) evaluates each tool call's risk on 0–100 scale, blocks >80. The only multi-model routing for safety. Reference for our arbiter-model-validation rule |
+| 9.2 (model registry) | Codex CLI Guardian (`github.com/openai/codex`, `guardian.rs`) | Separate LLM (`gpt-5.4`) evaluates each tool call's risk on 0â€“100 scale, blocks >80. The only multi-model routing for safety. Reference for our arbiter-model-validation rule |
 
 **What we do NOT adopt** (so future-us does not re-evaluate):
-- **aisuite Chat Completions API** — our `providers.py` is zero-dependency and covers the same
+- **aisuite Chat Completions API** â€” our `providers.py` is zero-dependency and covers the same
   providers. Replacing it adds a dependency tree for no marginal benefit.
-- **aisuite toolkits (files, git, shell)** — general-purpose; our Developer mode tool set is
+- **aisuite toolkits (files, git, shell)** â€” general-purpose; our Developer mode tool set is
   deliberately minimal. Their shell toolkit is exactly what we exclude.
-- **OpenWorker `connectors/`** — Slack, Jira, Notion. Not our domain.
-- **OpenWorker `inbox.py` / approval gating** — desktop-app approval flow. Our approval is
+- **OpenWorker `connectors/`** â€” Slack, Jira, Notion. Not our domain.
+- **OpenWorker `inbox.py` / approval gating** â€” desktop-app approval flow. Our approval is
   `--apply`. Different surface.
-- **OpenWorker `personas/`** — user-facing chat personalities. Our profiles are
+- **OpenWorker `personas/`** â€” user-facing chat personalities. Our profiles are
   language/build/test configs. Different concept.
 
 ---
