@@ -76,19 +76,29 @@ def build_context_slice(
 ) -> str:
     """Build a ranked, token-budgeted context slice for the prompts.
 
-    Queries the graph for each region's callees, callers, tests, and types,
-    ranks them by structural distance, and truncates to context_token_budget.
+    Queries the codebase-memory-mcp graph (live MCP) for each region's
+    callees, callers, tests, and types. Falls back to the cache file
+    when the MCP server is not available.
 
     The context is returned as a formatted string to inject into the
-    implementer/reviewer/arbiter prompts. When the graph is unavailable or
-    the profile has no graph_project, returns an empty string.
+    implementer/reviewer/arbiter prompts. When the graph is unavailable
+    and no cache exists, returns an empty string.
     """
     if not profile.graph_project:
         return ""
 
     budget_chars = profile.context_token_budget * _CHARS_PER_TOKEN
-    parts: List[str] = []
 
+    # Try live MCP queries first
+    context = _build_context_via_mcp(regions, profile)
+    if context:
+        # Truncate to budget
+        if len(context) > budget_chars:
+            context = context[:budget_chars] + "\n... (truncated to token budget)"
+        return context
+
+    # Fall back to cache file
+    parts: List[str] = []
     for region in regions:
         region_context = _build_region_context(repo, region, profile)
         if region_context:
@@ -103,6 +113,123 @@ def build_context_slice(
     if len(result) > budget_chars:
         result = result[:budget_chars] + "\n... (truncated to token budget)"
     return result
+
+
+def _build_context_via_mcp(regions: Sequence[Any], profile: Profile) -> str:
+    """Query the codebase-memory-mcp graph live for each region's context.
+
+    Returns an empty string if the MCP server is not available.
+    """
+    try:
+        from .mcp_client import get_mcp_client
+        client = get_mcp_client()
+        if not client:
+            return ""
+    except Exception:
+        return ""
+
+    parts: List[str] = []
+    for region in regions:
+        # Extract function/class names from the region's anchor
+        names = _extract_names_from_region(region)
+        if not names:
+            continue
+
+        callees: List[str] = []
+        callers: List[str] = []
+        tests: List[str] = []
+        types: List[str] = []
+
+        for name in names[:3]:  # limit to 3 names per region
+            # Get callees (outbound)
+            result = client.call_tool("trace_call_path", {
+                "function_name": name,
+                "direction": "outbound",
+                "project": profile.graph_project,
+                "depth": 1,
+            })
+            if result and not result.startswith("ERROR"):
+                for line in result.splitlines():
+                    # Extract function names from the trace result
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("[") and not stripped.startswith("{"):
+                        # Extract the function name from lines like "name (qualified_name, hop=N)"
+                        if "name" in line and ":" in line:
+                            parts_match = line.split(":", 1)
+                            if len(parts_match) > 1:
+                                fn = parts_match[1].strip().split(",")[0].strip().strip('"')
+                                if fn and fn not in callees:
+                                    callees.append(fn)
+
+            # Get callers (inbound)
+            result = client.call_tool("trace_call_path", {
+                "function_name": name,
+                "direction": "inbound",
+                "project": profile.graph_project,
+                "depth": 1,
+            })
+            if result and not result.startswith("ERROR"):
+                for line in result.splitlines():
+                    stripped = line.strip()
+                    if stripped and not stripped.startswith("[") and not stripped.startswith("{"):
+                        if "name" in line and ":" in line:
+                            parts_match = line.split(":", 1)
+                            if len(parts_match) > 1:
+                                fn = parts_match[1].strip().split(",")[0].strip().strip('"')
+                                if fn and fn not in callers:
+                                    callers.append(fn)
+
+            # Search for tests that reference this name
+            result = client.call_tool("search_code", {
+                "pattern": name,
+                "file_pattern": "*test*",
+                "path_filter": "tests/",
+                "project": profile.graph_project,
+            })
+            if result and not result.startswith("ERROR"):
+                for line in result.splitlines()[:5]:
+                    if "file" in line.lower() and name in line:
+                        tests.append(line.strip()[:80])
+
+        if callees or callers or tests:
+            lines = [f"### Graph context for {region.id} ({region.file})"]
+            if callees:
+                lines.append(f"Callees ({len(callees)}): {', '.join(callees[:10])}")
+            if callers:
+                lines.append(f"Callers ({len(callers)}): {', '.join(callers[:10])}")
+            if tests:
+                lines.append(f"Tests ({len(tests)}): {', '.join(tests[:5])}")
+            parts.append("\n".join(lines))
+
+    return "\n".join(parts) if parts else ""
+
+
+def _extract_names_from_region(region: Any) -> List[str]:
+    """Extract function/class names from a region's anchor text."""
+    anchor = getattr(region, "anchor", "")
+    # Common patterns:
+    # "def function_name(" -> function_name
+    # "class ClassName:" -> ClassName
+    # "for x in y:" -> skip (not a function)
+    # "if condition:" -> skip
+    import re
+    names = []
+    # def pattern
+    m = re.match(r"(?:async\s+)?def\s+(\w+)", anchor)
+    if m:
+        names.append(m.group(1))
+    # class pattern
+    m = re.match(r"class\s+(\w+)", anchor)
+    if m:
+        names.append(m.group(1))
+    # If no def/class, use the anchor itself as a search term
+    if not names and anchor:
+        # Remove common keywords and punctuation
+        clean = re.sub(r"^(for|if|while|try|with|else|elif)\s+", "", anchor)
+        clean = clean.split("(")[0].split(":")[0].strip()
+        if clean and not clean.startswith("#") and len(clean) < 50:
+            names.append(clean)
+    return names
 
 
 def _build_region_context(repo: Path, region: Any, profile: Profile) -> str:

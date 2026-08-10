@@ -177,6 +177,43 @@ def _developer(args, profile, implementer, reviewers, arbiter) -> int:
     return 0 if result.get("verdict") == "DONE" else 1
 
 
+def _brainstorm(args, profile, implementer) -> int:
+    """Brainstorm mode: defect -> candidate approaches + trade-offs."""
+    from .brainstorm_mode import run_brainstorm
+
+    if not args.defect:
+        print("--mode brainstorm needs --defect (the defect description)")
+        return 2
+
+    result = run_brainstorm(Path("."), args.defect, profile, implementer)
+    print(f"\n==== BRAINSTORM RESULT ====")
+    if result.get("approaches"):
+        print(f"approaches: logs/agent_loop/BRAINSTORM/approaches.md")
+    if result.get("recommendation"):
+        print(f"recommendation: {result['recommendation']}")
+    return 0 if result.get("approaches") else 1
+
+
+def _docs(args, profile, implementer) -> int:
+    """Docs mode: diff -> documentation updates."""
+    from .docs_mode import run_docs
+
+    if not args.review_base:
+        print("--mode docs needs --review-base (e.g. HEAD~1)")
+        return 2
+
+    result = run_docs(
+        Path("."), args.review_base, profile, implementer,
+        output_path=args.test_file or "docs/UPDATES.md",
+    )
+    print(f"\n==== DOCS RESULT ====")
+    if result.get("docs"):
+        print(f"docs written to: {result.get('output_path', 'docs/UPDATES.md')}")
+    elif result.get("error"):
+        print(f"error: {result['error']}")
+    return 0 if result.get("docs") else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python -m agent_loop")
     ap.add_argument("--tickets", default="tickets.json")
@@ -213,7 +250,7 @@ def main(argv=None) -> int:
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
 
     # ---- modes -----------------------------------------------------------
-    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer"), default="patch")
+    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs"), default="patch")
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
     ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
@@ -278,6 +315,12 @@ def main(argv=None) -> int:
 
     if args.mode == "developer":
         return _developer(args, profile, implementer, reviewers, arbiter)
+
+    if args.mode == "brainstorm":
+        return _brainstorm(args, profile, implementer)
+
+    if args.mode == "docs":
+        return _docs(args, profile, implementer)
 
     spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
     tickets = spec["tickets"]

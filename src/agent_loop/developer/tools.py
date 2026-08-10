@@ -161,14 +161,33 @@ def _search_code(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
 
 
 def _trace_call_path(args: Dict[str, Any], profile: Profile) -> str:
-    """Trace callers/callees of a function.
-
-    NOTE: This is a stub that returns a placeholder. In a full implementation,
-    this calls the codebase-memory-mcp graph via the MCP client protocol.
-    """
+    """Trace callers/callees of a function via the codebase-memory-mcp graph."""
     func = args["function_name"]
     direction = args.get("direction", "both")
-    return f"[graph] trace_call_path for {func!r} (direction={direction}) -- requires MCP graph connection (not yet wired in Developer mode)"
+
+    if not profile.graph_project:
+        return f"[graph] no graph_project configured for this profile"
+
+    try:
+        from ..mcp_client import get_mcp_client
+        client = get_mcp_client()
+        if not client:
+            return f"[graph] codebase-memory-mcp not available; cannot trace {func!r}"
+
+        result = client.call_tool("trace_call_path", {
+            "function_name": func,
+            "direction": direction,
+            "project": profile.graph_project,
+            "depth": 2,
+        })
+
+        if result is None:
+            return f"[graph] no result from trace_call_path for {func!r}"
+        if result.startswith("ERROR"):
+            return f"[graph] {result}"
+        return result
+    except Exception as exc:
+        return f"[graph] trace_call_path failed: {exc}"
 
 
 def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
