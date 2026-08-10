@@ -4,16 +4,22 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: after review-driven fixes (all items addressed).
+**Last updated**: after review-driven fixes and v0.1.0 tag.
 
 ## STATUS
 
-All 17 backlog items are addressed. Items that were stubs have been
-upgraded to live MCP integration. 77/77 tests pass.
+All 17 backlog items are addressed. 77/77 tests pass. Tagged `v0.1.0`.
 
-Note: "77/77 tests" refers to the pytest suite (`tests/`).
-"2/11" in item 5.1 refers to the old `selftest.py` scenarios which
-were designed for C# tickets and are separate from the pytest suite.
+### Note on graph re-index for tvDownloadOHLC
+
+The `codebase-memory-mcp` graph for tvDownloadOHLC (`C-Users-vinay-tvDownloadOHLC`)
+is stale — it indexes the predecessor `ollama_patch_loop.py`, not the current
+`loop.py`. Re-indexing was attempted but the MCP server timed out (the repo
+has 39K+ nodes and the index operation exceeds the MCP request timeout).
+The re-index should be run after restarting the MCP server, or by running
+the `codebase-memory-mcp` exe directly outside of the MCP client.
+
+The `agent-loop` repo graph (`C-Users-vinay-agent-loop`, 258 nodes) is fresh.
 
 ---
 

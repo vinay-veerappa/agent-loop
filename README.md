@@ -13,24 +13,42 @@ Implement -> gate -> review -> arbitrate -> apply.
 
 ## Status
 
-All 8 phases of the execution plan are complete. 67/67 tests pass.
+All 8 phases complete, all 17 backlog items addressed, 3-model cross-review
+done with fixes applied. Tagged `v0.1.0`. 77/77 tests pass.
 
 | Phase | Status |
 |---|---|
 | 1: State machine fixes | Done |
 | 2: Graph freshness | Done |
-| 3: Passive context injection | Done |
-| 4: Compaction | Done |
+| 3: Passive context injection (live MCP) | Done |
+| 4: Compaction (mechanical + LLM) | Done |
 | 5: Persistent memory | Done |
 | 6: Plan + Test modes | Done |
-| 7: Active graph tools | Done |
+| 7: Active graph tools (live MCP) | Done |
 | 8: Developer mode | Done |
+| Backlog: PANEL_REJECT, developer panel, reviewer context, token accounting | Done |
+| Backlog: MCP client, brainstorm mode, docs mode | Done |
+| Backlog: Consumer profiles (nt8-riskguard, python-tvdownloadohlc) | Done |
+| Cross-review (glm-5.2 + deepseek-v4-pro + minimax-m3) | Done, fixes applied |
 
 The loop bootstrapped itself: it ran a ticket against its own source,
 generated a fix, passed all gates, and both reviewers unanimously approved.
 
-See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan
-and [IMPLEMENTATION_DECISIONS.md](docs/architecture/IMPLEMENTATION_DECISIONS.md) for the decision log.
+### Modes
+
+| Mode | Input → Output | Flag |
+|---|---|---|
+| `patch` | ticket JSON → patched code | `--mode patch` (default) |
+| `review` | existing diff → panel verdict | `--mode review --review-base HEAD~1` |
+| `plan` | defect → ticket JSON (panel+arbiter reviewed) | `--mode plan --defect "..."` |
+| `test` | defect + ticket → failing acceptance tests | `--mode test --defect "..." --tickets plan.json` |
+| `developer` | defect → patched code (autonomous localize+edit) | `--mode developer --defect "..."` |
+| `brainstorm` | defect → candidate approaches + trade-offs | `--mode brainstorm --defect "..."` |
+| `docs` | git diff → documentation updates | `--mode docs --review-base HEAD~1` |
+
+See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan,
+[IMPLEMENTATION_DECISIONS.md](docs/architecture/IMPLEMENTATION_DECISIONS.md) for the decision log,
+and [BACKLOG.md](docs/architecture/BACKLOG.md) for the status of all items.
 
 ## Install
 
