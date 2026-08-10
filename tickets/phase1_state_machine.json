@@ -1,0 +1,79 @@
+{
+  "tickets": [
+    {
+      "id": "P1-1",
+      "title": "Purge stale per-round artifacts at round start",
+      "defect": "At round start, the loop does not delete r{N}_* artifacts from prior runs. A prior run's r2_impl_raw.txt persists; a new run with --max-rounds 1 produces a result.json that says 1 round but r2_* files exist on disk, making the logs lie. On T4/T5 this caused a later resume run to overwrite result.json while leaving the earlier run's r2_* files orphaned, making it look like the arbiter SHIP'd a patch it never saw.",
+      "spec": "At the start of each round N (inside the for loop in run_ticket, before the implement step), delete any r{N}_* files in the artifact directory (art) that exist from a prior run. This includes r{N}_impl_raw.txt, r{N}_build.txt, r{N}_tests.txt, r{N}_review_*.txt, r{N}_arbiter.txt. Use a glob pattern r{N}_* on the art directory. Do NOT delete r{N}_* files from the CURRENT run (delete BEFORE writing, not after). The purge is an action, not a state.",
+      "regions": [
+        {
+          "id": "PURGE",
+          "file": "src/agent_loop/loop.py",
+          "anchor": "for rnd in range(1, max_rounds + 1):",
+          "note": "The round loop start. Add the purge at the very top of the loop body, before the implement step."
+        }
+      ],
+      "expect_green": ["test_p1_1_stale_artifacts_purged"]
+    },
+    {
+      "id": "P1-2",
+      "title": "Arbiter-unreachable must produce ARBITER_DEADLOCK, not silent fall-through",
+      "defect": "When the arbiter is unreachable (adj.ok == False), loop.py prints a warning and falls through to feeding ALL findings back to the implementer. This is exactly the T2 failure mode the arbiter exists to prevent: every finding blocks, the implementer is overwhelmed, and the loop thrashes without convergence.",
+      "spec": "When adj is not ok (adj.ok == False), break the loop with final='ARBITER_DEADLOCK' instead of falling through. Also revert touched files before breaking (same pattern as PANEL_UNREACHABLE). The break should happen after the 'could not rule' print, before the ESCALATE/SHIP checks.",
+      "regions": [
+        {
+          "id": "DEADLOCK",
+          "file": "src/agent_loop/loop.py",
+          "anchor": "if adj and adj.ok and adj.recommendation == arbiter.ESCALATE:",
+          "note": "The arbiter result handling block. Insert the deadlock check BEFORE the ESCALATE check, after the 'could not rule' print."
+        }
+      ],
+      "expect_green": ["test_p1_2_arbiter_deadlock"]
+    },
+    {
+      "id": "P1-3",
+      "title": "Distinguish ARBITER_NEVER_RAN from MAX_ROUNDS_EXHAUSTED",
+      "defect": "MAX_ROUNDS_EXHAUSTED is the initial value of 'final' and the fall-through after the loop. It covers two materially different cases: (a) every round ran with arbiter revision, still not converging; (b) --max-rounds 1 where the arbiter was never consulted. A human reading the ledger cannot tell them apart.",
+      "spec": "Track whether the arbiter was ever consulted (a boolean flag 'arbiter_consulted' set to True whenever adj is not None and adj.ok is True). After the loop ends, if final is still 'MAX_ROUNDS_EXHAUSTED' and arbiter_consulted is False, set final to 'ARBITER_NEVER_RAN'. This distinguishes 'ran with arbiter' from 'ran without'.",
+      "regions": [
+        {
+          "id": "NEVER_RAN",
+          "file": "src/agent_loop/loop.py",
+          "anchor": "result[\"final_verdict\"] = final",
+          "note": "The post-loop assignment. Add the ARBITER_NEVER_RAN check just before this line."
+        }
+      ],
+      "expect_green": ["test_p1_3_arbiter_never_ran"]
+    },
+    {
+      "id": "P1-4",
+      "title": "Split applied into applied_approved and applied_unapproved",
+      "defect": "result['applied'] = True is set whenever apply and (APPROVE or allow_unapproved). So MAX_ROUNDS_EXHAUSTED + applied=true is legal and means 'we applied a patch that was never approved.' The ledger records this faithfully, but cli.py exit code only returns 0 on final_verdict == APPROVE, so ARBITER_SHIP with --apply returns exit 1.",
+      "spec": "Replace the single 'applied' boolean with 'applied_approved' and 'applied_unapproved'. Set applied_approved=True when final==APPROVE and apply is True. Set applied_unapproved=True when final is not APPROVE but allow_unapproved and apply are True. Keep 'applied' as a convenience alias (applied = applied_approved or applied_unapproved) for backward compat.",
+      "regions": [
+        {
+          "id": "APPLIED_SPLIT",
+          "file": "src/agent_loop/loop.py",
+          "anchor": "if apply:",
+          "note": "The post-loop apply block where 'applied' is set to True."
+        }
+      ],
+      "expect_green": ["test_p1_4_applied_split"]
+    },
+    {
+      "id": "P1-7",
+      "title": "Quorum: partial panel with unanimous APPROVE should proceed",
+      "defect": "valid = all(v.counted for v in votes) and len(votes) == len(reviewers). A 2-of-3 panel where the two who answered both APPROVE is valid=False, producing PANEL_UNREACHABLE and breaking the loop. But a 2-of-3 unanimous APPROVE is different from a 0-of-3 panel.",
+      "spec": "Add quorum logic to the panel validity check. If >= ceil(2/3 * len(reviewers)) answered (counted) and all are APPROVE, treat the panel as valid with a 'panel_partial' metadata flag set to True on the result dict. If quorum is not met, break with PANEL_UNREACHABLE as before. The unanimous_approve property should return True when quorum is met and all counted votes are APPROVE. Set result['panel_partial'] = True when the panel was partial but quorum was met.",
+      "regions": [
+        {
+          "id": "QUORUM",
+          "file": "src/agent_loop/loop.py",
+          "anchor": "if not panel.valid:",
+          "note": "The panel validity check. Replace the hard-stop with quorum logic."
+        }
+      ],
+      "expect_green": ["test_p1_7_quorum_partial_panel"]
+    }
+  ]
+}
