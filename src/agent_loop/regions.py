@@ -130,15 +130,40 @@ def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int
     anchor_code = strip_fn(lines[start])
     anchor_indent = len(anchor_code) - len(anchor_code.lstrip())
 
-    # Check if this line ends with a colon (Python block opener)
-    stripped = anchor_code.rstrip()
+    # A declaration whose signature spans several lines opens its block on the
+    # line where the brackets balance, not on the anchor line:
+    #
+    #     def check_lint(
+    #         cmd: str,
+    #         repo: Path,
+    #     ) -> GateResult:      <-- the block actually opens here
+    #
+    # Testing the anchor line alone made every such region collapse to a single
+    # line, and `--list` reported it as OK. The implementer was then handed
+    # `def check_lint(` with no body, and splicing its replacement over that one
+    # line orphaned the old parameters -- a guaranteed syntax error, discovered
+    # only at the compile gate. Multi-line signatures are ordinary Python, so
+    # this silently broke a large fraction of plausible tickets.
+    header_end = start
+    depth = 0
+    for i in range(start, len(lines)):
+        code = strip_fn(lines[i])
+        depth += code.count("(") + code.count("[") + code.count("{")
+        depth -= code.count(")") + code.count("]") + code.count("}")
+        header_end = i
+        if depth <= 0:
+            break
+
+    # Check whether the header (however many lines it took) opens a block.
+    stripped = strip_fn(lines[header_end]).rstrip()
     if stripped.endswith(":"):
+        start_body = header_end
         # The block body starts on the next non-blank, non-comment line.
         # The body's indentation must be > anchor_indent.
         # The block ends at the last consecutive line with indent > anchor_indent
         # (skipping blank lines and comments).
-        end = start
-        for i in range(start + 1, len(lines)):
+        end = start_body
+        for i in range(start_body + 1, len(lines)):
             code = strip_fn(lines[i])
             if not code.strip():
                 continue  # blank line — part of the block
@@ -155,11 +180,13 @@ def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int
                 end = i
             else:
                 break
-        if end == start:
+        if end == start_body:
             raise RegionError(f"no indented body found after anchor at line {start + 1}")
+        # The region spans the anchor line through the body, so a multi-line
+        # signature is included in what the implementer sees and replaces.
         return start, end
 
-    # No colon — just the anchor line itself
+    # Not a block opener — just the anchor line itself
     return start, start
 
 

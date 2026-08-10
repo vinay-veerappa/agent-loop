@@ -356,6 +356,48 @@ def test_apply_preserves_crlf_and_missing_trailing_newline(tmp_path):
     assert b"int a = 2;" in raw
 
 
+def test_indent_region_spans_a_multi_line_signature(tmp_path):
+    """A def whose parameters span several lines opens its block on the line
+    where the brackets balance. Testing only the anchor line collapsed the
+    region to that one line, `--list` reported OK, and splicing the
+    replacement over it orphaned the old parameter list."""
+    path = tmp_path / "m.py"
+    path.write_text(
+        "def check(\n"
+        "    a: str,\n"
+        "    b: int = 3,\n"
+        ") -> bool:\n"
+        "    if a:\n"
+        "        return True\n"
+        "    return False\n"
+        "\n"
+        "def after():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    regs = regions.extract(tmp_path, [{"id": "R", "file": "m.py", "anchor": "def check("}], PY)
+    text = regs[0].text
+    assert text.startswith("def check("), "the signature must be part of the region"
+    assert "b: int = 3," in text, "the whole parameter list must be included"
+    assert "return False" in text, "the body must be included"
+    assert "def after" not in text, "the region must stop at the next declaration"
+
+
+def test_single_line_signature_region_is_unchanged(tmp_path):
+    path = tmp_path / "m.py"
+    path.write_text("def f(a):\n    return a\n\ndef g():\n    pass\n", encoding="utf-8")
+    regs = regions.extract(tmp_path, [{"id": "R", "file": "m.py", "anchor": "def f("}], PY)
+    assert regs[0].text == "def f(a):\n    return a"
+
+
+def test_non_block_anchor_still_yields_one_line(tmp_path):
+    """A bare statement is not a block opener, multi-line brackets or not."""
+    path = tmp_path / "m.py"
+    path.write_text("x = 1\ny = 2\n", encoding="utf-8")
+    regs = regions.extract(tmp_path, [{"id": "R", "file": "m.py", "anchor": "x = 1"}], PY)
+    assert regs[0].text == "x = 1"
+
+
 def test_python_profile_docs_do_not_break_region_extraction(tmp_path):
     """The README and the Profile docstring both suggested block_comment=("#",)
     for Python, which made guard_unsupported_syntax refuse every Python file

@@ -21,8 +21,13 @@ SELF = Profile(
     block_kind="indent",
     preprocessor_directives=(),  # Python has no preprocessor
     # Build and test
-    build_cmd="python -m py_compile src/agent_loop/loop.py src/agent_loop/cli.py src/agent_loop/gates.py src/agent_loop/regions.py src/agent_loop/profiles.py src/agent_loop/models.py src/agent_loop/arbiter.py src/agent_loop/providers.py src/agent_loop/workspace.py",
-    test_cmd="python -m pytest tests/ -v --tb=short 2>&1",
+    # {files} is substituted with the files this patch touched. The previous
+    # fixed list omitted report.py, replay.py, memory.py, context.py,
+    # compaction.py, test_mode.py and developer/*, so a patch to any of those
+    # was never compile-checked at all.
+    build_cmd="python -m py_compile {files}",
+    lint_cmd="",  # no linter configured for this repo yet
+    test_cmd="python -m pytest tests/ -q --tb=short",
     # No lock primitive in Python — lock-scope gate is skipped
     lock_name="",
     risk_calls=(),
@@ -93,6 +98,30 @@ The patch has already passed a compiler and the project's test suite, INCLUDING
 every acceptance test listed for this ticket; a claim that it does not compile,
 or that it fails a test, is therefore almost certainly wrong -- say so only with
 a concrete mechanism. Gaps in what the tests COVER are still fair game.""",
+    # What "blocks" means in THIS codebase. Without it the arbiter falls back to
+    # a generic bar, and with the NT8 one ("state the sequence of events that
+    # loses money") nothing here could ever qualify.
+    arbiter_rules="""\
+You are the arbiter for a patch to the agent-loop package: the harness that
+gates other people's code on tests, and whose own verdicts decide whether a
+patch reaches a production repository.
+
+An UPHELD finding must name a concrete, reachable failure. Any of these qualify:
+  * a verdict or state that LIES -- the loop reports a state that did not happen
+    (MAX_ROUNDS when the arbiter never ran, APPROVE when a reviewer never voted,
+    applied_approved for a patch the panel did not unanimously pass);
+  * a gate that cannot fail, or cannot pass, regardless of the patch;
+  * data loss or mutation outside the disposable worktree (the live tree, the
+    recorded artifact corpus, the user's uncommitted work);
+  * a silent zero or silent default that hides a broken mechanism from its own
+    logs, rather than surfacing it;
+  * a crash or unhandled exception on input the function is documented to accept.
+
+These do NOT qualify: style, naming, "could be clearer", missing type hints,
+speculative future refactors, or a performance concern with no measured basis.
+
+An unsound SHIP here ships a harness that will wave through someone else's
+defect, so prefer ESCALATE over a confident wrong answer.""",
     settled=(),
 )
 

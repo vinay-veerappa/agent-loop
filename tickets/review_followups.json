@@ -1,0 +1,120 @@
+{
+  "_comment": "Follow-up tickets from the 2026-08-10 review of commit f2103cd. Acceptance tests live in tests/acceptance/test_review_followups.py and are RED at f2103cd. Run with: --profile agent-loop-self --profile-module profiles.self --tickets tickets/review_followups.json --ticket <id>",
+  "tickets": [
+    {
+      "id": "F1",
+      "title": "Finding.signature must survive incidental rewording",
+      "defect": "Finding.signature returns the first 200 characters of the finding text, lowercased and whitespace-collapsed. It retains digits and punctuation, so a reviewer quoting a different line number ('at line 412' vs 'at line 415') produces a DIFFERENT signature for the same finding. thrashing() returns None only when consecutive rounds share at least one signature, so unstable signatures make the loop report NOT_CONVERGING on a ticket that was in fact converging. The predecessor implementation (first 8 alphabetic words) was more robust here because it stripped non-alphabetic characters; the current one is a regression in exactly the dimension it claims to improve.",
+      "spec": "Rewrite the `signature` property so incidental variation does not change the value, while genuinely different findings still differ. Normalise by: lowercasing, removing every character that is not a letter or a space (so digits, punctuation and quoted line numbers drop out), collapsing runs of whitespace to a single space, and stripping leading/trailing whitespace. Keep enough of the text to stay discriminative -- do not truncate so aggressively that two unrelated findings collide, and never return a constant or an empty string for non-empty input. Keep it a read-only property with the same name and no new arguments.",
+      "regions": [
+        {
+          "id": "SIGNATURE",
+          "file": "src/agent_loop/loop.py",
+          "anchor": "def signature",
+          "note": "the Finding.signature property; thrashing() consumes its output"
+        }
+      ],
+      "expect_green": ["test_signature_ignores_incidental_variation"]
+    },
+    {
+      "id": "F2",
+      "title": "Lint gate must inspect the patch, not the whole worktree",
+      "defect": "check_lint(cmd, repo, timeout) runs the profile's lint_cmd over the entire worktree. It has no {files} substitution and no baseline of pre-existing findings, so a single lint error anywhere in the repository fails gate 1.5 on every round of every ticket, permanently. check_compile already solves this with a {files} placeholder substituted with the files the patch actually touched; check_lint must do the same. This is the mirror image of a gate that cannot fail: a gate that cannot pass is equally useless.",
+      "spec": "Add an optional keyword parameter `files: Sequence[str] = ()` to check_lint, positioned so the two existing positional call signatures (cmd, repo) and (cmd, repo, timeout) keep working unchanged. When the command contains the literal '{files}': if `files` is empty, return a passing GateResult whose summary says there are no files to lint (do not run the command); otherwise substitute '{files}' with the file paths, each individually double-quoted and separated by single spaces, exactly as check_compile does. When the command has no '{files}' placeholder, behave exactly as now. Do not change the gate name string ('lint') or the shape of the returned GateResult.",
+      "regions": [
+        {
+          "id": "CHECK_LINT",
+          "file": "src/agent_loop/gates.py",
+          "anchor": "def check_lint",
+          "note": "mirror the {files} handling already present in check_compile in this same file"
+        }
+      ],
+      "expect_green": [
+        "test_check_lint_substitutes_touched_files",
+        "test_check_lint_is_a_noop_when_nothing_was_touched"
+      ]
+    },
+    {
+      "id": "F3",
+      "title": "Cache-write tokens are neither captured nor priced",
+      "defect": "Prompt caching is now enabled for the Anthropic backend, but Completion has no field for cache-creation tokens, _call_anthropic never reads usage['cache_creation_input_tokens'], and cost_usd never prices them. Anthropic reports cache writes in a separate usage field (they are NOT included in input_tokens) and bills them at 1.25x the input rate. The loop therefore reports every cache write as costing nothing, which makes it impossible to tell whether enabling caching made a ticket cheaper or more expensive. The omission was harmless while nothing was ever cached; enabling caching activated it.",
+      "spec": "Three coordinated edits. (1) Add a `cache_creation_tokens: int = 0` field to the Completion dataclass, next to the existing cache_read_tokens field, with a comment saying these are billed at 1.25x input and are reported separately from input_tokens. (2) In cost_usd, add the cache-creation contribution at 1.25x the input rate, keeping the existing terms (uncached input at full rate, cache reads at 0.1x, output at the output rate) exactly as they are. (3) In _call_anthropic's returned Completion, populate cache_creation_tokens from usage['cache_creation_input_tokens'], defaulting to 0 when absent, in the same style as the adjacent cache_read_tokens assignment. Do not rename any existing field and do not change any existing arithmetic.",
+      "regions": [
+        {
+          "id": "COMPLETION_FIELD",
+          "file": "src/agent_loop/providers.py",
+          "kind": "line",
+          "anchor": "cache_read_tokens: int = 0",
+          "note": "one line inside the Completion dataclass; the replacement may span several lines"
+        },
+        {
+          "id": "COST_USD",
+          "file": "src/agent_loop/providers.py",
+          "anchor": "def cost_usd",
+          "note": "PRICING maps model -> (input_rate, output_rate) per 1M tokens"
+        },
+        {
+          "id": "ANTHROPIC_USAGE",
+          "file": "src/agent_loop/providers.py",
+          "kind": "line",
+          "anchor": "cache_read_tokens=usage.get",
+          "note": "one line in the Completion(...) returned by _call_anthropic"
+        }
+      ],
+      "expect_green": [
+        "test_cost_includes_the_cache_write_premium",
+        "test_cache_creation_tokens_are_captured_from_usage"
+      ]
+    },
+    {
+      "id": "F4",
+      "title": "Reviewer marginal value cannot detect overlap by string equality",
+      "defect": "_print_reviewer_marginal_value decides whether the other reviewer raised the same finding with `finding in all_findings_by_reviewer[other]` -- exact string equality on the finding text. Two different models never phrase a finding identically, so the comparison is effectively always False, every upheld finding is scored as unique to its author, and the metric can never identify the redundant reviewer it exists to find. It will report close to 100% unique-upheld for every reviewer regardless of actual overlap.",
+      "spec": "Add a module-level helper `_same_finding(a: str, b: str) -> bool` that decides whether two finding texts describe the same finding, tolerating rewording: normalise each side by lowercasing, dropping every character that is not a letter or a space, and collapsing whitespace; then compare on the overlap of the resulting word sets, treating the pair as the same finding when the overlap is a clear majority of the smaller set (use a threshold you can defend, and require at least a couple of shared words so two short unrelated findings do not match). Then use `_same_finding` in place of the exact-equality check in the overlap test inside _print_reviewer_marginal_value. Do not change what the function prints or its signature.",
+      "context": "The region you are given starts at the `def _print_reviewer_marginal_value` line, which sits at module level (indentation zero). You may therefore return BOTH the new module-level `_same_finding` function AND the existing function in that one block, in either order, as long as the first line of your replacement is at indentation zero. This is the only way to add a module-level function here.",
+      "regions": [
+        {
+          "id": "MARGINAL_VALUE",
+          "file": "src/agent_loop/report.py",
+          "anchor": "def _print_reviewer_marginal_value",
+          "note": "module-level function; the replacement may define _same_finding alongside it"
+        }
+      ],
+      "expect_green": ["test_same_finding_matches_across_rewording"]
+    },
+    {
+      "id": "F5",
+      "title": "Pearson correlation mixes population covariance with sample stdev",
+      "defect": "_print_arbiter_calibration computes cov by dividing by n (a population covariance) but divides by statistics.stdev (a SAMPLE standard deviation, which divides by n-1). Mixing the two scales the reported coefficient by (n-1)/n, so it is biased toward zero -- 33% too small at n=3, 10% at n=10. Perfectly correlated data reports 0.67 instead of 1.0, and the 'no strong signal' branch is therefore reached far more often than the data warrants.",
+      "spec": "Add a module-level helper `_pearson(xs: Sequence[float], ys: Sequence[float]) -> float` that returns the Pearson correlation coefficient computed consistently -- use population statistics on both sides (statistics.pstdev with the same divisor as the covariance) so perfectly correlated input returns exactly 1.0 and perfectly anti-correlated input returns exactly -1.0. Return 0.0 rather than raising when the input is empty, has fewer than two points, or has zero variance on either side. Then use _pearson inside _print_arbiter_calibration in place of the inline computation, keeping the existing printed output, the >= 3 tickets guard, and the interpretation thresholds unchanged.",
+      "context": "The region you are given starts at the `def _print_arbiter_calibration` line, which sits at module level (indentation zero). You may therefore return BOTH the new module-level `_pearson` function AND the existing function in that one block, in either order, as long as the first line of your replacement is at indentation zero. This is the only way to add a module-level function here. `statistics` is already imported in this module.",
+      "regions": [
+        {
+          "id": "ARBITER_CALIBRATION",
+          "file": "src/agent_loop/report.py",
+          "anchor": "def _print_arbiter_calibration",
+          "note": "module-level function; the replacement may define _pearson alongside it"
+        }
+      ],
+      "expect_green": [
+        "test_pearson_is_exact_on_perfectly_correlated_data",
+        "test_pearson_handles_zero_variance_without_dividing_by_zero"
+      ]
+    },
+    {
+      "id": "F6",
+      "title": "replay mode tracebacks on a repo that has never run the loop",
+      "defect": "The --mode replay branch calls log_root.iterdir() before the 'no recorded tickets' check. On a fresh clone, or any consumer repo that has not run the loop yet, logs/agent_loop does not exist and the CLI dies with an unhandled FileNotFoundError traceback instead of reporting that there is nothing to replay and returning a non-zero exit code.",
+      "spec": "Guard the directory scan: when logs/agent_loop does not exist or is not a directory, print the same 'No recorded tickets found' message and return 1, without calling iterdir(). Keep the existing behaviour for every other case, including the message text and the return codes (1 when there is nothing to replay, and the existing flip-based exit code when there is). Do not swallow unrelated OSErrors silently.",
+      "regions": [
+        {
+          "id": "REPLAY_MODE",
+          "file": "src/agent_loop/cli.py",
+          "anchor": "if args.mode == \"replay\":",
+          "note": "the whole replay dispatch block in main()"
+        }
+      ],
+      "expect_green": ["test_replay_mode_without_logs_dir_exits_cleanly"]
+    }
+  ]
+}
