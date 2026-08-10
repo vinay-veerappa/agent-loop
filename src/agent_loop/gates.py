@@ -204,7 +204,7 @@ def parse_tests(output: str) -> TestOutcome:
         )
     
     # Try pytest summary format: "N failed, M passed" or just "M passed"
-    # Look for the last occurrence (the summary line at the end)
+    # pytest pads the summary with === on both sides; strip those.
     for m in re.finditer(r"(\d+)\s+failed.*?(\d+)\s+passed", output):
         return TestOutcome(
             failures=failures,
@@ -213,7 +213,7 @@ def parse_tests(output: str) -> TestOutcome:
             ran=True,
             raw=output,
         )
-    for m in re.finditer(r"(\d+)\s+passed(?:\s+in\s+[\d.]+s)?\s*$", output, re.MULTILINE):
+    for m in re.finditer(r"(\d+)\s+passed(?:\s+in\s+[\d.]+s)?\s*=*\s*$", output, re.MULTILINE):
         return TestOutcome(
             failures=failures,
             passed=int(m.group(1)),
