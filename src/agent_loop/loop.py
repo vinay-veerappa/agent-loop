@@ -413,7 +413,9 @@ def run_ticket(
     tid = ticket["id"]
     art = repo / "logs" / "agent_loop" / tid
     art.mkdir(parents=True, exist_ok=True)
-    result: Dict[str, Any] = {"ticket": tid, "rounds": [], "applied": False, "cost_usd": 0.0}
+    result: Dict[str, Any] = {"ticket": tid, "rounds": [], "applied": False,
+                              "applied_approved": False, "applied_unapproved": False,
+                              "cost_usd": 0.0}
     convergence: List[Tuple[int, set]] = []
 
     region_files = sorted({r["file"] for r in ticket["regions"]})
@@ -476,8 +478,25 @@ def run_ticket(
 
         blocks: Dict[str, str] = {}
         final = "MAX_ROUNDS_EXHAUSTED"
+        arbiter_consulted = False
+
+        # Purge ALL stale per-round artifacts from prior runs before the loop
+        # starts. A prior run may have left r{N}_* files on disk; a resume with
+        # --max-rounds 1 would then produce a result.json that says 1 round
+        # while r2_* files exist, making the logs lie (T4/T5 bug). Purging at
+        # the top of each round only cleans the current round's stale files;
+        # purging here cleans ALL rounds' stale files so the on-disk artifacts
+        # always match the result.json's round count.
+        for stale in art.glob("r*_*.txt"):
+            stale.unlink()
 
         for rnd in range(1, max_rounds + 1):
+            # ---- purge stale artifacts from prior runs
+            # A prior run may have left r{rnd}_* files on disk; a resume with
+            # --max-rounds 1 would then produce a result.json that says 1 round
+            # while r2_* files exist, making the logs lie (T4/T5 bug).
+            for stale in art.glob(f"r{rnd}_*"):
+                stale.unlink()
             # ---- implement
             if rnd == 1 and resume_raw:
                 raw = Path(resume_raw).read_text(encoding="utf-8")
@@ -576,14 +595,27 @@ def run_ticket(
             )
 
             if not panel.valid:
+                # Quorum check: if >= ceil(2/3 * len(reviewers)) answered and
+                # all are APPROVE, proceed as APPROVE with panel_partial metadata.
+                # A 2-of-3 panel where both answered APPROVE is different from
+                # a 0-of-3 panel; hard-stopping on quorum-met unanimous APPROVE
+                # wastes a candidate that the panel approved.
+                import math
+                counted = [v for v in panel.votes if v.counted]
+                quorum = math.ceil(2 * len(reviewers) / 3) if reviewers else 1
+                if len(counted) >= quorum and all(v.status == APPROVE for v in counted):
+                    result["panel_partial"] = True
+                    final = "APPROVE"
+                    break
+
                 # A reviewer that could not be reached has not voted. This is
                 # NOT a rejection: stop cleanly, keep the candidate on disk, and
                 # let the arbiter resume from it once the provider is healthy.
-                # The predecessor silently scored this as a REVISE and burned
-                # the round -- see the module docstring.
                 who = ", ".join(f"{v.model} ({v.error})" for v in panel.unreachable)
                 print(f"           panel INVALID - NOT a rejection. Unreachable: {who}")
                 print(f"           resume with --resume-raw {art / f'r{rnd}_impl_raw.txt'}")
+                if touched:
+                    ws.revert(touched)
                 final = "PANEL_UNREACHABLE"
                 break
 
@@ -613,11 +645,19 @@ def run_ticket(
                     adj.raw or adj.error, encoding="utf-8"
                 )
                 if adj.ok:
+                    arbiter_consulted = True
                     print(f"           [arbiter] {adj.summary()}  {adj.usage}")
                     if adj.settled:
                         print(f"           [arbiter] nominates {len(adj.settled)} finding(s) as settled")
                 else:
                     print(f"           [arbiter] could not rule: {adj.error[:90]}")
+                    # The arbiter is unreachable. Falling through to feeding
+                    # ALL findings back is the T2 failure mode the arbiter
+                    # exists to prevent. Break with ARBITER_DEADLOCK instead.
+                    if touched:
+                        ws.revert(touched)
+                    final = "ARBITER_DEADLOCK"
+                    break
 
             result["rounds"][-1]["arbiter"] = adj.summary() if adj and adj.ok else None
 
@@ -664,6 +704,14 @@ def run_ticket(
                 },
             ]
 
+        # Distinguish "ran with arbiter, still not converging" from
+        # "ran without arbiter" (e.g. --max-rounds 1 + panel REVISE +
+        # arbiter disabled or never reached). The two cases are materially
+        # different: the first means the arbiter tried and could not converge;
+        # the second means the arbiter never had a chance.
+        if final == "MAX_ROUNDS_EXHAUSTED" and not arbiter_consulted:
+            final = "ARBITER_NEVER_RAN"
+
         result["final_verdict"] = final
         result["cost_usd"] = round(result["cost_usd"], 4)
 
@@ -683,6 +731,8 @@ def run_ticket(
                 if apply:
                     moved = ws.promote(sorted({r.file for r in regs}))
                     result["applied"] = True
+                    result["applied_approved"] = (final == "APPROVE")
+                    result["applied_unapproved"] = (final != "APPROVE")
                     result["touched"] = moved
                     tag = "" if final == "APPROVE" else " (UNAPPROVED - arbiter override)"
                     print(f"  APPLIED{tag} -> {', '.join(moved)}")
