@@ -1,0 +1,19 @@
+{
+  "tickets": [
+    {
+      "id": "P1-4b",
+      "title": "CLI exit code must return 0 for ARBITER_SHIP when applied",
+      "defect": "cli.py line 223 returns 0 only when final_verdict == 'APPROVE'. An ARBITER_SHIP with --apply returns exit 1, which is wrong: the arbiter recommended SHIP and the human signed off with --allow-unapproved --apply. This means CI and wrapper scripts that check the exit code will treat a successful arbiter-ship as a failure.",
+      "spec": "Change the exit code condition to return 0 when any result has final_verdict == 'APPROVE' OR final_verdict == 'ARBITER_SHIP'. The condition on line 223 currently reads: return 0 if any(r.get('final_verdict') == 'APPROVE' for r in results) else 1. Change it to also include ARBITER_SHIP. Keep it a single line.",
+      "regions": [
+        {
+          "id": "EXIT_CODE",
+          "file": "src/agent_loop/cli.py",
+          "anchor": "return 0 if any",
+          "kind": "line"
+        }
+      ],
+      "expect_green": ["test_p1_4b_cli_exit_code_arbiter_ship"]
+    }
+  ]
+}

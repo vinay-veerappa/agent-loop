@@ -163,8 +163,15 @@ def check_compile(cmd: str, repo: Path, timeout: int = 900) -> GateResult:
 # --------------------------------------------------------------------------
 # Gate 3 - test, against a frozen expected-failure baseline
 # --------------------------------------------------------------------------
+# Two output formats are parsed:
+#   1. The NT8 dotnet test format: "RESULTS: Passed = N, Failed = M"
+#   2. The pytest format: "N failed, M passed" (or "M passed in N.NNs")
 _FAIL_LINE = re.compile(r"^\s*\[FAIL\]\s*(?P<msg>.+?)\s*$", re.MULTILINE)
+# Also catch pytest FAILED lines: "FAILED tests/test_x.py::test_name"
+_FAIL_PYTEST = re.compile(r"^FAILED\s+(?P<msg>\S+::\S+)", re.MULTILINE)
 _RESULTS = re.compile(r"RESULTS:\s*Passed\s*=\s*(\d+),\s*Failed\s*=\s*(\d+)")
+# pytest summary: "1 failed, 17 passed" or "17 passed" or "1 failed, 17 passed in 4.71s"
+_PYTEST_SUMMARY = re.compile(r"(\d+)\s+failed.*?(\d+)\s+passed|(\d+)\s+passed(?!\s+in\s)", re.DOTALL)
 
 
 @dataclass
@@ -181,17 +188,41 @@ class TestOutcome:
 
 
 def parse_tests(output: str) -> TestOutcome:
+    # Collect failures from both NT8 [FAIL] format and pytest FAILED format
     failures = {m.group("msg") for m in _FAIL_LINE.finditer(output)}
+    failures.update(m.group("msg") for m in _FAIL_PYTEST.finditer(output))
+    
+    # Try NT8 format first
     m = _RESULTS.search(output)
-    if not m:
-        return TestOutcome(failures=failures, ran=False, raw=output)
-    return TestOutcome(
-        failures=failures,
-        passed=int(m.group(1)),
-        failed=int(m.group(2)),
-        ran=True,
-        raw=output,
-    )
+    if m:
+        return TestOutcome(
+            failures=failures,
+            passed=int(m.group(1)),
+            failed=int(m.group(2)),
+            ran=True,
+            raw=output,
+        )
+    
+    # Try pytest summary format: "N failed, M passed" or just "M passed"
+    # Look for the last occurrence (the summary line at the end)
+    for m in re.finditer(r"(\d+)\s+failed.*?(\d+)\s+passed", output):
+        return TestOutcome(
+            failures=failures,
+            passed=int(m.group(2)),
+            failed=int(m.group(1)),
+            ran=True,
+            raw=output,
+        )
+    for m in re.finditer(r"(\d+)\s+passed(?:\s+in\s+[\d.]+s)?\s*$", output, re.MULTILINE):
+        return TestOutcome(
+            failures=failures,
+            passed=int(m.group(1)),
+            failed=0,
+            ran=True,
+            raw=output,
+        )
+    
+    return TestOutcome(failures=failures, ran=False, raw=output)
 
 
 def run_tests(cmd: str, repo: Path, timeout: int = 900) -> TestOutcome:
