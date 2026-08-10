@@ -30,7 +30,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from . import arbiter, gates, profiles, regions, workspace
 from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
-from .memory import extract_settled, save_settled, inject_settled
+from .memory import (
+    extract_settled, save_settled, inject_settled,
+    save_feedback, build_learning_context,
+)
 from .providers import Completion, ProviderError, chat
 
 # `>{2,}` rather than `>>>`: kimi-k2.7-code closed a block with `>>` on T3 and
@@ -633,6 +636,10 @@ def run_ticket(
                 if len(reviewer_context) > half_budget:
                     reviewer_context = reviewer_context[:half_budget] + "\n... (truncated)"
                 prompt += f"\n\n## Graph context for review (callers + types)\n{reviewer_context}"
+            # Phase 9: inject learning feedback (rejected/upheld findings from prior tickets)
+            learning_ctx = build_learning_context(repo)
+            if learning_ctx:
+                prompt += f"\n\n{learning_ctx}"
             panel = review_panel(
                 reviewers, prompt, profile.reviewer_system, art, rnd, deadline_secs=panel_deadline
             )
@@ -719,6 +726,18 @@ def run_ticket(
                         saved = save_settled(repo, tid, adj.settled)
                         if saved:
                             print(f"           [memory] saved {saved} settled decision(s) to store")
+
+                    # Phase 9: save learning feedback for each finding's ruling
+                    for ruling in adj.rulings:
+                        save_feedback(
+                            repo,
+                            tid,
+                            rnd,
+                            ruling.model if hasattr(ruling, "model") else "?",
+                            ruling.reason[:200],
+                            "BLOCKER",  # severity unknown from ruling; approximate
+                            ruling.verdict,  # UPHELD / REJECTED / OUT_OF_SCOPE
+                        )
                 else:
                     print(f"           [arbiter] could not rule: {adj.error[:90]}")
                     # The arbiter is unreachable. Falling through to feeding

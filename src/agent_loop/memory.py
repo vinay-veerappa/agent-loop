@@ -1,20 +1,27 @@
 """
 memory.py
-==========
-Persistent memory for settled decisions (Phase 5).
+=========
+Persistent memory for settled decisions (Phase 5) + learning feedback (Phase 9).
 
-The arbiter already nominates settled decisions in its <<<SETTLED>>>
-output. Nothing persists them. A human reads the arbiter response and
-copies decisions into profiles.py by hand.
+SETTLED DECISIONS:
+The arbiter nominates settled decisions in its <<<SETTLED>>> output. This
+module auto-extracts them, deduplicates by ticket+hash, and persists to a
+JSONL store. At the start of each ticket, the most recent N decisions are
+loaded and injected into the review prompt alongside hand-curated ones.
 
-This module auto-extracts the SETTLED section from every arbiter response
-and writes it to a settled-decisions store (a JSONL file at
-logs/agent_loop/settled_decisions.jsonl, keyed by ticket + hash of
-decision text). At the start of each ticket, load all settled decisions
-and inject them into profile.settled alongside the hand-curated ones.
+Context bloat control: only the most recent MAX_SETTLED_INJECTED decisions
+are injected (default 20). Older decisions stay on disk for auditability
+but don't bloat the prompt. This caps settled-decision injection at ~1K
+tokens regardless of how many tickets have run.
 
-Concurrency: uses atomic file writes to avoid corruption when multiple
-agent loops run concurrently.
+LEARNING FEEDBACK:
+After each round, the loop records what happened — which findings were
+upheld, which rejected, how many rounds it took, which models were used.
+This feedback store is queried at the start of each ticket to surface
+"last time this kind of finding came up, the arbiter rejected it" —
+teaching reviewers not to repeat known false positives.
+
+Concurrency: uses atomic file writes (os.replace) to avoid corruption.
 """
 from __future__ import annotations
 
@@ -24,6 +31,14 @@ import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+
+
+# Cap on settled decisions injected into the prompt (context bloat control).
+# Older decisions stay on disk for auditability but don't bloat the prompt.
+MAX_SETTLED_INJECTED = 20
+
+# Cap on learning feedback entries injected into the prompt.
+MAX_FEEDBACK_INJECTED = 10
 
 
 def _settled_path(repo: Path) -> Path:
@@ -160,14 +175,180 @@ def inject_settled(profile_settled: Sequence[str], repo: Path) -> List[str]:
 
     Hand-curated decisions (from the profile) take precedence; auto-extracted
     ones are advisory and appended after.
+
+    Context bloat control: only the most recent MAX_SETTLED_INJECTED
+    auto-extracted decisions are included. Older decisions stay on disk
+    for auditability but are not injected into the prompt.
     """
     auto = load_settled(repo)
     if not auto:
         return list(profile_settled)
 
+    # Cap auto-extracted decisions to prevent context bloat.
+    # load_settled already returns most-recent-first.
+    capped_auto = auto[:MAX_SETTLED_INJECTED]
+
     # Combine: profile-settled first (they are reviewed), then auto-extracted
     combined = list(profile_settled)
-    for decision in auto:
+    for decision in capped_auto:
         if decision not in combined:
             combined.append(decision)
     return combined
+
+
+# ---------------------------------------------------------------------------
+# Learning feedback store (Phase 9)
+# ---------------------------------------------------------------------------
+def _feedback_path(repo: Path) -> Path:
+    """Path to the learning feedback store."""
+    return repo / "logs" / "agent_loop" / "learning_feedback.jsonl"
+
+
+def save_feedback(
+    repo: Path,
+    ticket_id: str,
+    round_num: int,
+    reviewer_model: str,
+    finding_text: str,
+    finding_severity: str,
+    arbiter_ruling: str,
+) -> int:
+    """Record a learning feedback entry: what the reviewer found and how
+    the arbiter ruled. This teaches future reviewers which findings are
+    real and which are false positives.
+
+    Args:
+        repo: the repo root
+        ticket_id: the ticket being worked on
+        round_num: which round (1-based)
+        reviewer_model: which model raised the finding
+        finding_text: the finding text
+        finding_severity: BLOCKER / MAJOR / MINOR
+        arbiter_ruling: UPHELD / REJECTED / OUT_OF_SCOPE
+
+    Returns:
+        1 if saved, 0 if skipped (duplicate)
+    """
+    path = _feedback_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Deduplicate: skip if we've already recorded this exact finding+ruling
+    key = f"{ticket_id}:{round_num}:{_hash_text(finding_text)}:{arbiter_ruling}"
+
+    # Load existing keys
+    existing_keys = set()
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+                existing_keys.add(entry.get("key", ""))
+            except json.JSONDecodeError:
+                continue
+
+    if key in existing_keys:
+        return 0
+
+    entry = {
+        "ticket": ticket_id,
+        "round": round_num,
+        "reviewer": reviewer_model,
+        "finding": finding_text,
+        "severity": finding_severity,
+        "ruling": arbiter_ruling,
+        "key": key,
+    }
+
+    # Atomic append
+    temp_fd, temp_path = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix="feedback_"
+    )
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            if path.exists():
+                f.write(path.read_text(encoding="utf-8"))
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        os.replace(temp_path, str(path))
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+    return 1
+
+
+def load_rejected_findings(repo: Path) -> List[Dict[str, str]]:
+    """Load findings the arbiter has REJECTED in prior tickets.
+
+    These are known false positives — reviewers should not re-raise them.
+    Returns the most recent MAX_FEEDBACK_INJECTED entries, most recent first.
+    """
+    path = _feedback_path(repo)
+    if not path.exists():
+        return []
+
+    rejected = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+            if entry.get("ruling") == "REJECTED":
+                rejected.append(entry)
+        except json.JSONDecodeError:
+            continue
+
+    # Most recent first
+    rejected.reverse()
+    return rejected[:MAX_FEEDBACK_INJECTED]
+
+
+def load_upheld_findings(repo: Path) -> List[Dict[str, str]]:
+    """Load findings the arbiter has UPHELD in prior tickets.
+
+    These are known real defects — reviewers should continue to flag them.
+    Returns the most recent MAX_FEEDBACK_INJECTED entries, most recent first.
+    """
+    path = _feedback_path(repo)
+    if not path.exists():
+        return []
+
+    upheld = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+            if entry.get("ruling") == "UPHELD":
+                upheld.append(entry)
+        except json.JSONDecodeError:
+            continue
+
+    # Most recent first
+    upheld.reverse()
+    return upheld[:MAX_FEEDBACK_INJECTED]
+
+
+def build_learning_context(repo: Path) -> str:
+    """Build a compact learning context string for the reviewer prompt.
+
+    This injects:
+    - Recently REJECTED findings ("don't re-raise these known false positives")
+    - Recently UPHELD findings ("these are real, keep flagging them")
+
+    Returns an empty string when no feedback exists (first run).
+    """
+    rejected = load_rejected_findings(repo)
+    upheld = load_upheld_findings(repo)
+
+    if not rejected and not upheld:
+        return ""
+
+    parts = ["## LEARNING FEEDBACK (from prior tickets)"]
+
+    if rejected:
+        parts.append(f"\n### Known false positives (arbiter REJECTED these — do NOT re-raise):")
+        for entry in rejected[:5]:  # cap at 5 for token budget
+            finding = entry.get("finding", "")[:120]
+            parts.append(f"- REJECTED: {finding}")
+
+    if upheld:
+        parts.append(f"\n### Known real defects (arbiter UPHELD these — keep flagging if you see them):")
+        for entry in upheld[:5]:
+            finding = entry.get("finding", "")[:120]
+            parts.append(f"- UPHELD: {finding}")
+
+    return "\n".join(parts)
