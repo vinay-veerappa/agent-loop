@@ -16,6 +16,88 @@ unanimously approved.
 
 The question now is: what makes this an instrument instead of an artifact?
 
+## Reviewer calibration
+
+The panel has two reviewers and an arbiter. Each round, the reviewers
+find things and the arbiter rules on them. The question that justifies
+the panel's cost is: *is the second reviewer worth it?*
+
+### The wrong metric
+
+The obvious metric — "upheld findings per dollar per reviewer" — rewards
+the wrong behavior. A reviewer that always says APPROVE has a perfect
+cost-to-finding ratio: zero findings, zero cost, zero false positives.
+That's not a good reviewer. That's a rubber stamp.
+
+A reviewer that restates what the first one found also looks productive:
+lots of findings, lots of upheld. But it adds zero marginal value — the
+first reviewer would have caught the same thing. The cost is real; the
+value is not.
+
+### The right metric
+
+The metric that matters is: **upheld findings the *other* reviewer
+missed**. This is the marginal value of the second reviewer. A reviewer
+that finds things the other one didn't, and the arbiter upholds them, is
+earning its cost. A reviewer that only restates what the first one found
+is pure cost.
+
+More precisely:
+
+```
+marginal_value(reviewer_A) = |upheld findings A found that B missed|
+marginal_value(reviewer_B) = |upheld findings B found that A missed|
+```
+
+If both numbers are zero, the second reviewer is redundant. If both are
+high, the panel is worth its cost. If one is high and the other is zero,
+you have one good reviewer and one rubber stamp.
+
+### The deeper problem
+
+The arbiter's rulings are not ground truth. An UPHELD finding means "the
+arbiter thinks this is real," not "this is actually real." The arbiter is
+a model, not an oracle. The only ground truth is: does the patch lose
+money? You can't measure that in a loop.
+
+So the calibration metric is a proxy: *do arbiter-upheld findings
+correlate with tickets that converge faster?* If tickets with more
+upheld findings converge in fewer rounds, the arbiter is doing its job.
+If tickets with more upheld findings take *more* rounds, the arbiter is
+upholding noise — sending the implementer on wild goose chases.
+
+This is a correlation measurable from the ledger: compare `upheld_count`
+per ticket to `rounds_to_converge` per ticket.
+
+### What the report command shows
+
+The `report` command (item 1 below) prints:
+
+1. **Per-reviewer marginal value**: upheld findings the other reviewer
+   missed, per ticket. Rolling average across the last N tickets.
+2. **Arbiter calibration**: correlation between upheld count and rounds
+   to converge. If the correlation is positive (more upheld = more
+   rounds), the arbiter is upholding noise. If negative (more upheld =
+   fewer rounds), the arbiter is filtering real findings that speed
+   convergence.
+3. **Gate-failure distribution**: which rung catches the most, which
+   never fires. A linter rung that never fires is a linter rung that
+   costs nothing and finds nothing. A compile gate that catches 50% of
+   candidates means the implementer is producing broken code half the
+   time.
+4. **Cost per verdict**: average cost of an APPROVE ticket vs an
+   ESCALATE ticket. If ESCALATE costs 4x APPROVE, escalation is
+   expensive — and the arbiter prompt should be tuned to decide earlier.
+
+### What the replay corpus adds
+
+The replay corpus (item 2 below) turns calibration from a correlation
+into a regression test. Freeze a dozen tickets with known outcomes.
+Change the arbiter prompt. Run the replay. See which tickets flip
+verdict. If the new prompt upholds more findings but the same tickets
+converge, the arbiter is better. If the new prompt upholds more findings
+and tickets take *more* rounds, the arbiter is worse.
+
 ---
 
 ## What we are building (agreed sequence)
