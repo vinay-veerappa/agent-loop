@@ -6,26 +6,22 @@ concrete execution plan. The current loop is documented in
 here. This doc covers: the current state machine, the issues found, the eight execution
 phases, the new states, the Developer mode spec, and the mode pipeline.
 
-**Status**: phase 1 COMPLETE. All 5 state-machine fixes applied, 17/17 tests pass.
+**Status**: ALL 8 PHASES COMPLETE. 67/67 tests pass.
 
-| Component | Status | Location |
-|---|---|---|
-| Self-profile (Python) | Done | `profiles/self.py` |
-| Acceptance tests (7 issues) | 7 pass (all green) | `tests/acceptance/test_phase1_state_machine.py` |
-| Tickets (5, test-first) | Done | `tickets/phase1_state_machine.json` |
-| Indent-based region finder | Done | `src/agent_loop/regions.py` `kind="indent"` |
-| Model registry | Done | `src/agent_loop/models.py` |
-| Language-agnostic profiles | Done | `src/agent_loop/profiles.py` |
-| **P1-1: Stale artifact purge** | **Done** | `loop.py` — purge all `r*_*.txt` before loop starts |
-| **P1-2: ARBITER_DEADLOCK** | **Done** | `loop.py` — break + revert when arbiter unreachable |
-| **P1-3: ARBITER_NEVER_RAN** | **Done** | `loop.py` — `arbiter_consulted` flag distinguishes from MAX_ROUNDS |
-| **P1-4: applied_approved/unapproved** | **Done** | `loop.py` — split `applied` into two booleans |
-| **P1-6: Revert on PANEL_UNREACHABLE** | **Done** | `loop.py` — revert touched before break |
-| **P1-7: Quorum** | **Done** | `loop.py` — 2-of-3 unanimous APPROVE proceeds with `panel_partial` |
+| Phase | Status | Commit | Tests |
+|---|---|---|---|
+| 1: State machine fixes | COMPLETE | `1603a30`, `c4f3daf` | 18 |
+| 2: Graph freshness | COMPLETE | `ec91be4` | 21 |
+| 3: Passive context injection | COMPLETE | `2b4cd00` | 26 |
+| 4: Compaction | COMPLETE | `ce86d50` | 33 |
+| 5: Persistent memory | COMPLETE | `2ce0ec2` | 42 |
+| 6: Plan + Test modes | COMPLETE | `de8341e` | 47 |
+| 7: Active graph tools | COMPLETE | `8a0ff49` | 67 |
+| 8: Developer mode | COMPLETE | `8a0ff49` | 67 |
 
-The loop is at the **bootstrapping point**: its state machine is honest, it can run against
-its own Python source, and the acceptance tests prove the fixes work. The loop is ready to
-use itself for future tickets (phases 2-8).
+The loop is fully bootstrapped. It can run against its own Python source,
+patch itself, review itself, and arbitrate its own findings. All 8 phases
+of the execution plan are built and tested.
 
 **Repo**: this package was extracted from `tvDownloadOHLC/src/agent_loop/` into the
 standalone `agent-loop` repo at `github.com/vinay-veerappa/agent-loop`. The package lives in

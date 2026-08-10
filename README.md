@@ -13,23 +13,24 @@ Implement -> gate -> review -> arbitrate -> apply.
 
 ## Status
 
-Phase 1 (state machine fixes) is complete. The loop can run against its own Python source.
+All 8 phases of the execution plan are complete. 67/67 tests pass.
 
-| Milestone | Status |
+| Phase | Status |
 |---|---|
-| Package extraction from tvDownloadOHLC | Done |
-| Language-agnostic profiles + model registry | Done |
-| Indent-based region finder (Python) | Done |
-| Phase 1: 7 state-machine fixes (stale artifacts, arbiter deadlock, ARBITER_NEVER_RAN, applied split, quorum) | Done (17/17 tests pass) |
-| Phase 2: Re-index the graph | Next |
-| Phase 3: Passive graph-augmented prompts | Planned |
-| Phase 4: Compaction | Planned |
-| Phase 5: Persistent memory | Planned |
-| Phase 6: Plan + Test modes | Planned |
-| Phase 7: Active graph tools | Planned |
-| Phase 8: Developer mode | Planned |
+| 1: State machine fixes | Done |
+| 2: Graph freshness | Done |
+| 3: Passive context injection | Done |
+| 4: Compaction | Done |
+| 5: Persistent memory | Done |
+| 6: Plan + Test modes | Done |
+| 7: Active graph tools | Done |
+| 8: Developer mode | Done |
 
-See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan.
+The loop bootstrapped itself: it ran a ticket against its own source,
+generated a fix, passed all gates, and both reviewers unanimously approved.
+
+See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan
+and [IMPLEMENTATION_DECISIONS.md](docs/architecture/IMPLEMENTATION_DECISIONS.md) for the decision log.
 
 ## Install
 
