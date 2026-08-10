@@ -1,4 +1,4 @@
-"""
+﻿"""
 selftest.py
 ===========
 Offline end-to-end exercise of the loop, with the model calls stubbed.
@@ -25,6 +25,14 @@ from .providers import Completion, ProviderError
 
 REPO = Path(__file__).resolve().parents[2]
 
+# A minimal test profile for the selftest (Python)
+_SELFTEST_PROFILE = profiles.Profile(
+    name="selftest",
+    language="python", file_suffixes=(".py",),
+    line_comment="#", block_comment=(), block_kind="indent",
+    implementer_rules="test", reviewer_priorities="test",
+)
+
 APPROVE_BODY = (
     "<<<VERDICT>>>\nAPPROVE\n<<<END VERDICT>>>\n"
     "<<<FINDINGS>>>\n- NONE\n<<<END FINDINGS>>>\n"
@@ -43,7 +51,7 @@ def _identity_patch(ticket: Dict) -> str:
     Unchanged source must sail through every gate; if it does not, a gate is
     broken rather than the patch being bad.
     """
-    regs = regions.extract(REPO, ticket["regions"])
+    regs = regions.extract(REPO, ticket["regions"], _SELFTEST_PROFILE)
     parts = [f'<<<BLOCK id="{r.id}">>>\n{r.text}\n<<<END id="{r.id}">>>' for r in regs]
     parts.append("<<<NOTES>>>\n- no change (selftest)\n<<<END NOTES>>>")
     return "\n".join(parts)
@@ -91,7 +99,7 @@ def scenario(
         res = loop.run_ticket(
             REPO,
             ticket,
-            profiles.get("nt8-riskguard"),
+            _SELFTEST_PROFILE,
             "stub-implementer",
             reviewers,
             max_rounds=2,
@@ -199,8 +207,8 @@ def parser_fixtures() -> bool:
 
 
 def main() -> int:
-    spec = json.loads((REPO / "scripts/agent_loop/tickets_p0.json").read_text(encoding="utf-8"))
-    t3 = next(t for t in spec["tickets"] if t["id"] == "T3")
+    spec = json.loads((REPO / "tickets" / "phase1_state_machine.json").read_text(encoding="utf-8"))
+    t3 = spec["tickets"][0]  # use the first ticket in the file
     # Keep artifacts out of the real ticket directories.
     t3 = dict(t3, id="SELFTEST")
 
@@ -263,7 +271,7 @@ def main() -> int:
         {"id": "X", "file": "scripts/ninjatrader/addons/RiskGuardAddOnTests.cs", "anchor": "class"}
     ])
     print("\n--- ticket targeting the test file -> refused before any model call")
-    res = loop.run_ticket(REPO, evil, profiles.get("nt8-riskguard"), "x", ["y"], max_rounds=1)
+    res = loop.run_ticket(REPO, evil, _SELFTEST_PROFILE, "x", ["y"], max_rounds=1)
     ok = res.get("final_verdict") == "TICKET_REJECTED"
     print(f"    expect=TICKET_REJECTED  got={res.get('final_verdict')}  {'PASS' if ok else 'FAIL'}")
     results.append(ok)
@@ -273,7 +281,7 @@ def main() -> int:
     # make expect_green silently unfalsifiable.
     print("\n--- expect_green naming a test that already passes -> refused")
     bad = dict(t3, id="SELFTEST_EXPECT", expect_green=["TestThatDoesNotExistAnywhere"])
-    res = loop.run_ticket(REPO, bad, profiles.get("nt8-riskguard"), "x", ["y"], max_rounds=1)
+    res = loop.run_ticket(REPO, bad, _SELFTEST_PROFILE, "x", ["y"], max_rounds=1)
     ok = res.get("final_verdict") == "TICKET_REJECTED"
     print(f"    expect=TICKET_REJECTED  got={res.get('final_verdict')}  {'PASS' if ok else 'FAIL'}")
     results.append(ok)
@@ -283,7 +291,7 @@ def main() -> int:
     src = loop.extract_test_sources(
         REPO,
         ["TestCopyPath_LockedFollowerReceivesNoCopy"],
-        profiles.get("nt8-riskguard").test_sources,
+        _SELFTEST_PROFILE.test_sources,
     )
     ok = "private static void TestCopyPath_LockedFollowerReceivesNoCopy" in src and "Assert(" in src
     print(f"    {'PASS' if ok else 'FAIL'}  {len(src)} chars, {src.count('Assert(')} assertion(s)")
@@ -298,3 +306,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
