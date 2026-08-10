@@ -19,7 +19,7 @@ def test_profile_dataclass():
         language="python",
         file_suffixes=(".py",),
         line_comment="#",
-        block_comment=("#",),
+        block_comment=(),  # Python has no block comments
         implementer_rules="test rules",
         reviewer_priorities="test priorities",
     )
@@ -68,7 +68,7 @@ def test_split_model():
 
 def test_strip_code_python():
     """strip_code handles Python line comments."""
-    p = Profile(name="py", language="python", file_suffixes=(".py",), line_comment="#", block_comment=("#",))
+    p = Profile(name="py", language="python", file_suffixes=(".py",), line_comment="#", block_comment=())
     assert strip_code("x = 1  # comment", p) == "x = 1  "
     assert strip_code('y = "hello # world"', p) == 'y = '
 

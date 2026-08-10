@@ -102,8 +102,12 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
     if kind == "line":
         return start, start
 
-    depth, seen_open = 0, False
     strip_fn = lambda ln: strip_code(ln, profile) if profile else strip_code_default(ln)
+
+    if kind == "indent":
+        return _find_indent_block(lines, start, strip_fn)
+
+    depth, seen_open = 0, False
     for i in range(start, len(lines)):
         for ch in strip_fn(lines[i]):
             if ch == "{":
@@ -114,6 +118,57 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
                 if seen_open and depth == 0:
                     return start, i
     raise RegionError(f"unbalanced braces from anchor: {anchor!r}")
+
+
+def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int]:
+    """Find the extent of an indentation-based block (Python, YAML, etc.).
+
+    The anchor line is the declaration (e.g., 'def foo():' or 'for x in y:').
+    The block extends until a line at the same or lesser indentation level
+    that is not blank and not a comment.
+
+    If the anchor line itself ends with a colon (e.g., 'def foo():'), the
+    block starts on the NEXT non-blank line and extends until the indentation
+    returns to the anchor's level or above.
+    """
+    if start >= len(lines):
+        raise RegionError(f"anchor at end of file")
+
+    anchor_code = strip_fn(lines[start])
+    anchor_indent = len(anchor_code) - len(anchor_code.lstrip())
+
+    # Check if this line ends with a colon (Python block opener)
+    stripped = anchor_code.rstrip()
+    if stripped.endswith(":"):
+        # The block body starts on the next non-blank, non-comment line.
+        # The body's indentation must be > anchor_indent.
+        # The block ends at the last consecutive line with indent > anchor_indent
+        # (skipping blank lines and comments).
+        end = start
+        for i in range(start + 1, len(lines)):
+            code = strip_fn(lines[i])
+            if not code.strip():
+                continue  # blank line — part of the block
+            if code.lstrip().startswith("#") if strip_fn == strip_code_default else \
+               code.lstrip().startswith("#"):
+                # Comment-only line at body indent is part of the block
+                line_indent = len(code) - len(code.lstrip())
+                if line_indent > anchor_indent:
+                    end = i
+                    continue
+                else:
+                    break
+            line_indent = len(code) - len(code.lstrip())
+            if line_indent > anchor_indent:
+                end = i
+            else:
+                break
+        if end == start:
+            raise RegionError(f"no indented body found after anchor at line {start + 1}")
+        return start, end
+
+    # No colon — just the anchor line itself
+    return start, start
 
 
 def strip_code_default(line: str) -> str:
@@ -151,7 +206,7 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
         src = path.read_text(encoding="utf-8")
         guard_unsupported_syntax(path, src, profile)
         lines = src.splitlines()
-        kind = spec.get("kind", "decl")
+        kind = spec.get("kind", profile.block_kind)
         if kind in ("method", "block"):
             kind = "decl"
         start, end = find_region(lines, spec["anchor"], kind, profile)

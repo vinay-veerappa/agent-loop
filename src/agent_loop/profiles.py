@@ -59,6 +59,7 @@ class Profile:
     preprocessor_directives: Tuple[str, ...] = ()  # ("#if", "#endif") for C#; () for Python
     block_comment: Tuple[str, ...] = ("/*", "*/")  # for strip_code; ("#",) for Python
     line_comment: str = "//"               # "//" for C#/TS; "#" for Python/Go
+    block_kind: str = "decl"               # "decl" for brace-delimited; "indent" for Python
     # Build and test
     build_cmd: str = ""
     test_cmd: str = ""

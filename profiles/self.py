@@ -17,7 +17,8 @@ SELF = Profile(
     language="python",
     file_suffixes=(".py",),
     line_comment="#",
-    block_comment=("#",),
+    block_comment=(),  # Python has no block comments; # is a line comment
+    block_kind="indent",
     preprocessor_directives=(),  # Python has no preprocessor
     # Build and test
     build_cmd="python -m py_compile src/agent_loop/loop.py src/agent_loop/cli.py src/agent_loop/gates.py src/agent_loop/regions.py src/agent_loop/profiles.py src/agent_loop/models.py src/agent_loop/arbiter.py src/agent_loop/providers.py src/agent_loop/workspace.py",
