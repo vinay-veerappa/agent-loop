@@ -33,14 +33,29 @@ from .profiles import Profile
 
 
 def check_graph_freshness(repo: Path, profile: Profile, timeout: int = 60) -> str:
-    """Check whether the codebase-memory-mcp graph is fresh for this repo."""
+    """Check whether the codebase-memory-mcp graph is fresh for this repo.
+
+    Compares the mtime of the newest source file against a persisted marker.
+    Returns 'fresh', 'stale', 'no-project', or 'error: ...'.
+    """
     if not profile.graph_project:
         return "no-project"
     try:
         newest_py = _newest_source_mtime(repo, profile)
         if newest_py is None:
             return "fresh"
-        print(f"  [graph] checking freshness for {profile.graph_project}...")
+
+        marker_path = repo / "logs" / "agent_loop" / ".graph_mtime"
+        if marker_path.exists():
+            try:
+                last_indexed = float(marker_path.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                last_indexed = 0.0
+        else:
+            last_indexed = 0.0
+
+        if newest_py > last_indexed:
+            return "stale"
         return "fresh"
     except Exception as exc:
         return f"error: {exc}"

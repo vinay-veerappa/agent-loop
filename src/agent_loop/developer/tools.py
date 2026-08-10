@@ -115,7 +115,10 @@ def execute_tool(
 
 def _read_file(repo: Path, args: Dict[str, Any]) -> str:
     """Read a file, windowed to 100 lines."""
-    path = repo / args["path"]
+    path = (repo / args["path"]).resolve()
+    # Security: prevent path traversal outside the repo
+    if not str(path).startswith(str(repo.resolve())):
+        return f"ERROR: path {args['path']} escapes the repo root"
     if not path.exists():
         return f"ERROR: file not found: {args['path']}"
     start = args.get("start_line", 1)
@@ -192,7 +195,10 @@ def _trace_call_path(args: Dict[str, Any], profile: Profile) -> str:
 
 def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
     """Apply an edit to a file using exact string replacement."""
-    path = repo / args["path"]
+    path = (repo / args["path"]).resolve()
+    # Security: prevent path traversal outside the repo
+    if not str(path).startswith(str(repo.resolve())):
+        return f"ERROR: path {args['path']} escapes the repo root"
     if not path.exists():
         return f"ERROR: file not found: {args['path']}"
 

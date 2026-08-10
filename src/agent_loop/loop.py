@@ -403,8 +403,6 @@ class RoundRecord:
     reviewer_output_tokens: int = 0
     arbiter_input_tokens: int = 0
     arbiter_output_tokens: int = 0
-    cost_usd: float = 0.0
-    secs: float = 0.0
 
 
 def run_ticket(
@@ -528,6 +526,7 @@ def run_ticket(
             stale.unlink()
 
         for rnd in range(1, max_rounds + 1):
+            out = None  # may not be set on resume-raw path
             # ---- purge stale artifacts from prior runs
             # A prior run may have left r{rnd}_* files on disk; a resume with
             # --max-rounds 1 would then produce a result.json that says 1 round
@@ -643,9 +642,9 @@ def run_ticket(
             # Sum token usage across reviewers
             rev_in = sum(v.input_tokens if hasattr(v, 'input_tokens') else 0 for v in panel.votes)
             rev_out = sum(v.output_tokens if hasattr(v, 'output_tokens') else 0 for v in panel.votes)
-            # Sum token usage for implementer this round
-            impl_in = out.input_tokens if 'out' in dir() and hasattr(out, 'input_tokens') else 0
-            impl_out = out.output_tokens if 'out' in dir() and hasattr(out, 'output_tokens') else 0
+            # Sum token usage for implementer this round (out may not be set on resume-raw)
+            impl_in = out.input_tokens if out is not None and hasattr(out, 'input_tokens') else 0
+            impl_out = out.output_tokens if out is not None and hasattr(out, 'output_tokens') else 0
 
             result["rounds"].append(
                 RoundRecord(

@@ -149,8 +149,7 @@ def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int
             code = strip_fn(lines[i])
             if not code.strip():
                 continue  # blank line — part of the block
-            if code.lstrip().startswith("#") if strip_fn == strip_code_default else \
-               code.lstrip().startswith("#"):
+            if code.lstrip().startswith("#"):
                 # Comment-only line at body indent is part of the block
                 line_indent = len(code) - len(code.lstrip())
                 if line_indent > anchor_indent:

@@ -71,8 +71,9 @@ def save_settled(
 ) -> int:
     """Append settled decisions to the JSONL store.
 
-    Uses atomic write (write to temp file, then rename) to avoid corruption
-    when multiple loops run concurrently.
+    Uses os.replace() for atomic file writes: reads all existing entries,
+    appends new ones, writes to a temp file, then atomically replaces the
+    target. This avoids corruption from concurrent appends.
 
     Returns the number of decisions saved (excluding duplicates).
     """
@@ -83,9 +84,11 @@ def save_settled(
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load existing entries to check for duplicates
+    existing_lines: List[str] = []
     existing_keys = set()
     if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
+        existing_lines = path.read_text(encoding="utf-8").splitlines()
+        for line in existing_lines:
             try:
                 entry = json.loads(line)
                 existing_keys.add(entry.get("key", ""))
@@ -93,41 +96,35 @@ def save_settled(
                 continue
 
     # Build new entries
-    new_entries = []
+    new_lines = []
     for decision in decisions:
         key = f"{ticket_id}:{_hash_text(decision)}"
         if key in existing_keys:
-            continue  # already saved
+            continue
         entry = {
             "ticket": ticket_id,
             "key": key,
             "decision": decision,
         }
-        new_entries.append(entry)
+        new_lines.append(json.dumps(entry, ensure_ascii=False))
         existing_keys.add(key)
 
-    if not new_entries:
+    if not new_lines:
         return 0
 
-    # Atomic append: write to temp file, then rename over the target
-    # This avoids partial writes when multiple processes append simultaneously.
-    # On Windows, os.replace() is atomic.
+    # Atomic write: write all lines (existing + new) to temp file, then replace
+    all_lines = existing_lines + new_lines
     temp_fd, temp_path = tempfile.mkstemp(
         dir=str(path.parent), suffix=".tmp", prefix="settled_"
     )
     try:
         with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            for entry in new_entries:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        # Append the temp file content to the target (not atomic on Windows
-        # for appends, but the temp file ensures we don't corrupt the target).
-        with path.open("a", encoding="utf-8") as target:
-            for entry in new_entries:
-                target.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.write("\n".join(all_lines) + "\n")
+        os.replace(temp_path, str(path))
     finally:
         Path(temp_path).unlink(missing_ok=True)
 
-    return len(new_entries)
+    return len(new_lines)
 
 
 def load_settled(repo: Path) -> List[str]:
@@ -141,7 +138,8 @@ def load_settled(repo: Path) -> List[str]:
 
     decisions = []
     seen_keys = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for line in lines:
         try:
             entry = json.loads(line)
             key = entry.get("key", "")
@@ -152,6 +150,8 @@ def load_settled(repo: Path) -> List[str]:
         except json.JSONDecodeError:
             continue
 
+    # Most recent first (entries are appended chronologically)
+    decisions.reverse()
     return decisions
 
 

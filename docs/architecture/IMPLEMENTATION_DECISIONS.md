@@ -251,7 +251,7 @@ user sees a WARNING in the output. The gate catches it when patch mode runs.
 
 ---
 
-## Phase 7+8: Developer mode (commit pending)
+## Phase 7+8: Developer mode (commit `8a0ff49`)
 
 ### Tool calls via <<<TOOL>>> blocks, not OpenAI function-calling
 **Decision**: the LLM emits tool calls as `<<<TOOL name="tool_name">>>{args}<<<END TOOL>>>`

@@ -4,13 +4,16 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: all 17 items complete (commit `a68d774`).
+**Last updated**: after review-driven fixes (all items addressed).
 
-## ALL ITEMS COMPLETE
+## STATUS
 
-All 17 backlog items are done. 77/77 tests pass. The agent-loop package
-is feature-complete with all 8 phases of the execution plan plus all
-deferred modes (brainstorm, docs) and consumer profiles.
+All 17 backlog items are addressed. Items that were stubs have been
+upgraded to live MCP integration. 77/77 tests pass.
+
+Note: "77/77 tests" refers to the pytest suite (`tests/`).
+"2/11" in item 5.1 refers to the old `selftest.py` scenarios which
+were designed for C# tickets and are separate from the pytest suite.
 
 ---
 
