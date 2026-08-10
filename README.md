@@ -11,6 +11,26 @@ Implement -> gate -> review -> arbitrate -> apply.
 - **Model-by-capability registry** — declarative mapping from role to model. The arbiter must not be the same model as any reviewer.
 - **Token efficiency** — per-round input budget, per-role output caps, graph context capped.
 
+## Status
+
+Phase 1 (state machine fixes) is complete. The loop can run against its own Python source.
+
+| Milestone | Status |
+|---|---|
+| Package extraction from tvDownloadOHLC | Done |
+| Language-agnostic profiles + model registry | Done |
+| Indent-based region finder (Python) | Done |
+| Phase 1: 7 state-machine fixes (stale artifacts, arbiter deadlock, ARBITER_NEVER_RAN, applied split, quorum) | Done (17/17 tests pass) |
+| Phase 2: Re-index the graph | Next |
+| Phase 3: Passive graph-augmented prompts | Planned |
+| Phase 4: Compaction | Planned |
+| Phase 5: Persistent memory | Planned |
+| Phase 6: Plan + Test modes | Planned |
+| Phase 7: Active graph tools | Planned |
+| Phase 8: Developer mode | Planned |
+
+See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan.
+
 ## Install
 
 ```bash

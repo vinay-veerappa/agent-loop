@@ -6,19 +6,26 @@ concrete execution plan. The current loop is documented in
 here. This doc covers: the current state machine, the issues found, the eight execution
 phases, the new states, the Developer mode spec, and the mode pipeline.
 
-**Status**: phase 1 in progress. The bootstrapping infrastructure is in place:
+**Status**: phase 1 COMPLETE. All 5 state-machine fixes applied, 17/17 tests pass.
 
 | Component | Status | Location |
 |---|---|---|
 | Self-profile (Python) | Done | `profiles/self.py` |
-| Acceptance tests (7 issues) | 5 fail, 2 pass | `tests/acceptance/test_phase1_state_machine.py` |
+| Acceptance tests (7 issues) | 7 pass (all green) | `tests/acceptance/test_phase1_state_machine.py` |
 | Tickets (5, test-first) | Done | `tickets/phase1_state_machine.json` |
 | Indent-based region finder | Done | `src/agent_loop/regions.py` `kind="indent"` |
 | Model registry | Done | `src/agent_loop/models.py` |
 | Language-agnostic profiles | Done | `src/agent_loop/profiles.py` |
+| **P1-1: Stale artifact purge** | **Done** | `loop.py` — purge all `r*_*.txt` before loop starts |
+| **P1-2: ARBITER_DEADLOCK** | **Done** | `loop.py` — break + revert when arbiter unreachable |
+| **P1-3: ARBITER_NEVER_RAN** | **Done** | `loop.py` — `arbiter_consulted` flag distinguishes from MAX_ROUNDS |
+| **P1-4: applied_approved/unapproved** | **Done** | `loop.py` — split `applied` into two booleans |
+| **P1-6: Revert on PANEL_UNREACHABLE** | **Done** | `loop.py` — revert touched before break |
+| **P1-7: Quorum** | **Done** | `loop.py` — 2-of-3 unanimous APPROVE proceeds with `panel_partial` |
 
-The loop can now run tickets against its own `src/agent_loop/` source. The 5 failing
-acceptance tests define the work for phase 1.
+The loop is at the **bootstrapping point**: its state machine is honest, it can run against
+its own Python source, and the acceptance tests prove the fixes work. The loop is ready to
+use itself for future tickets (phases 2-8).
 
 **Repo**: this package was extracted from `tvDownloadOHLC/src/agent_loop/` into the
 standalone `agent-loop` repo at `github.com/vinay-veerappa/agent-loop`. The package lives in
@@ -172,14 +179,18 @@ answered and all are APPROVE, proceed as APPROVE. If quorum not met, break with
 order. Dependencies: phase N depends on all phases before it unless noted. Phase 7 (active
 tools) can be built in parallel with phases 4-6 but is not useful until phase 8.
 
-### Phase 1: Fix the state machine
+### Phase 1: Fix the state machine [COMPLETE]
 
-Fix all 7 issues from Â§2. Pure correctness, no new capability. Adds 4 new states (see Â§4).
-Touches `loop.py`, `cli.py`.
+Fix all 7 issues from section 2. Pure correctness, no new capability. Adds 3 new terminal
+states (see section 4). Touches `loop.py`.
 
-**Exit criteria**: T4/T5 artifacts re-run produces a `result.json` that matches the on-disk
-round artifacts. Arbiter-unreachable produces `ARBITER_DEADLOCK`, not silent fall-through.
-`MAX_ROUNDS_EXHAUSTED` distinguishes "ran with arbiter" from "ran without".
+**Status**: complete. All 5 fixes applied (P1-1, P1-2, P1-3, P1-4, P1-7; P1-5 and P1-6
+already passed at baseline). 17/17 tests pass. Commit `1603a30`.
+
+**Exit criteria**: MET. Stale artifacts purged. Arbiter-unreachable produces
+`ARBITER_DEADLOCK`, not silent fall-through. `ARBITER_NEVER_RAN` distinguishes "ran with
+arbiter" from "ran without". `applied_approved`/`applied_unapproved` split the old
+`applied` boolean. Quorum lets 2-of-3 unanimous APPROVE proceed.
 
 ### Phase 2: Re-index the graph
 
@@ -398,34 +409,33 @@ localization.
 
 Three new terminal states added to the state machine. `PANEL_REJECT` is an internal signal
 (not a terminal state) that modifies the arbiter's prompt. `PANEL_PARTIAL` is metadata, not a
-verdict. Stale-artifact purging is a round-start action. All three are described in the flow
-diagram below but only the three terminal states appear in the state table.
+verdict. Stale-artifact purging is a pre-loop action. All are described in the flow diagram
+below; only the three terminal states appear in the state table.
+
+**Implemented**: all states below are live in `src/agent_loop/loop.py` as of commit `1603a30`.
 
 | State | Meaning | When | Replaces |
 |---|---|---|---|
 | `ARBITER_DEADLOCK` | Arbiter unreachable; cannot adjudicate | `adj.ok == False` | Silent fall-through to all-findings-block |
-| `ARBITER_NEVER_RAN` | Loop ended without arbiter being consulted | `--max-rounds 1` + panel REVISE | Part of `MAX_ROUNDS_EXHAUSTED` |
-| `PANEL_PARTIAL` | Some reviewers answered, quorum met, all APPROVE â€” recorded as metadata, final is still `APPROVE` | `>= ceil(2/3 * len(reviewers))` answered | `PANEL_UNREACHABLE` for quorum-met cases |
+| `ARBITER_NEVER_RAN` | Loop ended without arbiter being consulted | `--max-rounds 1` + panel REVISE, arbiter disabled or never reached | Part of `MAX_ROUNDS_EXHAUSTED` |
+| `PANEL_PARTIAL` | Some reviewers answered, quorum met, all APPROVE -- recorded as metadata (`result["panel_partial"] = True`), final is still `APPROVE` | `>= ceil(2/3 * len(reviewers))` answered | `PANEL_UNREACHABLE` for quorum-met cases |
 
 **Not states (internal signals and actions)**:
-- `PANEL_REJECT` â€” internal signal: when the panel's worst verdict is REJECT, the arbiter
+- `PANEL_REJECT` -- internal signal: when the panel's worst verdict is REJECT, the arbiter
   runs with a "rethink, don't tweak" prompt. The loop does not break; the arbiter still
-  adjudicates. If the arbiter upholds a REJECT-level finding, the feedback tells the
-  implementer to rethink the approach. The terminal state is whatever the arbiter recommends
-  (REVISE, ESCALATE, SHIP), not PANEL_REJECT itself.
-- Stale-artifact purge â€” round-start action, not a state.
+  adjudicates. The terminal state is whatever the arbiter recommends, not PANEL_REJECT itself.
+- Stale-artifact purge -- pre-loop action (deletes all `r*_*.txt` before the loop starts).
 
-### Updated state flow (after phase 1)
+### Updated state flow (implemented)
 
 ```
-round start
- +-- ACTION: purge stale r{N}_* artifacts from prior runs (housekeeping, not a state)
+pre-loop: purge all r*_*.txt artifacts from prior runs
  +-- IMPLEMENT (or resume-raw on r1)
  +-- parse blocks
  +-- GATE LADDER (same 5 rungs, fail -> revert, feed feedback, continue)
  +-- PANEL
  |   +-- unreachable, no quorum  -> final=PANEL_UNREACHABLE, revert touched, BREAK
- |   +-- quorum met, all APPROVE -> final=APPROVE (record PANEL_PARTIAL in metadata), BREAK
+ |   +-- quorum met, all APPROVE -> final=APPROVE (record panel_partial in metadata), BREAK
  |   +-- worst=REJECT            -> arbiter (with "rethink, don't tweak" prompt signal)
  |   +-- else (REVISE)           -> arbiter
  +-- ARBITER
