@@ -2216,3 +2216,55 @@ FRESH interpreter — inside the suite the import is already cached, so an
 in-process test proves nothing.
 
 ---
+### 2026-08-11 (session 7) — the feature run continues: O53, O54
+
+#### O53. A block comment anywhere refused the whole file — CLOSED
+
+**This is what blocked slice 3 of the copier ratio feature**, i.e. the slice that
+makes the shipped slice 1 reachable from the UI at all. `McpBridgeAddOn.cs`
+contains exactly two occurrences, both `catch { /* indexer or access threw */ }`
+on one line, at 1247 and 1268. Those two lines made all **5,576** of them
+uneditable by the loop. `RiskGuardAddOnTests.cs` has one, in **11,258** lines,
+which is why every acceptance test for that addon has had to be hand-written.
+
+The refusal was not wrong about the danger. `strip_code` is per-line and
+stateless, so a `{` or `}` inside a comment counts as a real brace and the region
+ends in the wrong place — silently, which is worse than refusing. It was wrong
+about the *scope*: a whole-file verdict on a token that is almost always local.
+
+`_mask_block_comments` blanks block-comment spans over the whole text in one
+pass, carrying state across lines. It has to understand every construct that can
+CONTAIN the opening token, or it invents comments that are not there: line
+comments, string literals, char literals, and C# verbatim strings — which have no
+backslash escapes, double a quote to embed one, and may span lines.
+
+Blanking is **length-preserving**, because the indent-block finder reads
+indentation and every region span is a line index.
+
+**Anchors are still matched against the raw text**, deliberately: a marker
+comment (`// region: sizing`) is a legitimate thing to anchor on, and masking
+would make it unmatchable. Only the brace and indent scans read the masked copy.
+
+Still refused, and now the message says which: an unterminated block comment or
+verbatim string (the rest of the file cannot be classified), and raw string
+literals (`"""`), which would need the opening fence's length tracked and whose
+misreading corrupts a file rather than failing to edit it. No addon in the
+consumer uses one.
+
+**The invariant that made this safe to land: on a file with no block comment the
+masker is the identity.** Verified as a unit test, and measured against the
+consumer: 8 of its 10 addon files come back byte-identical, the two that do not
+are exactly the two that used to be refused, and CM1's shipped regions still
+resolve to 442-663 and 382-440 unchanged.
+
+**Six mutations, all killed — but the sixth took three attempts to write.**
+Deleting the doubled-quote rule (`""` inside a verbatim string) survived every
+single-line case that can be constructed, and the reason is worth keeping:
+misreading `""` desyncs by exactly one quote, and one quote always reopens an
+ordinary string that swallows the `/*` before the line ends. **The naive scanner
+is wrong and gets the right answer.** It only fails across lines, where ordinary
+strings do not carry, leaving the next line as bare code whose `/*` opens a
+comment that runs to end of file. A test that cannot distinguish the fix from its
+absence is not a test, and two drafts of this one could not.
+
+---

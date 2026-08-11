@@ -22,16 +22,139 @@ class RegionError(LookupError):
     """Anchor missing, ambiguous, or in a file this locator cannot parse."""
 
 
+def _mask_block_comments(
+    lines: List[str], profile: Profile
+) -> Tuple[List[str], str]:
+    """Blank every block-comment span to spaces; report what could not be parsed.
+
+    Returns `(masked_lines, problem)`. `problem` is "" when the file is fully
+    modelled, otherwise a sentence naming the construct and its line.
+
+    Block comments are the one piece of syntax `strip_code` cannot handle, because
+    it is per-line and stateless while a block comment is neither. Masking is done
+    over the whole text, in one pass, so state carries across lines.
+
+    The scan has to understand every construct that can CONTAIN the opening
+    token, or it invents comments that are not there:
+
+      * `// see /* elsewhere`      -- a line comment
+      * `var s = "/* not one";`    -- a string literal
+      * `var p = @"a\\/* not one";` -- a VERBATIM string, where `\\` is literal and
+                                      a quote is doubled rather than escaped, and
+                                      which may span lines
+
+    Blanking is length-preserving: line count, line lengths and therefore every
+    column and indentation level are unchanged, because the indent-block finder
+    reads indentation and every region span is a line index.
+
+    NOT modelled, and refused by the caller rather than guessed at: raw string
+    literals (`\"\"\"`), and an unterminated block comment or verbatim string,
+    which mean the rest of the file cannot be classified at all.
+    """
+    if len(profile.block_comment) < 2:
+        # A profile with no block-comment syntax (Python) has nothing to mask,
+        # and must come back byte-identical rather than round-tripped.
+        return list(lines), ""
+
+    open_tok, close_tok = profile.block_comment[0], profile.block_comment[1]
+    lc = profile.line_comment
+    out: List[str] = []
+    in_block = False
+    in_verbatim = False
+    opened_at = 0
+
+    for lineno, line in enumerate(lines, 1):
+        chars = list(line)
+        i, n = 0, len(chars)
+        while i < n:
+            if in_block:
+                j = line.find(close_tok, i)
+                end = n if j == -1 else j + len(close_tok)
+                for k in range(i, end):
+                    chars[k] = " "
+                i = end
+                if j != -1:
+                    in_block = False
+                continue
+
+            if in_verbatim:
+                # Ends at a quote that is not doubled. A doubled quote is an
+                # escaped one and the string continues.
+                if chars[i] == '"':
+                    if i + 1 < n and chars[i + 1] == '"':
+                        i += 2
+                        continue
+                    in_verbatim = False
+                i += 1
+                continue
+
+            if lc and line[i: i + len(lc)] == lc:
+                break  # rest of the line is a comment; it cannot open a block
+
+            if line[i: i + 2] == '@"':
+                in_verbatim = True
+                opened_at = lineno
+                i += 2
+                continue
+
+            if chars[i] in ('"', "'"):
+                quote = chars[i]
+                i += 1
+                while i < n:
+                    if chars[i] == "\\":
+                        i += 2
+                        continue
+                    if chars[i] == quote:
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+            if line[i: i + len(open_tok)] == open_tok:
+                in_block = True
+                opened_at = lineno
+                for k in range(i, min(i + len(open_tok), n)):
+                    chars[k] = " "
+                i += len(open_tok)
+                continue
+
+            i += 1
+        out.append("".join(chars))
+
+    if in_block:
+        return out, f"unterminated block comment opened at line {opened_at}"
+    if in_verbatim:
+        return out, f"unterminated verbatim string opened at line {opened_at}"
+    return out, ""
+
+
 def guard_unsupported_syntax(path: Path, src: str, profile: Profile) -> None:
-    """Refuse a file containing syntax the brace matcher would silently misread."""
-    for token in profile.block_comment:
-        if token in src:
-            line = src[: src.index(token)].count("\n") + 1
-            raise RegionError(
-                f"{path.name}:{line} contains a block comment ({token!r}), which this "
-                f"locator cannot parse safely. Upgrade regions.py to a real "
-                f"parser (tree-sitter) before editing this file."
-            )
+    """Refuse a file containing syntax the brace matcher would silently misread.
+
+    This used to refuse any file containing `/*` at all. That is a whole-file
+    verdict on a token that is usually local and harmless: two
+    `catch { /* ... */ }` lines made all 1300 lines of the consumer's
+    `McpBridgeAddOn.cs` uneditable, and one made every acceptance test for that
+    addon hand-written. Block comments are now masked (`_mask_block_comments`)
+    and only what is genuinely unmodelled is refused.
+    """
+    if profile.block_comment and '"""' in src:
+        # C# 11 raw string literals. Modelling them means tracking the opening
+        # fence's length, and guessing at one wrong would corrupt a file rather
+        # than fail to edit it.
+        line = src[: src.index('"""')].count("\n") + 1
+        raise RegionError(
+            f"{path.name}:{line} contains a raw string literal (\"\"\"), which this "
+            f"locator does not model. Upgrade regions.py to a real parser "
+            f"(tree-sitter) before editing this file."
+        )
+    _, problem = _mask_block_comments(src.splitlines(), profile)
+    if problem:
+        raise RegionError(
+            f"{path.name}:{problem.rsplit(' ', 1)[-1]} {problem}, so the rest of the "
+            f"file cannot be classified. Close it, or upgrade regions.py to a real "
+            f"parser (tree-sitter)."
+        )
 
 
 def language_for(path: Path, profile: Profile) -> str:
@@ -253,11 +376,17 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
 
     strip_fn = lambda ln: strip_code(ln, profile) if profile else strip_code_default(ln)
 
+    # Structure is read from the MASKED text, the anchor from the raw text. An
+    # anchor is deliberately still matched against the file as written, because
+    # a marker comment (`// region: sizing`) is a legitimate thing to anchor on
+    # and masking would make it unmatchable.
+    scan = _mask_block_comments(lines, profile)[0] if profile else lines
+
     if kind == "indent":
-        return _find_indent_block(lines, start, strip_fn)
+        return _find_indent_block(scan, start, strip_fn)
 
     try:
-        return _brace_block(lines, start, strip_fn)
+        return _brace_block(scan, start, strip_fn)
     except RegionError:
         raise RegionError(f"unbalanced braces from anchor: {anchor!r}")
 
@@ -368,6 +497,7 @@ def extract_named_block(src: str, name: str, profile: Profile) -> Optional[str]:
     reviewer was asked to judge test adequacy with no tests in front of it.
     """
     lines = src.splitlines()
+    scan = _mask_block_comments(lines, profile)[0]
     strip_fn = lambda ln: strip_code(ln, profile)
     patterns = [
         # Python / Ruby style: def name(, class Name:
@@ -387,9 +517,9 @@ def extract_named_block(src: str, name: str, profile: Profile) -> Optional[str]:
             continue
         try:
             if profile.block_kind == "indent":
-                start, end = _find_indent_block(lines, idx, strip_fn)
+                start, end = _find_indent_block(scan, idx, strip_fn)
             else:
-                start, end = _brace_block(lines, idx, strip_fn)
+                start, end = _brace_block(scan, idx, strip_fn)
         except RegionError:
             continue
         return "\n".join(lines[start: end + 1])
