@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | `v0.2.3` — O1 closed; tags `v0.2.0`-`v0.2.3` pushed (`v0.2.0` is poisoned, see below) |
+| `agent-loop` HEAD | **`v0.3.0`** — O1, O2, O9-O12 closed; tags `v0.2.0`-`v0.3.0` pushed (`v0.2.0` is poisoned, see below) |
 | Pushed? | **Yes** — `origin/main..HEAD` is empty, nothing outstanding |
-| Tests | **185 passed**, 0 failed — on Python 3.12 **and** 3.14; selftest 12/12 |
+| Tests | **217 passed**, 0 failed — on Python 3.12 **and** 3.14; selftest 12/12 |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
 | `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `9be1b779` (unpushed) — pins + installs agent-loop `v0.2.2` |
@@ -236,6 +236,17 @@ Models confirmed available in the local ollama at handover time:
    own patch used `git apply --3way`, which on conflict **writes conflict markers
    into the live file and only then returns non-zero** — it raised while having
    already corrupted the target. Plain `git apply` is all-or-nothing.
+1b. ~~**O2 `replay`**~~ — DONE (`973f370`+`f3fda21`). The loop records the rendered
+   review AND arbiter prompts; replay re-sends them verbatim and REFUSES a corpus
+   that has none (F1-F6 predate recording, so they refuse — that is correct).
+   Replay exit codes are three-valued now: 2 = could not measure, 1 = flipped,
+   0 = stable. Do not "fix" a 2 by making it a 0.
+1c. **Config is central now** (`config.py`, v0.3.0). Every tunable has one
+   definition with its rationale; override via `agent_loop.config.json`,
+   `--config`, or `$AGENT_LOOP_CONFIG`. Two static guards fail the build if a
+   literal creeps back. **Read the thinking/budget note before changing any
+   max_tokens** — on a reasoning model, reasoning is spent from the answer's
+   budget, which is what killed O1's first run.
 2. **Exercise developer mode** (O7). It received the largest changes — worktree,
    frozen baseline, protected-path gate in `_edit_file` — and has the least
    coverage. A deliberately hard ticket also exercises the arbiter, compaction
@@ -256,3 +267,19 @@ the two halves compose: what you changed, what is verified green, what you left
 half-done, and any trap you hit that is not in §6.
 
 <!-- other session: append below this line -->
+
+### The parallel-session hazard recurred (2026-08-10, later)
+
+§0 warns not to use `git add -A` because two sessions were editing this repo.
+It happened again, in the other direction: commit
+`973f370 "fix: replay fidelity — record and re-send the exact prompt (O2)"` was
+made by the other session and swept up THIS session's mid-edit changes to
+`arbiter.py`, `loop.py` and most of `replay.py`. No duplication resulted and the
+final state is correct and verified, but the attribution is wrong: that commit
+message describes work it only partly contains, and the remainder landed in
+`f3fda21`.
+
+Same lesson, stated more sharply: **in this repo, `git log` is not a reliable
+record of who changed what or why.** BACKLOG.md and these handover notes are.
+Stage explicit paths, and re-read `git status` immediately before committing --
+if a file you did not touch is staged, another session is mid-edit in it.
