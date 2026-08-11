@@ -375,6 +375,29 @@ def _run_turns(
                     print(f"           [red] {len(new_red)} test(s) failing as required")
                     for t in new_red:
                         print(f"                 - {t}")
+                    # Classify the redness mechanically. The prose below already
+                    # asked the model to check this, and on the O34 run it did
+                    # not: the test died in its own stub and sixty turns went
+                    # into satisfying something that could never pass. A WARNING
+                    # rather than a refusal, unlike test mode -- see the note in
+                    # tests/acceptance/test_o34_red_for_the_right_reason.py. A
+                    # crash-defect's test legitimately fails with the exception
+                    # the defect raises, and a gate the model cannot override
+                    # would strand the run in the red phase.
+                    kinds = gates.failure_kinds(outcome.raw)
+                    reached = gates.reached_an_assertion(kinds)
+                    why = ", ".join(sorted(kinds)) if kinds else "(no exception identified)"
+                    print(f"           [red] failed with: {why}")
+                    red_warning = ""
+                    if reached is False:
+                        red_warning = (
+                            f"WARNING: every failure is {why} and none is an assertion, so "
+                            "these tests never reached an assertion. That is what a BROKEN "
+                            "test looks like, not a test that caught the defect. Unless the "
+                            "defect itself raises this, rewrite the test now -- it can never "
+                            "pass, and every remaining turn will be spent against it."
+                        )
+                        print(f"           [red] {red_warning}")
                     print(f"           [phase] red -> explore")
                     # Show WHY it is red, not just that it is. A test can fail
                     # because the defect exists (what this phase is for) or
@@ -386,6 +409,7 @@ def _run_turns(
                     tc_result += (
                         "\n\nCONFIRMED RED: " + ", ".join(new_red) +
                         "\nThis file is now read-only. Fix the source so these pass."
+                        + (f"\n\n{red_warning}" if red_warning else "") +
                         "\n\nRead the failure output below and satisfy yourself that "
                         "these fail BECAUSE OF THE DEFECT. If they fail for any other "
                         "reason -- a bad import, a flag or path that does not exist -- "

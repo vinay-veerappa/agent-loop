@@ -337,6 +337,61 @@ def run_tests(cmd: str, repo: Path, timeout: int = 900) -> TestOutcome:
     return parse_tests(out)
 
 
+# An exception name, as it appears before the colon in a traceback. The suffix
+# set keeps this from matching ordinary prose in a failure message; `Failed` is
+# pytest's own, produced by `pytest.raises` when nothing is raised.
+_EXC = r"[A-Za-z_][\w.]*(?:Error|Exception|Warning)|Failed"
+# `E   AttributeError: 'dict' object has no attribute 'votes'`
+_E_NAMED = re.compile(rf"^\s*E\s+(?P<name>{_EXC})\b\s*:", re.M)
+# `E       assert 5 == 6` -- a bare assert, rewritten by pytest, carries NO
+# exception name anywhere in the gutter. This is the COMMON case and omitting it
+# would classify most genuine acceptance tests as "never reached an assertion".
+_E_BARE_ASSERT = re.compile(r"^\s*E\s+assert\b", re.M)
+# `tests/t.py:288: AssertionError` -- the last line of a --tb=short frame.
+_TB_TAIL = re.compile(rf"^\S.*:\d+:\s+(?P<name>{_EXC})\s*$", re.M)
+# `FAILED tests/t.py::test_a - TypeError: ...`, the only shape under --tb=no.
+_SUMMARY_NAMED = re.compile(rf"^FAILED\s+\S+\s+-\s+(?P<name>{_EXC})\b", re.M)
+_SUMMARY_BARE_ASSERT = re.compile(r"^FAILED\s+\S+\s+-\s+assert\b", re.M)
+
+_ASSERTION_KINDS = frozenset({"AssertionError", "Failed"})
+
+
+def failure_kinds(raw: str) -> Set[str]:
+    """The exception types a test run ended its failures with.
+
+    Exists because the test-first check could count failures but not read them,
+    so it called a test "failing at baseline (correct)" when the test had died in
+    its own scaffolding and never reached an assertion (O34).
+
+    Returns an empty set when nothing can be identified -- a non-pytest runner,
+    for instance. Empty means "cannot tell", NOT "no assertion": see
+    `reached_an_assertion`.
+    """
+    kinds: Set[str] = set()
+    for pattern in (_E_NAMED, _TB_TAIL, _SUMMARY_NAMED):
+        kinds.update(m.group("name") for m in pattern.finditer(raw))
+    if _E_BARE_ASSERT.search(raw) or _SUMMARY_BARE_ASSERT.search(raw):
+        kinds.add("AssertionError")
+    return kinds
+
+
+def reached_an_assertion(kinds: Set[str]) -> Optional[bool]:
+    """Did any failure get as far as asserting something?
+
+    True  - at least one failure was an assertion. The test ran and disagreed.
+    False - failures were identified and none was an assertion, so every one of
+            them died before testing anything. A red phase built on that proves
+            nothing about the defect.
+    None  - nothing identifiable, so this cannot be decided. Reported as unknown
+            rather than as a refusal: the NT8 profile's runner prints
+            `[FAIL] Suite.Test` and no exception at all, and a check that fails
+            every run on a runner it does not understand would just be turned off.
+    """
+    if not kinds:
+        return None
+    return bool(kinds & _ASSERTION_KINDS)
+
+
 def names_match(name: str, failure: str) -> bool:
     """Does `failure` name the test `name`?
 

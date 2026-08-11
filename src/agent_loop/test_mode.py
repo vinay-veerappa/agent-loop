@@ -149,10 +149,34 @@ def run_test(
                     gates.names_match(t, f) for t in (ticket.get("expect_green") or [])
                 )] or sorted(outcome.failures)
                 result["tests_pass_baseline"] = not outcome.failures
-                if outcome.failures:
-                    print(f"  [test-first] {len(failing)} test(s) failing at baseline (correct)")
-                else:
+                if not outcome.failures:
                     print("  [test-first] WARNING: tests pass at baseline (they should fail)")
+                else:
+                    # A COUNT of failures is not evidence. This printed
+                    # "(correct)" for a test that died in its own stub at
+                    # `panel.votes` and never reached an assertion -- it could
+                    # not have passed against fixed or unfixed code, and sixty
+                    # turns went into satisfying it (O34, and O19 before it).
+                    # So read the failures, classify them, and say which.
+                    kinds = gates.failure_kinds(outcome.raw)
+                    reached = gates.reached_an_assertion(kinds)
+                    result["failure_kinds"] = sorted(kinds)
+                    result["reached_assertion"] = reached
+                    why = ", ".join(sorted(kinds)) if kinds else "(no exception identified)"
+                    print(f"  [test-first] {len(failing)} test(s) failing at baseline: {why}")
+                    if reached is False:
+                        result["error"] = (
+                            f"the generated test(s) failed with {why} and never reached an "
+                            "assertion, so the failure demonstrates nothing about the defect. "
+                            "The test file is on disk; fix its scaffolding and re-verify."
+                        )
+                        print(f"  [test-first] REFUSED: {result['error']}")
+                    elif reached is None:
+                        print(
+                            "  [test-first] could not identify why they failed, so whether "
+                            "they reached an assertion is UNKNOWN. Read the output before "
+                            "trusting this red."
+                        )
         except Exception as exc:
             result["error"] = f"test verification failed: {type(exc).__name__}: {exc}"
             print(f"  [test-first] {result['error']}")

@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**318/318 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**345/345 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
 has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
 
@@ -1011,7 +1011,43 @@ Smaller, same area: the generated ticket's `expect_green` named
 Plan's prompt never shows the model `profile.test_sources`, so it invents a path
 that the test-first machinery is not allowed to write to.
 
-#### O34. "failing at baseline (correct)" is not evidence — HIGH, OPEN
+#### O34. "failing at baseline (correct)" is not evidence — CLOSED
+
+**Fixed.** `gates.failure_kinds(raw)` reads the exception types a run ended its
+failures with, and `gates.reached_an_assertion(kinds)` is three-valued:
+
+* **True** — at least one failure was an assertion. The test ran and disagreed.
+* **False** — failures were identified and none was an assertion, so every one of
+  them died before testing anything.
+* **None** — nothing identifiable. Reported as UNKNOWN, not as a refusal. The NT8
+  profile's runner prints `[FAIL] Suite.Test` and no exception at all, and a
+  check that fails every run on a runner it does not understand gets turned off.
+
+Applied in both places the blind spot exists, and **deliberately differently**:
+
+| | behaviour | why |
+|---|---|---|
+| test mode | **refuses** — sets `result["error"]`, so the CLI exits non-zero | one-shot, reports to a human, and the test file is still on disk. `cli._test`'s own comment already said tests that were never confirmed red "are not yet evidence" |
+| developer mode red phase | **warns**, loudly, to stdout and to the model | iterative, and the model cannot override a gate. A crash-defect's test legitimately fails with the exception the defect raises; refusing it would strand the run in the red phase burning every remaining turn. Loud and escapable beats correct-and-stuck |
+
+The word `(correct)` is gone. Both paths now print what the failures actually
+were.
+
+**The classifier is validated against real pytest, not against a fixture of what
+pytest is assumed to look like.** 16 of the 27 tests shell out to a real runner
+across `--tb=short/long/line/no` for four cases: a broken scaffold
+(`AttributeError`), a bare `assert` (which carries **no exception name anywhere**
+in pytest's output — the common case, and omitting it would have misclassified
+most genuine acceptance tests), an assert with a message, and `pytest.raises`
+that does not raise (`Failed: DID NOT RAISE`). That precaution is O24's lesson:
+the first compactor benchmark produced a confident, published, wrong ranking
+because it measured what its author assumed the output looked like.
+
+All four implementation mutations killed.
+
+Original defect text follows.
+
+#### O34 (original). "failing at baseline (correct)" is not evidence — HIGH
 
 Test mode generated an acceptance test, ran it, and printed
 

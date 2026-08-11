@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O32-O33 closed; O20 mitigated; O21-O23, O28, O31, O34, O35 open |
+| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O32-O34 closed; O20 mitigated; O21-O23, O28, O31, O35 open |
 | Pushed? | **YES** (session 4). `main` and `v0.4.0` are on origin. The 23-commit unpushed backlog described below is cleared |
-| Tests | **318 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
+| Tests | **345 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -625,3 +625,24 @@ Two things this turned up:
   mode whose whole job is to LOCALISE a defect has never been shown the code.
   It still produced a correctly-anchored ticket — which says more about the
   defect description it was handed than about the mode.
+
+### §12b O34 closed — the red phase can tell you WHY it is red
+
+`gates.failure_kinds()` + `gates.reached_an_assertion()`, three-valued
+(True / False / None-for-unknown). Wired into both places the blind spot
+existed, and deliberately differently: **test mode refuses** (one-shot, reports
+to a human, file still on disk) while **developer mode warns** (iterative, and
+the model cannot override a gate — a crash-defect test legitimately fails with
+the exception the defect raises, and refusing it would strand the run burning
+turns). `(correct)` is gone from both.
+
+Two things to carry forward:
+
+* **A bare `assert x == y` produces NO exception name anywhere in pytest's
+  output** — not in the `E` gutter, not in the summary line. It is the common
+  shape for an acceptance test, and a classifier that only looks for
+  `AssertionError:` calls every one of them "never reached an assertion". This
+  was nearly shipped that way.
+* **The classifier is validated against a real runner**, 16 tests across
+  `--tb=short/long/line/no`, not against a fixture of what pytest is assumed to
+  print. That is O24's lesson applied before the fact rather than after.
