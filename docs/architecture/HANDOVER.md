@@ -1,15 +1,54 @@
 # HANDOVER — agent-loop
 
-Live state for a fresh session. Written 2026-08-10 at the end of the review +
-self-hosted-run session. **Read §0 before touching anything.**
+This file is the orientation layer: state, hazards, commands, and the traps that
+cost real time. Open issues live in [BACKLOG.md](BACKLOG.md), keyed **O1-O36**;
+that file is authoritative and this one summarises.
 
-Single source of truth for *open issues* is [BACKLOG.md](BACKLOG.md) §"2026-08-10
-— open issues after the F1-F6 self-hosted run" (items **O1-O14**). This file is the
-orientation layer: state, hazards, commands, and the traps that cost real time.
+**This document has grown by accretion — sections are appended per session and
+EARLIER SECTIONS ARE OFTEN SUPERSEDED.** §0's parallel-session hazard is history,
+not current state. When two sections disagree, the higher-numbered one wins.
 
 ---
 
-## §0 READ FIRST
+## START HERE — checkpoint, 2026-08-11 (session 4)
+
+| | |
+|---|---|
+| `main` | **`92873b6`**, working tree clean, **nothing unpushed** |
+| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14 |
+| Tests | **365 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`** — six fixes behind |
+
+**Closed in session 4:** O14, O23, O29, O30, O32, O33, O34, and O7 for the modes.
+**Open:** O21, O22, O28, O31, O35, O36. O20 mitigated, not closed.
+
+**Next, in the order argued for:**
+
+1. **O31** — plan and brainstorm have never been shown the codebase.
+   `plan_mode.py:23` imports `build_context_slice` and never calls it, so the
+   mode whose whole job is to LOCALISE a defect works from the defect text plus
+   four profile fields (`in=319` tokens on a live run).
+2. **O36** — plan mode must be able to plan a FEATURE, not only a defect fix
+   (requested by the user). Do O31 first: same prompt, and it wants designing
+   once. Question 3 in BACKLOG O36 decides the shape of everything else.
+3. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
+   labelled corpus is worth more than a fifteenth model.
+
+Also outstanding and cheap: **re-pin the consumer to `v0.4.0`** and reinstall.
+Until then O30 still throws its bare `FileNotFoundError` there, and none of
+O15-O19, O24, O29 or O33-O34 is present in that venv.
+
+**The one lesson session 4 kept re-learning**, five times in four items: *a check
+that has only ever run on the machine, or against the double, it was written for
+is not a check.* And its corollary, which cost the most: **mutate the fix.**
+Three separate mutations survived a green suite this session — a half-covered
+`id` validation, a forwarded-but-unhonoured flag, and a guard whose real job
+turned out to be the error message. Reading the tests would not have found any
+of them.
+
+---
+
+## §0 READ FIRST (session 1-2 history — superseded, kept for provenance)
 
 **Two sessions have been editing this repo in parallel.** This one (review +
 tickets + caching) and another (report/replay/caching v1, roadmap, docs mode).
@@ -37,9 +76,8 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O23, O32-O34 closed; O20 mitigated; O21, O22, O28, O31, O35, O36 open |
-| Pushed? | **YES** (session 4). `main` and `v0.4.0` are on origin. The 23-commit unpushed backlog described below is cleared |
-| Tests | **365 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
+| `agent-loop` HEAD, tag, tests | **see START HERE at the top of this file** — these rows went stale three times in one session, so they now live in exactly one place |
+| Closed / open issues | O3, O6, O14-O19, O23, O24-O27, O29-O30, O32-O34 closed; O20 mitigated; O21, O22, O28, O31, O35, O36 open |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -80,12 +118,12 @@ C:/Users/vinay/agent-loop/                 the package (this repo)
   src/agent_loop/                          loop, gates, arbiter, regions, providers, ...
   profiles/self.py                          the self-hosting profile (agent-loop-self)
   tickets/review_followups.json             the F1-F6 tickets
-  tests/acceptance/                         217 tests
+  tests/acceptance/                         365 tests
   src/agent_loop/config.py                  EVERY tunable, with the reason for each
   agent_loop.config.example.json            copy to agent_loop.config.json to override
   logs/agent_loop/F1..F6/                   patches + artifacts from the self-hosted run
   logs/agent_loop/loop_run_F1-F6.log        the full run log
-  docs/architecture/BACKLOG.md              OPEN ISSUES (O1-O28) ← authoritative
+  docs/architecture/BACKLOG.md              OPEN ISSUES (O1-O36) ← authoritative
   tests/fixtures/arbiter_bench/             LABELLED arbiter corpus + run_bench.py
   tests/fixtures/compactor_bench/           LABELLED compactor corpus + run_bench.py
   docs/architecture/ROADMAP.md              what to build next (written by the other session)
