@@ -388,7 +388,15 @@ command raised `ModuleNotFoundError`), and `requirements.txt` pinned `@v0.1.0`,
 **v0.2.2**. Note `v0.2.0` is a **poisoned tag**: it carries the O9 defect, so it
 is unusable on any Python below 3.13. Do not pin it.
 
-#### O14. `test_graph_freshness_marker_round_trip` is flaky — LOW
+#### O14. `test_graph_freshness_marker_round_trip` is flaky — CLOSED (session 4)
+
+**Closed in the session-4 section below.** The test now ages `a.py` by 60s instead
+of racing `mark_graph_fresh`'s clock. This header was left saying "LOW" when the
+fix landed, so an audit grepping for unclosed items found it and would have had
+someone redo the work — the reason every other closed item states its status in
+the header it is most likely to be read by.
+
+Original text follows.
 
 Observed failing once in a full-suite run on Python 3.12 and passing both in
 isolation and on the next full run, so it is a flake rather than a regression.
