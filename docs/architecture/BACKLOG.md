@@ -2268,3 +2268,48 @@ comment that runs to end of file. A test that cannot distinguish the fix from it
 absence is not a test, and two drafts of this one could not.
 
 ---
+#### O54. `kind=decl` on a declaration with no braces swallows the class — CLOSED
+
+Found immediately after O53, by checking that the file it unblocked was actually
+usable — not by a test.
+
+```
+private static string CopierConfigFile => Path.Combine(...);   McpBridgeAddOn.cs:3600
+private object CopierConfig(string body)                       McpBridgeAddOn.cs:3603
+```
+
+The second resolves to 3603-3715, correctly. The first resolves to **3600-3715**:
+one line of intent, 116 lines of region. `_brace_block` finds no brace on the
+anchor line and keeps counting until the *next* member's block closes. It prints
+`OK`.
+
+**Third member of a family.** O40 (an anchor spanning lines can never match), O47
+(two regions covering the same lines), this. In all three the anchor is
+individually correct and the result is silently wrong, which is exactly why no
+gate catches them: **a region that is too big is still a region.** The damage is
+not cosmetic — a ticket meaning to change one line hands the implementer 116
+lines to re-emit, and every line it does not reproduce exactly is a silent
+deletion of working code. `decl` is the C# profile's DEFAULT kind.
+
+`NoBlockError`, a `RegionError` subclass, raised from `_brace_block` when the
+STRIPPED anchor line has no `{` and already ends in `;`. Stripped, so a semicolon
+inside a comment or a string is not mistaken for the end of a declaration.
+`find_region` re-raises it unchanged instead of rewriting it as "unbalanced
+braces from anchor", because the two have different remedies: unbalanced braces
+mean the anchor is in the wrong place, this means the anchor is right and `kind`
+is wrong. The message says to use `kind=line`.
+
+**Measured against the consumer rather than argued for**: over all ten addon
+files, 767 member-like declarations still resolve to a brace block, 81 are now
+refused, and 0 are unbalanced. Every one of the 81 is genuinely bodyless — P/Invoke
+`extern` declarations, field initialisers, expression-bodied members. The guard
+does not over-fire, which was the risk worth measuring: a guard that refuses
+working anchors is worse than the defect it prevents.
+
+**Four mutations, all killed, and the fourth needed rewriting.** Reading the raw
+anchor line instead of the stripped one survived, because the test's comment
+(`// returns a; nothing else`) did not END in the semicolon — raw and stripped
+agreed on the last character. That is the same insensitive-test shape as O53's
+doubled quote, twice in one session.
+
+---

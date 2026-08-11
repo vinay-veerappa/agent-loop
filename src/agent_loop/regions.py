@@ -22,6 +22,15 @@ class RegionError(LookupError):
     """Anchor missing, ambiguous, or in a file this locator cannot parse."""
 
 
+class NoBlockError(RegionError):
+    """The anchored declaration has no brace-delimited body to expand to.
+
+    Distinct from an unbalanced-brace failure because the remedy is different and
+    the caller must be told which: unbalanced braces mean the anchor is in the
+    wrong place, this means the anchor is right and `kind` is wrong.
+    """
+
+
 def _mask_block_comments(
     lines: List[str], profile: Profile
 ) -> Tuple[List[str], str]:
@@ -387,6 +396,10 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
 
     try:
         return _brace_block(scan, start, strip_fn)
+    except NoBlockError:
+        # The anchor is right and `kind` is wrong. Rewriting this as "unbalanced
+        # braces" would send the reader hunting for a brace that is not missing.
+        raise
     except RegionError:
         raise RegionError(f"unbalanced braces from anchor: {anchor!r}")
 
@@ -469,7 +482,27 @@ def _find_indent_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int
 
 
 def _brace_block(lines: List[str], start: int, strip_fn) -> Tuple[int, int]:
-    """Extent of a brace-delimited declaration starting at `start`."""
+    """Extent of a brace-delimited declaration starting at `start`.
+
+    A declaration with no body opens no brace, so the scan below would sail past
+    it and stop at the *next* member's closing brace -- returning a region that
+    starts at one line of intent and ends wherever the enclosing block happens to
+    end. That is silent: a region that is too big is still a region, and every
+    gate passes it. Observed on `McpBridgeAddOn.cs:3600`, an expression-bodied
+    `CopierConfigFile => Path.Combine(...)`, which resolved to 116 lines.
+
+    Detected from the STRIPPED anchor line, so a semicolon inside a comment or a
+    string does not count: no opening brace, and the statement already ends.
+    """
+    head = strip_fn(lines[start]).rstrip() if start < len(lines) else ""
+    if "{" not in head and head.endswith(";"):
+        raise NoBlockError(
+            f"line {start + 1} declares no brace-delimited body: {head.strip()!r}. "
+            f"kind=decl expands from an opening brace to its match, and there is "
+            f"none here, so it would run on to the end of the enclosing block. "
+            f"Use kind=line to target this single line."
+        )
+
     depth, seen_open = 0, False
     for i in range(start, len(lines)):
         for ch in strip_fn(lines[i]):
