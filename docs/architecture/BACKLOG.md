@@ -174,7 +174,7 @@ recorded ticket directory to `review_panel`, which writes
 `r{N}_review_{model}.txt` into it — **a replay overwrites the corpus it is
 replaying**. Write to a `replay/` subdirectory.
 
-#### O3. `report` gate-failure distribution reads a field the ledger never writes — MEDIUM
+#### O3. `report` gate-failure distribution reads a field the ledger never writes — CLOSED (`cf88846`, session 3)
 
 `_print_gate_failures` keyword-scans `e.get("detail")`. `append_ledger` writes
 `detail` only on the protected-paths rejection; static, lint, compile, test and
