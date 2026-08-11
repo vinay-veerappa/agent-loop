@@ -7,10 +7,15 @@ Input: a defect description (no pre-declared regions).
 The LLM localizes by querying the graph + tools, then edits, then
 the same gate ladder + panel + arbiter reviews the result.
 
-Control flow (AutoCodeRover pattern):
-  defect -> explore phase (read-only tools) -> edit phase (edit + build + test)
+Control flow (AutoCodeRover pattern, test-first):
+  defect -> red phase (read-only tools + write_test)
+        -> explore phase (read-only tools) -> edit phase (edit + build + test)
         -> gate ladder -> panel -> arbiter
 
+The red phase is where the run earns the right to edit: the model must write a
+test that FAILS against the current code, which is what gives the gate ladder
+something it can refuse with. Without it the ladder can only ask "does this
+compile and break nothing?", which a patch that fixes nothing also satisfies.
 The explore phase is read-only (search_code, trace_call_path, read_file).
 The edit phase has no search tools (edit_file, run_build, run_tests).
 This phase separation prevents the LLM from editing before it understands.
@@ -61,6 +66,20 @@ If you cannot fix the defect, emit:
 why you could not fix it
 <<<END ESCALATE>>>
 """
+
+# How much of a tool's output the model gets back. 2000 chars for everything
+# was too tight in both directions: a 100-line read_file window is routinely
+# longer than that, so the model silently received about half of what it asked
+# for and re-read overlapping ranges to compensate; and the test/build
+# diagnostics that decide the next edit were cut off entirely.
+TOOL_RESULT_LIMIT = 4000
+DIAGNOSTIC_RESULT_LIMIT = 8000
+_DIAGNOSTIC_TOOLS = {"run_tests", "run_build", "write_test"}
+
+
+def _result_limit(tool_name: str) -> int:
+    return DIAGNOSTIC_RESULT_LIMIT if tool_name in _DIAGNOSTIC_TOOLS else TOOL_RESULT_LIMIT
+
 
 # The red phase can look around, so the test is written against real code rather
 # than a guess, but it cannot edit: that is the whole point of the phase.
@@ -298,7 +317,7 @@ def _run_turns(
                 if not _check_file_scope(path, profile):
                     tc_result = f"ERROR: file {path} is outside the allowed scope ({', '.join(profile.file_scope_whitelist) or 'all'})"
                     print(f"           [scope] REJECTED: {path}")
-                    tool_results.append(f"[{tc['name']} result]: {tc_result[:2000]}")
+                    tool_results.append(f"[{tc['name']} result]: {tc_result[:_result_limit(tc['name'])]}")
                     # Transition phase even on rejection (the LLM tried to edit)
                     if phase == "explore":
                         phase = "edit"
@@ -357,12 +376,25 @@ def _run_turns(
                     for t in new_red:
                         print(f"                 - {t}")
                     print(f"           [phase] red -> explore")
+                    # Show WHY it is red, not just that it is. A test can fail
+                    # because the defect exists (what this phase is for) or
+                    # because the test itself is broken -- a bad import, a
+                    # command-line flag that does not exist. Both look identical
+                    # as "a new failure appeared", and the second kind can never
+                    # pass, so the run burns every remaining turn against it.
+                    # This is the last moment the model can still notice.
                     tc_result += (
                         "\n\nCONFIRMED RED: " + ", ".join(new_red) +
                         "\nThis file is now read-only. Fix the source so these pass."
+                        "\n\nRead the failure output below and satisfy yourself that "
+                        "these fail BECAUSE OF THE DEFECT. If they fail for any other "
+                        "reason -- a bad import, a flag or path that does not exist -- "
+                        "the test is wrong, it can never pass, and you must say so with "
+                        "<<<ESCALATE>>> rather than edit source against it."
+                        f"\n\n--- failure output (tail) ---\n{outcome.raw[-2500:]}"
                     )
 
-            tool_results.append(f"[{tc['name']} result]: {tc_result[:2000]}")
+            tool_results.append(f"[{tc['name']} result]: {tc_result[:_result_limit(tc['name'])]}")
 
             if tc["name"] == "edit_file":
                 if tc_result.startswith("OK"):

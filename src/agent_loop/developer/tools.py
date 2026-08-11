@@ -403,7 +403,20 @@ def _run_tests(repo: Path, profile: Profile) -> str:
         from ..gates import parse_tests
         outcome = parse_tests(output)
         if outcome.ran:
-            return f"Tests: {outcome.passed} passed, {outcome.failed} failed\nFailures: {outcome.failures or 'none'}"
+            summary = (
+                f"Tests: {outcome.passed} passed, {outcome.failed} failed\n"
+                f"Failures: {outcome.failures or 'none'}"
+            )
+            # Names alone are not diagnosable. This returned only the names of
+            # failing tests, so a model in the edit phase could see THAT its
+            # acceptance test failed but never WHY -- on the O3 TDD run it spent
+            # sixty turns against a test that was red because it shelled out to
+            # a CLI flag that does not exist, and the argparse error explaining
+            # so was never shown to it. It resorted to guessing at column
+            # padding. Show the output whenever anything failed.
+            if outcome.failures:
+                summary += f"\n\n--- test output (tail) ---\n{output[-2500:]}"
+            return summary
         else:
             return f"Tests: runner did not reach RESULTS\n{output[-2000:]}"
     except subprocess.TimeoutExpired:

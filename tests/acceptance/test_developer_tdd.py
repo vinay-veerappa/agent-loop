@@ -269,3 +269,29 @@ def test_locked_test_is_readonly_even_when_protected_does_not_cover_it(tmp_path)
     patch_text = Path(result["patch"]).read_text(encoding="utf-8")
     assert "== 6" in patch_text, "the acceptance test was weakened"
     assert "== 5" not in patch_text
+
+
+def test_run_tests_returns_the_failure_output_not_just_names(tmp_path):
+    """The model must be able to see WHY a test failed. This returned only the
+    NAMES of failing tests, so on the O3 TDD run the model spent sixty turns
+    against an acceptance test that was red because it shelled out to a CLI flag
+    that does not exist -- and the argparse error saying so was never shown to
+    it. It resorted to guessing at column padding."""
+    repo = _make_repo(tmp_path)
+    prof = _profile("tdd-diagnostics")
+    (repo / "tests" / "test_loud.py").write_text(
+        "def test_loud():\n"
+        "    raise AssertionError('DISTINCTIVE_FAILURE_TEXT')\n",
+        encoding="utf-8",
+    )
+    out = execute_tool("run_tests", {}, repo, prof, [])
+    assert "test_loud" in out
+    assert "DISTINCTIVE_FAILURE_TEXT" in out, out[:500]
+
+
+def test_diagnostic_tools_get_a_larger_result_budget():
+    """Test and build output decides the next edit, so it must not be truncated
+    to the same 2000 chars as a file read."""
+    from agent_loop.developer.driver import _result_limit, TOOL_RESULT_LIMIT
+    assert _result_limit("run_tests") > _result_limit("read_file")
+    assert _result_limit("read_file") == TOOL_RESULT_LIMIT
