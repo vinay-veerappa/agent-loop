@@ -22,3 +22,4 @@ docs/generated/
 # Skill junctions (point to central skills directory)
 .agent/skills/
 .agents/skills/
+tests/fixtures/*/results_latest.json

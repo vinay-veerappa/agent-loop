@@ -37,12 +37,14 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`cf88846`** — 5 commits past `v0.3.0`, **unpushed and untagged**. O3, O15-O19 closed; O20-O23 opened |
-| Pushed? | **NO.** `v0.3.0` and earlier are pushed; the five session-3 commits are not |
-| Tests | **255 passed**, 0 failed on Python 3.14; selftest 12/12. **Not re-run on 3.12 this session** — do that before tagging (see the O9 lesson below) |
+| `agent-loop` HEAD | **`dad3301`** — 20 commits past `v0.3.0`, **unpushed and untagged**. O3, O6, O15-O19, O24-O27 closed; O20 mitigated; O21-O23, O28 open |
+| Pushed? | **NO.** `v0.3.0` and earlier are pushed; the 20 session-3 commits are not |
+| Tests | **302 passed**, 0 failed on Python 3.14; selftest 12/12. **Not re-run on 3.12 this session** — do that before tagging (see the O9 lesson below) |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
+| Arbiter | `mistral-large-3:675b-cloud`, **chosen by measurement** over 18 configurations / 14 models / 4 services. Best available and still only 3/5 — see O20, O28 |
+| Providers | ollama, anthropic, openai, **gemini**, **github** (retired), **agy** (CLI). The three Gemini paths are NOT interchangeable — see §10 |
 | `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `88c3a723` (**unpushed**) — pins + installs agent-loop `v0.3.0` |
 | Consumer profiles | present in tvDownloadOHLC HEAD and clean; `git log -S` attributes them to `fb682a93`, which was already in the log when this session began — the other session has been committing and possibly amending there, so **trust file contents over commit attribution in that repo** |
 
@@ -83,7 +85,9 @@ C:/Users/vinay/agent-loop/                 the package (this repo)
   agent_loop.config.example.json            copy to agent_loop.config.json to override
   logs/agent_loop/F1..F6/                   patches + artifacts from the self-hosted run
   logs/agent_loop/loop_run_F1-F6.log        the full run log
-  docs/architecture/BACKLOG.md              OPEN ISSUES (O1-O14) ← authoritative
+  docs/architecture/BACKLOG.md              OPEN ISSUES (O1-O28) ← authoritative
+  tests/fixtures/arbiter_bench/             LABELLED arbiter corpus + run_bench.py
+  tests/fixtures/compactor_bench/           LABELLED compactor corpus + run_bench.py
   docs/architecture/ROADMAP.md              what to build next (written by the other session)
   docs/architecture/IMPLEMENTATION_DECISIONS.md   why each non-obvious choice was made
 
@@ -334,7 +338,7 @@ if a file you did not touch is staged, another session is mid-edit in it.
 
 ## §9 Session 3 (2026-08-10, later) — developer mode, TDD, O3
 
-**What changed.** Five commits on `main`, `f739b7d..cf88846`, all **unpushed**:
+**What changed.** Twenty-one commits on `main`, `f739b7d..HEAD`, all **unpushed**:
 
 | | |
 |---|---|
@@ -347,16 +351,37 @@ if a file you did not touch is staged, another session is mid-edit in it.
 | `f97492f` | **arbiter chosen by measurement**; `think` read from config |
 | `4546db7` | the compactor read an eighth of what it summarised |
 | `89c7c22` | **MODEL_CATALOG**; a mode can name its own model |
+| `82cab53` | compactor benchmark — the cheapest model is enough |
+| `370f612` | `gemini:` and `github:` backends |
+| `20772a8` | GitHub Models is retired (verified with a valid token) |
+| `266fcd1` | Gemini via direct API: Flash 0/5, Pro blocked by quota |
+| `a540501` | **`agy:` backend** — the only path to Gemini Pro high + Claude models |
+| `dad3301` | agy arms benchmarked; **stop shopping for models** (O28) |
+| plus | docs commits `f946744`, `6ace224` and the O27/O28 entries |
 
-**Verified green:** 255 tests on 3.14, selftest 12/12, and every load-bearing
+**Verified green:** 302 tests on 3.14, selftest 12/12, and every load-bearing
 guard mutation-checked. **Not verified:** the suite has not been re-run on
 Python 3.12 this session. O9 was invisible on 3.14 and bricked every ticket on
 the consumer's 3.12 — do that before tagging.
 
-**What I left half-done.** Nothing is half-applied, but four things are recorded
-and not fixed: O20 (arbiter), O21 (half-covered acceptance tests), O22
-(one-member default panel), O23 (four small ones). O22 in particular needs a
-schema decision, not a patch.
+**What I left half-done.** Nothing is half-applied. Recorded and not fixed:
+O4 and O5 (the items this session was originally asked to sequence — see below),
+O20 (arbiter still 3/5), O21 (half-covered acceptance tests), O22 (one-member
+default panel), O23 (four small ones), O28 (the corpus, not the pool). O22 needs
+a schema decision, not a patch.
+
+**The original task, still open.** This session began by asking whether to fix
+O3/O4/O5 by hand or through the loop. O3 is closed. **O4 and O5 were never
+started**, and both need re-reading before they are picked up:
+
+* **O4** (report's arbiter calibration correlates coupled variables) now has
+  real arbiter data to calibrate against, where before it had none. It also now
+  measures an arbiter known to be weak (O20), so fix the diagnosis before
+  trusting the metric.
+* **O5** (Finding.signature breaks on suffix changes) was planned to be solved
+  by delegating dedup to the arbiter. **Reconsider that premise**: eighteen
+  configurations later, the best arbiter available upholds 3 of 5 correct
+  findings. Building signature dedup on top of that is building on sand.
 
 **The model/role audit**, now measured rather than argued:
 
@@ -432,3 +457,56 @@ python tests/fixtures/compactor_bench/run_bench.py          # rejection recall
 * **Not all benchmarks are equally trustworthy.** The arbiter one grades
   structured `UPHELD #N` rulings the model must emit; the compactor one grades
   free prose. The first is much harder to fool yourself with than the second.
+
+---
+
+## §10 Providers: three paths to Gemini, and they are not interchangeable
+
+Measured 2026-08-10. This is the section to read before anyone "simplifies" the
+provider list.
+
+| path | auth | models | per-call overhead |
+|---|---|---|---|
+| `gemini:` direct HTTP | `GEMINI_API_KEY` (AI Studio) | API ids only (`gemini-3.6-flash`, `gemini-3.1-pro-preview`) | none |
+| `google.antigravity` SDK | **also `GEMINI_API_KEY`** | API ids only — **404s on agy's `-high` ids** | **~13,600 prompt tokens** of agent scaffold |
+| `agy:` CLI | **Antigravity subscription**, no key | `gemini-3.1-pro-high`, `gemini-3.6-flash-{high,medium,low}`, `claude-opus-4-6-thinking`, `claude-sonnet-4-6`, `gpt-oss-120b-medium` | n/a |
+
+Consequences that cost time to establish:
+
+* **The SDK does not bypass the AI Studio quota** — it uses the same key, and
+  its ~13.6k-token scaffold burns that quota *faster*. Measured by asking it to
+  reply "PONG": `prompt_token_count=13606, candidates_token_count=2`. If the
+  goal is a single stateless ruling, the SDK is the wrong tool; it is the right
+  tool for an agentic workload with vision and tools (which is why the chart
+  agent uses it).
+* **`agy` is the only path to Gemini Pro at high effort and to the Claude
+  models.** `gemini-3.1-pro-preview` over the direct API returns HTTP 429 on the
+  free tier (`generate_content_free_tier_input_token_count`) because the arbiter
+  prompt is large.
+* **`agy models`** lists the ids that backend accepts. They are agy's names, not
+  Google's: `-high`/`-low` is a reasoning-effort setting baked into the name,
+  and the SDK rejects those ids with a 404.
+* **GitHub Models is retired.** Verified with a valid PAT that authenticates
+  fine against `api.github.com`: `models.github.ai/inference` returns HTTP 410
+  `github_models_retirement_brownout`, and `models.inference.ai.azure.com`
+  returns 404 on every path including `/` and `/models`. Tested with urllib,
+  curl and requests. A Copilot subscription is not a substitute — it is licensed
+  for use through Copilot clients, not as a chat-completions endpoint.
+
+Three hazards specific to the `agy:` backend, all encoded in its tests:
+
+1. **The prompt is a command-line ARGUMENT**, capped by CreateProcess at 32767
+   chars. Over 30000 the backend REFUSES rather than truncating — a shortened
+   prompt would silently drop the end of the diff and the arbiter would rule on
+   a patch it was never shown. The current corpus is 16,943.
+2. **agy is an AGENT with file and terminal tools.** It runs `--sandbox` in a
+   scratch temp dir, never the caller's cwd; pointed at the repo it could edit
+   the code under review. `--dangerously-skip-permissions` is required for
+   non-interactive use and is only acceptable because of that.
+3. **Cleanup must not destroy an answer.** agy holds a file open in its working
+   directory, so `TemporaryDirectory` cleanup raised `WinError 32` *after* a
+   successful call and the exception discarded the completion. Cleanup is
+   best-effort and fully guarded now.
+
+`agy` print mode reports no usage, so token counts on an agy arm are **unknown,
+not zero** — its usage lines are not comparable with an HTTP arm's.
