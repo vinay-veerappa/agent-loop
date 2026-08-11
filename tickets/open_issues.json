@@ -1,0 +1,29 @@
+{
+  "_comment": "Open issues from BACKLOG.md, ticketed for the loop. Acceptance tests are committed and RED before each run. Run with: --profile agent-loop-self --profile-module profiles.self --tickets tickets/open_issues.json --ticket <id> --reviewers glm-5.2:cloud,minimax-m3:cloud --arbiter deepseek-v4-pro:cloud --max-rounds 3 --panel-deadline 900",
+  "tickets": [
+    {
+      "id": "O1",
+      "title": "promote() must compose two tickets that touch one file",
+      "defect": "Workspace.promote copies each approved file with shutil.copy2. Every ticket's patch is produced in its own worktree cut from the same base, so a whole-file copy carries only that ticket's change. When two tickets touch one file, promoting the second copies a file that lacks the first ticket's edit, reverting it -- and the ledger records 'applied' for both. F4 and F5 both edited src/agent_loop/report.py and had to be landed with `git apply` by hand for this reason. The dirty-target guard added earlier downgrades the silent loss to a WorkspaceError (the right failure), but the capability is still missing: there is no way to land two approved tickets that share a file without committing in between, and the guard refuses even when the two changes do not overlap at all.",
+      "spec": "Make promotion apply the worktree's change for the named files instead of copying whole files, so non-overlapping edits to one file compose.\n\nRequired behaviour, in priority order:\n\n1. COMPOSE: if the live file differs from the worktree's base (for example because a previous ticket was already promoted into it) but the two sets of changes do not overlap, promotion must succeed and the result must contain BOTH changes.\n\n2. REFUSE ATOMICALLY: if the changes genuinely overlap, raise WorkspaceError and leave every target file byte-identical to what it was before the call. A half-applied patch is worse than a refusal -- it leaves a file no reviewer approved. Do not apply file-by-file in a way that leaves earlier files written when a later one fails; verify the whole change can apply before writing anything (`git apply --check` over the full patch, then `git apply`).\n\n3. NEVER DESTROY HUMAN WORK: uncommitted edits that the patch would overwrite must still be refused, and the error message must still contain the word 'uncommitted' and say what to do about it (commit or stash, then promote). `force=True` must keep its current meaning -- overwrite anyway, by plain copy -- for a caller who explicitly wants that.\n\n4. PRESERVE LINE ENDINGS: promotion must not rewrite a CRLF file in LF or the reverse. Reuse the existing byte-safe diff path rather than reading the diff through universal newlines.\n\n5. Keep the clean-target fast path working: when the live file matches the worktree base, the current behaviour is already correct.\n\nKeep promote's signature exactly as it is -- `promote(self, files: Sequence[str], force: bool = False) -> List[str]` -- and keep returning the list of promoted file paths, because loop.py calls it as `ws.promote(sorted({r.file for r in regs}))` and that call site is outside your regions and must not need editing.\n\nTo get a per-file diff you may add an OPTIONAL parameter to the `diff` method (for example `paths: Optional[Sequence[str]] = None`) and pass the file list through. It must remain optional and default to the current whole-worktree behaviour, because export_patch and other callers invoke `self.diff()` with no arguments and are outside your regions.",
+      "regions": [
+        {
+          "id": "DIFF",
+          "file": "src/agent_loop/workspace.py",
+          "anchor": "def diff",
+          "note": "add an OPTIONAL paths parameter; the existing no-argument callers (export_patch) must keep working. Note why this does not go through _git(): text=True eats the CR of a CRLF line."
+        },
+        {
+          "id": "PROMOTE",
+          "file": "src/agent_loop/workspace.py",
+          "anchor": "def promote",
+          "note": "the whole promote method, including the dirty guard. self.repo is the live repo, self.root is the worktree. _live_is_dirty(path) is available and is outside this region -- you may call it but not change it."
+        }
+      ],
+      "expect_green": [
+        "test_two_tickets_touching_one_file_both_land"
+      ],
+      "context": "Acceptance tests are in tests/acceptance/test_o1_promote_composes.py and are committed. Only test_two_tickets_touching_one_file_both_land is red; the other five in that file are green already and pin the guarantees you must not trade away -- the suite gate will fail you if any of them regresses. tests/acceptance/test_defect_regressions.py also contains test_promote_refuses_over_uncommitted_changes, which asserts the error matches 'uncommitted' and that force=True then overwrites; both must keep passing."
+    }
+  ]
+}
