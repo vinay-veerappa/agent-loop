@@ -72,6 +72,13 @@ class Completion:
     # Reasoning models bill their chain of thought as output tokens. Tracked so
     # a reviewer that spends its whole budget thinking is visible in the logs.
     thinking_chars: int = 0
+    # Native tool calls, normalised to [{"name": str, "args": dict}]. A model
+    # that answers with a tool call returns EMPTY `text` -- the call is the
+    # answer -- so a caller that reads only `text` sees a blank turn and cannot
+    # tell it from a dead model. Populated for the ollama and OpenAI backends;
+    # Anthropic only emits tool_use when the request carries a `tools` array,
+    # which this shim never sends.
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -202,6 +209,35 @@ def _fit_num_ctx(messages, max_tokens: int, num_ctx: int) -> int:
     return ((needed + 8191) // 8192) * 8192
 
 
+def _normalise_tool_calls(raw: Any) -> List[Dict[str, Any]]:
+    """Flatten a provider's native tool-call array to [{"name", "args"}].
+
+    Both ollama and OpenAI-compatible servers nest the call under `function`,
+    but ollama returns `arguments` already decoded while OpenAI sends it as a
+    JSON string. Accept either. An entry with no usable name is skipped rather
+    than given an invented one: a tool call the loop cannot name is a call it
+    cannot execute, and a placeholder would be dispatched as a real request.
+    """
+    calls: List[Dict[str, Any]] = []
+    for tc in raw or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or tc
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name") or ""
+        if not name:
+            continue
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        calls.append({"name": name, "args": args if isinstance(args, dict) else {}})
+    return calls
+
+
 def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
     payload = {
         "model": model,
@@ -228,6 +264,7 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     msg = data.get("message", {}) or {}
     text = msg.get("content", "") or ""
     thinking = msg.get("thinking", "") or ""
+    tool_calls = _normalise_tool_calls(msg.get("tool_calls"))
 
     # Reasoning models return their chain of thought in `thinking` and the
     # answer in `content`. When the output budget is exhausted before the model
@@ -235,12 +272,31 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     # returned nothing" and is impossible to diagnose from the artifact.
     # deepseek-v4-pro did exactly this on every T2 review round: 40k chars of
     # thinking, zero content. Report it as what it is.
-    if not text.strip() and thinking.strip():
-        raise ProviderError(
-            f"{model} exhausted its output budget on reasoning: "
+    #
+    # But empty content is ALSO how a model replies with a tool call, and the
+    # old check could not tell the two apart: it blamed the budget for any
+    # empty answer that had any thinking attached. kimi-k2.7-code answering
+    # developer mode's first turn with a native read_file call -- 21 tokens,
+    # done_reason=stop -- was reported as a 48000-token budget exhaustion, and
+    # the advice it printed ("raise max_tokens") could not have helped. Check
+    # for the tool call first, and only claim truncation when the response was
+    # actually truncated.
+    if not text.strip() and not tool_calls and thinking.strip():
+        eval_count = data.get("eval_count") or 0
+        done_reason = data.get("done_reason") or ""
+        detail = (
             f"{len(thinking)} chars of thinking, empty content "
-            f"(eval_count={data.get('eval_count')}, done_reason={data.get('done_reason')}). "
-            f"Raise max_tokens above {max_tokens}."
+            f"(eval_count={eval_count}, done_reason={done_reason})."
+        )
+        if done_reason == "length" or eval_count >= max_tokens:
+            raise ProviderError(
+                f"{model} exhausted its output budget on reasoning: {detail} "
+                f"Raise max_tokens above {max_tokens}."
+            )
+        raise ProviderError(
+            f"{model} returned neither content nor a tool call: {detail} "
+            f"It stopped on its own well inside the {max_tokens}-token budget, "
+            f"so raising max_tokens will not help; the prompt is the suspect."
         )
     return Completion(
         text=text,
@@ -249,6 +305,7 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
         output_tokens=data.get("eval_count", 0) or 0,
         stop_reason=data.get("done_reason", "") or "",
         thinking_chars=len(thinking),
+        tool_calls=tool_calls,
         raw=data,
     )
 
@@ -334,12 +391,14 @@ def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     data = _post(f"{base}/chat/completions", payload, headers, timeout)
     choice = (data.get("choices") or [{}])[0]
     usage = data.get("usage", {}) or {}
+    message = choice.get("message") or {}
     return Completion(
-        text=(choice.get("message") or {}).get("content", "") or "",
+        text=message.get("content", "") or "",
         model=f"openai:{model}",
         input_tokens=usage.get("prompt_tokens", 0) or 0,
         output_tokens=usage.get("completion_tokens", 0) or 0,
         stop_reason=choice.get("finish_reason", "") or "",
+        tool_calls=_normalise_tool_calls(message.get("tool_calls")),
         raw=data,
     )
 

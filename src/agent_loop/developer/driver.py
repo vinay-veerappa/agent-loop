@@ -157,7 +157,23 @@ def _run_turns(
             result["error"] = str(exc)
             break
 
-        raw = out.text
+        # A model may answer with a native `tool_calls` array rather than the
+        # text protocol below, and `content` is empty by design when it does.
+        # Before this was handled the turn looked blank: with think=True the
+        # empty content raised out of the provider as a bogus budget error, and
+        # with think=False the loop said "Continue" to a model that had already
+        # answered, until it ran out of turns.
+        #
+        # The native calls are rendered into `raw` so the artifact and the
+        # history turn record what the model actually did -- but they are
+        # DISPATCHED from out.tool_calls directly, never re-parsed out of the
+        # rendered text. A name the text protocol cannot express (it matches
+        # \w+, so a namespaced `functions.read_file` would not survive) would
+        # otherwise vanish on the way back in, which is this same defect again.
+        text_out = out.text
+        raw = text_out
+        if out.tool_calls:
+            raw = "\n".join([text_out.strip(), _render_tool_calls(out.tool_calls)]).strip()
         (art / f"turn{turn}_raw.txt").write_text(raw, encoding="utf-8")
         print(f"  turn {turn}: {out.usage_line()}")
 
@@ -180,14 +196,16 @@ def _run_turns(
         # edit_file is offered in both phases: calling it is what moves the
         # model from explore to edit.
         offered = sorted(set(available_tools + ["edit_file"]))
-        tool_calls = _parse_tool_calls(raw, offered)
+        # Text-protocol calls come from the model's own text; native calls come
+        # from out.tool_calls. Parsing `raw` here instead would double-count
+        # every native call, because `raw` already contains their rendering.
+        found = _parse_tool_calls(text_out, None) + list(out.tool_calls)
+        tool_calls = [c for c in found if c["name"] in offered]
         # A call to a tool this phase does not offer must be ANSWERED, not
         # dropped. Silently discarding it looked identical to "the model made
         # no tool calls", so the model was told to continue with no hint that
         # its request had been refused, and could repeat it until max_turns.
-        rejected = [
-            c["name"] for c in _parse_tool_calls(raw, None) if c["name"] not in offered
-        ]
+        rejected = [c["name"] for c in found if c["name"] not in offered]
         if not tool_calls and not rejected:
             # No tool calls and not done -- ask the LLM to continue
             history += [
@@ -328,6 +346,18 @@ def _run_turns(
 
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
+
+
+def _render_tool_calls(calls: List[Dict[str, Any]]) -> str:
+    """Render normalised tool calls into the text protocol `_parse_tool_calls`
+    reads, so a native tool call and a text one are indistinguishable
+    downstream. Inverse of `_parse_tool_calls`."""
+    return "\n".join(
+        f'<<<TOOL name="{c["name"]}">>>\n'
+        f'{json.dumps(c.get("args", {}))}\n'
+        f"<<<END TOOL>>>"
+        for c in calls
+    )
 
 
 def _parse_tool_calls(
