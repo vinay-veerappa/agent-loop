@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**173/173 tests pass on Python 3.12 and 3.14.** Current tag: **`v0.2.2`**, which
+**185/185 tests pass on Python 3.12 and 3.14.** Current tag: **`v0.2.2`**, which
 is what tvDownloadOHLC pins and has installed.
 
 Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
@@ -76,7 +76,33 @@ green, nine red acceptance tests turned green. Three loop defects the run
 exposed were fixed in that commit. What follows is what is still open, with the
 mechanism, so none of it has to be re-derived.
 
-#### O1. `promote()` cannot handle two tickets that touch one file — HIGH
+#### O1. `promote()` cannot handle two tickets that touch one file — CLOSED (`a4052e6`)
+
+**Fixed** by the first option below: `promote()` builds a patch for exactly the
+files being promoted (new OPTIONAL `paths` argument to `diff()`, so
+`export_patch`'s no-arg call is untouched) and applies it with `git apply`.
+Non-overlapping edits to one file now compose. 7 acceptance tests in
+`tests/acceptance/test_o1_promote_composes.py`.
+
+Three things worth carrying forward:
+
+* **NOT `--3way`.** The loop's own patch used it. On a genuine conflict `--3way`
+  does not refuse — it merges, writes **conflict markers into the live file**, and
+  only *then* returns non-zero, so `promote` raised having already corrupted the
+  target. It also implies `--index`, staging the result behind the user's back.
+  Plain `git apply` is all-or-nothing. If anyone revisits this, read
+  `test_edits_inside_one_context_window_refuse_rather_than_merge` first.
+* **Known safe limit:** two edits closer than git's 3 lines of hunk context each
+  carry the other's lines as context, so the second is refused rather than
+  composed. A refusal the caller can act on, not data loss.
+* **The original acceptance-test fixture was wrong** — its two functions were one
+  line apart, i.e. inside one context window, so the "non-overlapping" case it
+  claimed to test could never have composed. Fixture now models F4/F5 (two
+  functions far apart). A test that cannot pass is as bad as one that cannot fail.
+
+Original defect text follows.
+
+#### O1 (original). `promote()` cannot handle two tickets that touch one file — HIGH
 
 `Workspace.promote` is a `shutil.copy2` per file, not a patch application. F4
 and F5 both edit `src/agent_loop/report.py`; each patch was produced in its own
@@ -247,6 +273,50 @@ skill's conventions. It does not — the four system prompts in `docs_mode.py` a
 hardcoded and contain nothing project-specific, so generated docs do not match
 any repo's house format. Either inject the skill's conventions into the system
 prompt or add a `Profile.docs_conventions` field. README now says so explicitly.
+
+#### O12. Per-model token budgets in the registry are dead configuration — PARTIALLY FIXED (`2fbf1b6`)
+
+`ModelConfig.max_tokens` was read in exactly **one** place in the package
+(`compaction.py`). Every other call site hardcoded a literal that happened to
+agree with the registry entry beside it:
+
+| caller | literal | registry says |
+|---|---|---|
+| `loop.py` implementer | `48000` | `48000` — **fixed**, now reads the registry |
+| `plan_mode.py` | `24000` | ignored |
+| `test_mode.py` | `16000` | ignored |
+| `docs_mode.py` | `8000` | ignored |
+| `brainstorm_mode.py` | `8000` | ignored |
+
+This is not cosmetic. O1's first loop run died `IMPLEMENTER_UNREACHABLE` because
+kimi spent 125,070 chars on reasoning and emitted empty content; the provider's
+own remedy ("raise max_tokens") was **unreachable without editing loop.py**.
+Added `ModelRegistry.max_tokens_for(model, role, fallback)`, which prefers an
+exact model-name match — a `--implementer <other-model>` override must not inherit
+whichever model is registered first for the role — then the role default, then the
+literal. Kimi's registered budget is now 96000, and the round-3 implement call
+used 52,139 output tokens against 222,413 chars of reasoning, so the old 48000
+ceiling was genuinely the binding constraint.
+
+**Still open (LOW):** the other four modes. Each literal may have been chosen
+deliberately, so they were not changed blind. `ModelConfig.think` should be
+audited the same way.
+
+#### O13. `--max-rounds 3` was not enough for a two-region ticket — OBSERVATION
+
+O1 ran the full three rounds and ended `ARBITER_NEVER_RAN` — the panel never saw
+a patch, because the test gate failed every round. Round 1 introduced a
+regression, round 2 fixed the regression but lost the capability, round 3
+regained the capability and reintroduced a *different* regression. The loop was
+oscillating between the capability and the guarantee, which is a signal the
+ticket should have been split or the rounds raised, not that the model was
+incapable: round 3's patch was architecturally correct and needed one flag
+removed.
+
+Worth noting the gate ladder did its job perfectly here — it refused three
+patches, one of which would have silently corrupted files with conflict markers.
+**And the panel still never ran**, so this ticket adds nothing to O6's open
+question about reviewer value.
 
 #### O11. Consumer pin and install — CLOSED
 
