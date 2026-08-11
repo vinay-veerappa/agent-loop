@@ -1704,4 +1704,37 @@ code defect.
 
 ---
 
+#### O40. A multi-line anchor is unsatisfiable and was reported as a plain miss — CLOSED
+
+Run 3 of the feature plan kept this anchor for THREE consecutive rounds:
+
+    "        public string TranslateSymbol(string rawSymbol, CopierRelationship rel = null)
+        {"
+
+`find_region` tests `anchor in line`, one line at a time, so an anchor containing
+a newline can never match ANYTHING. `anchor not found` was true and useless: the
+request is impossible, and no model can guess its way out of an impossible
+request. Meanwhile O39's candidates were visibly working on the same plan --
+three other anchors self-corrected to real text between rounds 3 and 4 -- so this
+one anchor alone would have consumed the remaining six rounds.
+
+The failure now says the anchor spans multiple lines, that anchors match one line
+at a time, that `kind=decl` already expands from the opening line to the end of
+the block (so the newline was never needed), names the opening line to use
+instead, AND appends O39's candidates for that opening line -- because in the
+observed case the opening line was ALSO wrong (`relationship` for `rel`), and one
+round should not be spent per correction.
+
+#### O41. Progress output never reached a piped log — CLOSED
+
+The same run looked hung for 26 minutes. Python block-buffers a non-tty stdout,
+so four rounds of progress lines were still in the buffer; the artifact file
+mtimes were the only evidence the process was alive. **Anything long enough to
+background is exactly what gets piped**, so this is the normal case. `main()` now
+sets `line_buffering=True`. A test pins the premise (a piped child really is
+block-buffered) as well as the fix, since the fix is worthless if the premise
+ever stops holding.
+
+---
+
 *End of backlog. Update as items are completed.*

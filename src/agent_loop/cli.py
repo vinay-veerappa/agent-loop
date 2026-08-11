@@ -321,6 +321,16 @@ def _docs(args, profile, implementer) -> int:
 
 
 def main(argv=None) -> int:
+    # Line-buffer stdout. A run redirected to a log or a pipe -- which is how any
+    # run long enough to background is invoked -- otherwise BLOCK-buffers, so the
+    # per-round progress lines appear only when the process exits. A 26-minute
+    # run that had completed four rounds looked hung, with the artifact
+    # timestamps as the only evidence it was alive.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):  # pragma: no cover - exotic stdout
+        pass
+
     ap = argparse.ArgumentParser(prog="python -m agent_loop")
     ap.add_argument("--tickets", default="tickets.json")
     ap.add_argument("--ticket", action="append", help="ticket id (repeatable); default all")

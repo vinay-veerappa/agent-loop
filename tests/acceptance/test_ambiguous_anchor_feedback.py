@@ -261,6 +261,55 @@ def test_the_similarity_floor_is_pinned_at_its_boundary():
     assert weak not in offered, "a line below the floor was offered as a candidate"
 
 
+# --- a multi-line anchor is unsatisfiable, and must SAY so (O40) ------------
+#
+# Live: a plan kept `...TranslateSymbol(...)\n        {` for three consecutive
+# rounds. `anchor not found` was true and useless -- the request cannot be
+# satisfied at all, and nothing in the message said why.
+
+MULTILINE = (
+    "        public string TranslateSymbol(string rawSymbol, CopierRelationship rel = null)\n"
+    "        {"
+)
+
+
+def test_multiline_anchor_is_diagnosed_not_just_missing():
+    msg = _error_for(FILE, anchor=MULTILINE)
+    assert "spans multiple lines" in msg
+    assert "can never match" in msg
+    # It must not be reported as a plain miss, which invites another guess.
+    assert not msg.startswith("anchor not found")
+
+
+def test_multiline_anchor_names_the_opening_line_to_use_instead():
+    msg = _error_for(FILE, anchor=MULTILINE)
+    assert "Use only the line that OPENS the region" in msg
+    assert "public string TranslateSymbol(string rawSymbol, CopierRelationship rel = null)" in msg
+
+
+def test_multiline_anchor_still_offers_real_candidates():
+    # The opening line here is itself wrong (`relationship` vs `rel`), so the
+    # caller needs BOTH corrections in one message, not one per round.
+    anchor = "public string TranslateSymbol(string rawSymbol, CopierRelationship relationship)\n        {"
+    msg = _error_for(FILE, anchor=anchor)
+    assert "spans multiple lines" in msg
+    assert "rel = null)" in msg, "the real signature was not offered"
+
+
+def test_the_opening_line_alone_resolves():
+    """The remedy the message recommends must actually work."""
+    start, end = regions.find_region(
+        FILE, "public string TranslateSymbol(string rawSymbol, CopierRelationship rel = null)",
+        kind="decl",
+    )
+    assert (start, end) == (8, 11)
+
+
+def test_multiline_regex_anchor_is_also_diagnosed():
+    msg = _error_for(FILE, anchor="re:public string TranslateSymbol.*\n.*{")
+    assert "spans multiple lines" in msg
+
+
 def test_rejected_feature_plan_is_persisted(tmp_path, monkeypatch):
     """A plan that parses but never validates must survive the run."""
     from agent_loop import plan_mode

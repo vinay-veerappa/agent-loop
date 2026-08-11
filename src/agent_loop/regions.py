@@ -211,6 +211,25 @@ def _ambiguous_hits_preview(lines: List[str], hits: List[int]) -> str:
 def find_region(lines: List[str], anchor: str, kind: str = "decl",
                 profile: Profile | None = None) -> Tuple[int, int]:
     """Return 0-based inclusive (start_line, end_line) for `anchor`."""
+    # An anchor is matched against ONE line at a time, so a newline inside it can
+    # never match anything. Observed live: a plan asked for
+    # `...TranslateSymbol(...)\n        {` and kept it for three rounds, because
+    # `anchor not found` is true but says nothing about WHY it is unsatisfiable,
+    # and a model cannot guess its way out of an impossible request. `kind=decl`
+    # already expands a signature line to its whole block, so the signature line
+    # alone is what the caller wanted.
+    if "\n" in anchor:
+        head = anchor.split("\n", 1)[0].strip()
+        detail = f" Use only the line that OPENS the region, i.e. {head!r}." if head else ""
+        nearest = _nearest_lines(lines, head) if head else ""
+        if nearest:
+            detail += f" Real lines in this file, closest first: {nearest}"
+        raise RegionError(
+            f"anchor spans multiple lines and can never match: {anchor!r}. Anchors are "
+            f"matched one line at a time, and `kind=decl` already expands from the "
+            f"opening line to the end of the block." + detail
+        )
+
     if anchor.startswith("re:"):
         pat: Optional[re.Pattern] = re.compile(anchor[3:])
         hits = [i for i, ln in enumerate(lines) if pat.search(ln)]
