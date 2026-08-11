@@ -222,7 +222,24 @@ def parser_fixtures() -> bool:
 
 
 def main() -> int:
-    spec = json.loads((REPO / "tickets" / "phase1_state_machine.json").read_text(encoding="utf-8"))
+    # The selftest runs the real loop against THIS repo's own source: it extracts
+    # regions from `src/agent_loop/` and reads a ticket from `tickets/`. Neither
+    # is carried by the wheel, so under an installed package REPO resolves to
+    # `<venv>/Lib` and the first read died with a bare FileNotFoundError pointing
+    # at a path nobody wrote. Say what is actually wrong instead -- the consumer
+    # venv is exactly where someone follows HANDOVER §5 and runs this first.
+    spec_path = REPO / "tickets" / "phase1_state_machine.json"
+    if not spec_path.exists():
+        print(
+            f"selftest needs an agent-loop source checkout, and this is not one.\n"
+            f"  package  : {Path(__file__).resolve().parent}\n"
+            f"  looked in: {REPO}\n"
+            f"It exercises the loop against the repo's own source and tickets/,\n"
+            f"neither of which ships in the wheel. Clone the repo and run it from\n"
+            f"there; `pytest tests/` is the check that works against an install."
+        )
+        return 2
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
     t3 = spec["tickets"][0]  # use the first ticket in the file
     # Keep artifacts out of the real ticket directories.
     t3 = dict(t3, id="SELFTEST")

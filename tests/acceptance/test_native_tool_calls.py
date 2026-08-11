@@ -28,6 +28,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _interp import PY_EXE
+
 from agent_loop import providers
 from agent_loop.providers import Completion, ProviderError, _normalise_tool_calls
 from agent_loop.profiles import Profile, register
@@ -203,7 +205,7 @@ def test_driver_dispatches_native_tool_calls(tmp_path):
         name="test-native-tool-calls",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py",
+        build_cmd=PY_EXE + " -m py_compile src/target.py",
         test_cmd="",
         file_scope_whitelist=("src/",),
         protected=("test_*.py", "tests/*"),
@@ -254,7 +256,7 @@ def test_driver_does_not_double_count_a_native_call(tmp_path):
         name="test-native-no-double",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py", test_cmd="",
+        build_cmd=PY_EXE + " -m py_compile src/target.py", test_cmd="",
         file_scope_whitelist=("src/",), protected=("test_*.py", "tests/*"),
         implementer_rules="test", reviewer_priorities="test",
     )
@@ -306,7 +308,7 @@ def test_max_turns_exhausted_is_named_not_blank(tmp_path):
         name="test-max-turns",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py", test_cmd="",
+        build_cmd=PY_EXE + " -m py_compile src/target.py", test_cmd="",
         file_scope_whitelist=("src/",), protected=("test_*.py", "tests/*"),
         implementer_rules="test", reviewer_priorities="test",
     )
@@ -333,7 +335,7 @@ def test_turns_are_recorded(tmp_path):
         name="test-turns-recorded",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py", test_cmd="",
+        build_cmd=PY_EXE + " -m py_compile src/target.py", test_cmd="",
         file_scope_whitelist=("src/",), protected=("test_*.py", "tests/*"),
         implementer_rules="test", reviewer_priorities="test",
     )

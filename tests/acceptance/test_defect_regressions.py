@@ -16,6 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _interp import PY_EXE
+
 from agent_loop import (
     arbiter, compaction, context, gates, memory, models, providers, regions, workspace,
 )
@@ -98,10 +100,10 @@ def test_baseline_refuses_unparseable_and_errored_runs(tmp_path):
     repo = _git_repo(tmp_path)
     with workspace.open_workspace(repo, "BASE") as ws:
         with pytest.raises(workspace.WorkspaceError, match="no parseable result summary"):
-            workspace.capture_baseline(ws, "python -c \"print('nothing useful')\"", gates.parse_tests)
+            workspace.capture_baseline(ws, PY_EXE + " -c \"print('nothing useful')\"", gates.parse_tests)
         with pytest.raises(workspace.WorkspaceError, match="suite-level error"):
             workspace.capture_baseline(
-                ws, "python -c \"print('==== 2 errors in 0.1s ====')\"", gates.parse_tests
+                ws, PY_EXE + " -c \"print('==== 2 errors in 0.1s ====')\"", gates.parse_tests
             )
 
 
@@ -114,13 +116,13 @@ def test_compile_gate_substitutes_touched_files(tmp_path):
     repo = _git_repo(tmp_path)
     (repo / "src" / "broken.py").write_text("def f(:\n", encoding="utf-8")
 
-    ok = gates.check_compile("python -m py_compile {files}", repo, files=["src/target.py"])
+    ok = gates.check_compile(PY_EXE + " -m py_compile {files}", repo, files=["src/target.py"])
     assert ok.ok, ok.detail
 
-    bad = gates.check_compile("python -m py_compile {files}", repo, files=["src/broken.py"])
+    bad = gates.check_compile(PY_EXE + " -m py_compile {files}", repo, files=["src/broken.py"])
     assert not bad.ok, "the gate must fail on the file the patch actually touched"
 
-    empty = gates.check_compile("python -m py_compile {files}", repo, files=[])
+    empty = gates.check_compile(PY_EXE + " -m py_compile {files}", repo, files=[])
     assert empty.ok and "no files" in empty.summary
 
 
@@ -613,6 +615,13 @@ def test_graph_freshness_marker_round_trip(tmp_path):
     first = context.check_graph_freshness(tmp_path, prof)
     assert "never indexed" in first
 
+    # Age the source deliberately instead of racing the clock. `mark_graph_fresh`
+    # records time.time() straight after the write above, and when the
+    # filesystem's mtime granularity rounds both into the same tick the
+    # `newest_source_mtime > last_indexed` comparison reports stale. That made
+    # this test flaky (O14), and a flaky gate teaches people to re-run instead
+    # of read.
+    os.utime(tmp_path / "a.py", (time.time() - 60, time.time() - 60))
     context.mark_graph_fresh(tmp_path)
     assert context.check_graph_freshness(tmp_path, prof) == "fresh"
 
@@ -642,7 +651,7 @@ def test_test_mode_does_not_stash_the_users_work(tmp_path):
     tp = Profile(
         name="test-mode-regression", language="python", file_suffixes=(".py",),
         line_comment="#", block_comment=(), block_kind="indent",
-        test_cmd="python -c \"print('==== 1 failed, 2 passed in 0.1s ====')\"",
+        test_cmd=PY_EXE + " -c \"print('==== 1 failed, 2 passed in 0.1s ====')\"",
         implementer_rules="t", reviewer_priorities="t",
     )
     register(tp)
@@ -665,3 +674,24 @@ def test_test_mode_does_not_stash_the_users_work(tmp_path):
     assert stash.stdout.strip() == "", f"no stash may be left behind: {stash.stdout}"
     assert result.get("error") is None, result.get("error")
     assert (repo / "tests" / "test_gen.py").exists()
+
+
+# ---------------------------------------------------------------------------
+# selftest -- the documented first command must not die on an installed package
+# ---------------------------------------------------------------------------
+def test_selftest_says_why_it_cannot_run_outside_a_checkout(tmp_path, capsys):
+    """HANDOVER §5 says to run `python -m agent_loop.selftest` first after any
+    change, and the consumer venv is where someone does that. Installed,
+    `REPO = parents[2]` resolves to `<venv>/Lib`, so the first read raised a bare
+    FileNotFoundError naming a path nobody wrote -- and it looks like a missing
+    ticket file rather than the wrong kind of install."""
+    from agent_loop import selftest
+
+    with patch.object(selftest, "REPO", tmp_path):
+        rc = selftest.main()
+
+    assert rc == 2, "an unusable environment is not a passing selftest"
+    out = capsys.readouterr().out
+    assert "source checkout" in out
+    assert str(tmp_path) in out, "say where it looked"
+    assert "pytest tests/" in out, "point at the check that does work installed"

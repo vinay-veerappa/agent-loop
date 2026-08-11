@@ -19,7 +19,7 @@ agent-loop = "agent_loop.cli:main"
 test = ["pytest>=7.0"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

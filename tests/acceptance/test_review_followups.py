@@ -16,6 +16,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _interp import PY_EXE
+
 from agent_loop.loop import Finding
 from agent_loop.profiles import Profile, register
 
@@ -64,10 +66,10 @@ def test_check_lint_substitutes_touched_files(tmp_path):
     (tmp_path / "clean.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "broken.py").write_text("def f(:\n", encoding="utf-8")
 
-    ok = check_lint("python -m py_compile {files}", tmp_path, files=["clean.py"])
+    ok = check_lint(PY_EXE + " -m py_compile {files}", tmp_path, files=["clean.py"])
     assert ok.ok, ok.detail
 
-    bad = check_lint("python -m py_compile {files}", tmp_path, files=["broken.py"])
+    bad = check_lint(PY_EXE + " -m py_compile {files}", tmp_path, files=["broken.py"])
     assert not bad.ok, "the gate must fail on the file the patch touched"
 
 
@@ -77,7 +79,7 @@ def test_check_lint_is_a_noop_when_nothing_was_touched(tmp_path):
     command."""
     from agent_loop.gates import check_lint
 
-    res = check_lint("python -m py_compile {files}", tmp_path, files=[])
+    res = check_lint(PY_EXE + " -m py_compile {files}", tmp_path, files=[])
     assert res.ok
     assert "no files" in res.summary.lower()
 

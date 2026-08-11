@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _interp import PY_EXE
+
 from agent_loop.profiles import Profile, register
 from agent_loop.providers import Completion
 from agent_loop.plan_mode import run_plan, _parse_ticket
@@ -21,8 +23,8 @@ PROFILE = Profile(
     name="test-plan",
     language="python", file_suffixes=(".py",), line_comment="#",
     block_comment=(), block_kind="indent",
-    build_cmd="python -m py_compile src/agent_loop/loop.py",
-    test_cmd="python -m pytest tests/ -v --tb=short 2>&1",
+    build_cmd=PY_EXE + " -m py_compile src/agent_loop/loop.py",
+    test_cmd=PY_EXE + " -m pytest tests/ -v --tb=short 2>&1",
     protected=("test_*.py", "tests/*"),
     implementer_rules="test", reviewer_priorities="test",
 )

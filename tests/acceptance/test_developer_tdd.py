@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _interp import PY_EXE
+
 from agent_loop import config
 from agent_loop.profiles import Profile, register
 from agent_loop.providers import Completion
@@ -30,8 +32,8 @@ def _profile(name):
         name=name,
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py",
-        test_cmd="python -m pytest tests/ -q",
+        build_cmd=PY_EXE + " -m py_compile src/target.py",
+        test_cmd=PY_EXE + " -m pytest tests/ -q",
         file_scope_whitelist=("src/",),
         protected=("tests/*",),
         test_sources=("tests/*.py",),
@@ -249,8 +251,8 @@ def test_locked_test_is_readonly_even_when_protected_does_not_cover_it(tmp_path)
         name="tdd-lock-only",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py",
-        test_cmd="python -m pytest tests/ -q",
+        build_cmd=PY_EXE + " -m py_compile src/target.py",
+        test_cmd=PY_EXE + " -m pytest tests/ -q",
         # Deliberately covers neither tests/ nor test_*.py.
         file_scope_whitelist=("src/", "tests/"),
         protected=("docs/*",),

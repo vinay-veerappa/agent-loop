@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`dad3301`** — 20 commits past `v0.3.0`, **unpushed and untagged**. O3, O6, O15-O19, O24-O27 closed; O20 mitigated; O21-O23, O28 open |
-| Pushed? | **NO.** `v0.3.0` and earlier are pushed; the 20 session-3 commits are not |
-| Tests | **302 passed**, 0 failed on Python 3.14; selftest 12/12. **Not re-run on 3.12 this session** — do that before tagging (see the O9 lesson below) |
+| `agent-loop` HEAD | 20+ commits past `v0.3.0`, **unpushed and untagged** (`dad3301` at session 3; session 4 added more — check `git log origin/main..HEAD`). O3, O6, O14-O19, O24-O27, O29-O30 closed; O20 mitigated; O21-O23, O28 open |
+| Pushed? | **NO.** `v0.3.0` and earlier are pushed; nothing since is |
+| Tests | **302 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -510,3 +510,37 @@ Three hazards specific to the `agy:` backend, all encoded in its tests:
 
 `agy` print mode reports no usage, so token counts on an agy arm are **unknown,
 not zero** — its usage lines are not comparable with an HTTP arm's.
+
+---
+
+## §11 Session 4 (2026-08-10) — the 3.12 gate
+
+Session 3 left exactly one precondition for tagging: run the suite on the
+consumer's Python 3.12. It came back **9 failed, 293 passed**, and the two
+causes are BACKLOG **O29** and **O14**. A third, **O30**, came from running the
+command §5 tells you to run first, in the environment a consumer runs it in.
+
+All three are the same shape as O9 and O10, and that is now five instances:
+**a check that only ever ran on the machine it was written on is not a check.**
+
+* **O29** — the tests shelled out to `python`, and PATH decided which. Every
+  shelled-out interpreter now goes through `tests/_interp.py`'s `PY_EXE`.
+  If you add a `build_cmd`/`test_cmd`/`python -c` to a test, use it.
+* **O14** — the freshness flake was real and fired here. Closed.
+* **O30** — `python -m agent_loop.selftest` under an installed package resolved
+  `REPO` to `<venv>/Lib` and died with a bare `FileNotFoundError`. It is a
+  checkout-only check by construction (it runs the loop against this repo's own
+  source), so it now says so and returns 2. **The consumer venv still has v0.3.0,
+  so it still throws there** until the next tag is pinned.
+
+**Verified green:** 302/302 on 3.12 and on 3.14; selftest 12/12 on 3.12 from the
+checkout; the O30 guard mutation-checked (`return 2` → `return 0` kills it).
+
+**Tagging is now unblocked** — the precondition §0 named is met. `main` is still
+unpushed.
+
+**A trap for §6.** A rename into a test module can collide with a name already
+there: `test_defect_regressions.py` has a module-level `PY` that is a `Profile`,
+and the first version of the O29 fix shadowed it —
+`TypeError: unsupported operand type(s) for +: 'Profile' and 'str'`. The full
+suite caught it; a single-file run would not have.

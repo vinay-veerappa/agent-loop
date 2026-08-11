@@ -15,6 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _interp import PY_EXE
+
 from agent_loop.profiles import Profile, register
 from agent_loop.providers import Completion
 from agent_loop.developer.tools import execute_tool, TOOL_SCHEMAS
@@ -25,8 +27,8 @@ PROFILE = Profile(
     name="test-developer",
     language="python", file_suffixes=(".py",), line_comment="#",
     block_comment=(), block_kind="indent",
-    build_cmd="python -m py_compile src/agent_loop/loop.py",
-    test_cmd="python -m pytest tests/ -v --tb=short 2>&1",
+    build_cmd=PY_EXE + " -m py_compile src/agent_loop/loop.py",
+    test_cmd=PY_EXE + " -m pytest tests/ -v --tb=short 2>&1",
     file_scope_whitelist=("src/",),
     protected=("test_*.py", "tests/*"),
     implementer_rules="test", reviewer_priorities="test",
@@ -211,7 +213,7 @@ def test_phase8_driver_completes(tmp_path):
         name="test-dev-complete",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py",
+        build_cmd=PY_EXE + " -m py_compile src/target.py",
         test_cmd="",
         file_scope_whitelist=("src/",),
         protected=("test_*.py", "tests/*"),
@@ -269,7 +271,7 @@ def test_phase8_driver_applies_when_asked(tmp_path):
         name="test-dev-apply",
         language="python", file_suffixes=(".py",), line_comment="#",
         block_comment=(), block_kind="indent",
-        build_cmd="python -m py_compile src/target.py",
+        build_cmd=PY_EXE + " -m py_compile src/target.py",
         test_cmd="",
         file_scope_whitelist=("src/",),
         protected=("test_*.py", "tests/*"),

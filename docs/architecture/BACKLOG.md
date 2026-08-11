@@ -9,8 +9,9 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**215/215 tests pass on Python 3.12 and 3.14.** Current tag: **`v0.3.0`**, which
-is what tvDownloadOHLC pins and has installed.
+**302/302 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+Latest tag: **`v0.3.0`**, which is what tvDownloadOHLC pins and has installed —
+but `main` is 20+ commits past it and **unpushed**.
 
 Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
 the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.2.3` or later.
@@ -866,6 +867,66 @@ Two traps recorded while testing this:
   stale default. Drive it through a real `--config` file.
 * All mode budgets fit their models' context windows; the implementer ROLE is
   budgeted 96000 while developer MODE runs it at 48000 (O23).
+
+### 2026-08-10 (session 4) — the 3.12 gate before tagging: O29-O30, O14 closed
+
+Session 3 left one explicit precondition for tagging: run the suite on the
+consumer's Python 3.12, not just the dev 3.14. Doing it produced **9 failed,
+293 passed** and two defects, both of the O9/O10 shape — green on the machine
+they were written on, broken on the machine that uses them.
+
+#### O29. The suite shelled out to whatever `python` PATH resolved to — CLOSED
+
+Eight `test_developer_tdd` tests built `test_cmd="python -m pytest tests/ -q"`.
+`Workspace.run` uses `shell=True`, so `python` was resolved by PATH, not by the
+interpreter running the suite. Under the 3.12 venv that found a 3.14 install
+with no pytest, and every one of them failed with `No module named pytest` —
+the runner never reached RESULTS, which reads as "the harness is broken", not
+"you have the wrong interpreter".
+
+The instance is eight tests; the class is twenty call sites across six files,
+including the `{files}` compile-gate cases and three `python -c` commands that
+happened to survive only because any interpreter can `print`. All now go through
+`tests/_interp.py`'s `PY_EXE` (`pythonpath` gained `tests`). Quoted, because
+`sys.executable` can contain spaces; concatenated rather than f-stringed,
+because several commands carry the literal `{files}` the gate substitutes.
+
+One trap worth recording: `test_defect_regressions.py` already had a module-level
+`PY` — a `Profile`. The first rename collided with it and produced
+`TypeError: unsupported operand type(s) for +: 'Profile' and 'str'`. Hence
+`PY_EXE`.
+
+#### O14. `test_graph_freshness_marker_round_trip` is flaky — CLOSED
+
+It fired in the 3.12 run. The mechanism recorded above was right: the test wrote
+`a.py` and then let `mark_graph_fresh` race `time.time()` against it. It now ages
+the source by 60s deliberately, so the assertion no longer depends on mtime
+granularity.
+
+#### O30. `python -m agent_loop.selftest` cannot run from an installed package — CLOSED for diagnosis
+
+HANDOVER §5 says to run the selftest first after any change, and the consumer
+venv is exactly where someone does that. `REPO = Path(__file__).resolve().parents[2]`
+is the checkout root only in a checkout; installed it resolves to `<venv>/Lib`,
+and the first read died with
+
+```
+FileNotFoundError: ...\.venv\Lib\tickets\phase1_state_machine.json
+```
+
+which reads as a missing ticket file rather than the wrong kind of install. This
+is not fixable by packaging the ticket: the selftest extracts regions from
+`src/agent_loop/` and runs the loop against the repo's own source, so it is
+inherently a checkout-only check. It now returns 2 with a message naming the
+package location, where it looked, and `pytest tests/` as the check that does
+work against an install.
+
+**Not yet in a released tag.** The consumer venv holds v0.3.0, so the traceback
+above is still what it does there until the next tag is cut and pinned.
+
+**State after this session:** 302 passed on **both** 3.12 and 3.14; selftest
+12/12 on 3.12 from the checkout. The new guard was mutation-checked
+(`return 2` → `return 0` kills the test).
 
 ---
 
