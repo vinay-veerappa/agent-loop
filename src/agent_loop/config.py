@@ -94,6 +94,7 @@ class LoopSettings:
     panel_deadline_secs: int
     context_token_budget: int
     round_input_token_budget: int
+    compactor_input_token_budget: int = 48000
 
 
 @dataclass(frozen=True)
@@ -216,6 +217,16 @@ _DEFAULT_LOOP = LoopSettings(
     # out the diff it is there to read.
     context_token_budget=3000,
     round_input_token_budget=40000,
+    # How much prior-round text the COMPACTOR may read, in tokens. Phase 4b only
+    # fires once the pruned history exceeds round_input_token_budget, so at the
+    # moment this matters the input is at least 40000 tokens. It used to be a
+    # hardcoded 20000 CHARACTERS -- about 5000 tokens -- with each message
+    # separately cut to 2000 chars, so the compactor read roughly a tenth of the
+    # rounds it was asked to summarise and the result was still labelled as the
+    # summary of all of them. 48000 is comfortably above the 40000 trigger, so
+    # the common case is summarised whole; when it still does not fit, the
+    # coverage is now stated in the summary instead of being silently implied.
+    compactor_input_token_budget=48000,
 )
 
 _DEFAULT_PROVIDER = ProviderSettings(

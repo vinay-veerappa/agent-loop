@@ -11,7 +11,7 @@ configuration UPHOLD? Higher is better. Ruling SHIP on this patch is wrong.
 """
 import sys, json, itertools
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from unittest.mock import patch as mpatch
 
 from agent_loop import arbiter as arb
@@ -40,13 +40,21 @@ GATES = "compile: ok. test: ok - no regressions; 247 passed, 0 failed; all 3 acc
 print(f"findings parsed: {len(findings)} (expect 6); ground-truth correct: {sorted(CORRECT)}\n")
 
 ARMS = [
-    ("deepseek-v4-pro:cloud", False, 24000),   # shipped default
+    ("deepseek-v4-pro:cloud", False, 24000),   # shipped default until 2026-08-10
     ("deepseek-v4-pro:cloud", True,  64000),   # same model, allowed to reason
     ("glm-5.2:cloud",         False, 24000),
     ("glm-5.2:cloud",         True,  64000),
     ("kimi-k3:cloud",         True,  64000),
     ("mistral-large-3:675b-cloud", False, 24000),
 ]
+# Override from the command line: model:think:budget, space separated.
+#   python run_bench.py qwen3.5:cloud:false:24000 minimax-m3:cloud:false:24000
+if sys.argv[1:]:
+    parsed = []
+    for spec in sys.argv[1:]:
+        model, think, budget = spec.rsplit(":", 2)
+        parsed.append((model, think.lower() == "true", int(budget)))
+    ARMS = parsed
 
 real_chat = arb.chat
 rows = []

@@ -154,38 +154,90 @@ def _llm_summary(
     if not prior:
         return None
 
-    # Build a summarization prompt
-    text_to_summarize = "\n\n".join(
-        f"[{m['role']}]: {m['content'][:2000]}" for m in prior
-    )
-    if not text_to_summarize.strip():
+    body, covered, total = _select_for_summary(prior)
+    if not body.strip():
         return None
 
+    coverage = (
+        "" if covered == total else
+        f"\n\nNOTE: this is {covered} of {total} prior messages -- the oldest "
+        f"{total - covered} did not fit and are NOT represented below."
+    )
     prompt = (
         "Summarize the following prior rounds of an implementer-reviewer loop. "
         "Focus on what was tried, what findings were raised, and what was rejected. "
+        "An approach that was rejected must appear in your summary with the reason, "
+        "because the next round will otherwise propose it again. "
         "Be concise (max 500 words).\n\n"
-        f"{text_to_summarize[:20000]}\n\n"
+        f"{body}\n\n"
         "Summary:"
     )
 
+    from .providers import chat, ProviderError
+
     try:
-        from .providers import chat, ProviderError
         out = chat(config.name, [
             {"role": "system", "content": "You are a code review summarizer. Be concise."},
             {"role": "user", "content": prompt},
         ], max_tokens=config.max_tokens, think=False)
-        summary = out.text.strip()
-        if not summary:
-            return None
-        # Ensure the summary fits the budget
-        if len(summary) > budget_chars // 2:
-            summary = summary[: budget_chars // 2] + "\n... (summary truncated)"
-        return _assemble(
-            head, f"[PRIOR ROUNDS SUMMARY (LLM compacted):]\n{summary}", last_user, last_assistant
-        )
-    except Exception:
+    except ProviderError as exc:
+        # Expected: the caller falls back to the mechanical summary. Say so --
+        # this path had never run in a real loop, and a blanket `except
+        # Exception: return None` made a working compactor and a broken one
+        # look identical from the outside.
+        print(f"  [compaction] LLM summary unavailable ({exc}); using mechanical")
         return None
+    except Exception as exc:  # noqa: BLE001 - deliberately reported, not hidden
+        print(f"  [compaction] LLM summary FAILED ({type(exc).__name__}: {exc}); using mechanical")
+        return None
+
+    summary = out.text.strip()
+    if not summary:
+        print("  [compaction] LLM summary was empty; using mechanical")
+        return None
+    if len(summary) > budget_chars // 2:
+        summary = summary[: budget_chars // 2] + "\n... (summary truncated)"
+    label = (
+        "[PRIOR ROUNDS SUMMARY (LLM compacted"
+        + ("" if covered == total else f", covers {covered}/{total} messages")
+        + "):]"
+    )
+    return _assemble(head, f"{label}\n{summary}", last_user, last_assistant)
+
+
+def _select_for_summary(prior: List[Dict[str, str]]) -> Tuple[str, int, int]:
+    """As much of `prior` as the compactor may read, newest first.
+
+    Returns (rendered text in original order, messages covered, messages total).
+
+    Two rules, both learned from what this replaced -- a flat
+    `content[:2000]` per message and `[:20000]` overall, which at the point
+    Phase 4b fires showed the model about a tenth of the history:
+
+    * Budget from config, not a literal, and sized above the trigger threshold
+      so the ordinary case is summarised whole.
+    * When it does not all fit, drop the OLDEST first and keep whole messages.
+      Half a finding is worse than no finding: it reads as complete and the
+      implementer cannot tell the difference.
+    """
+    from . import config as _config
+
+    budget = _config.get().loop.compactor_input_token_budget * _CHARS_PER_TOKEN
+    chosen: List[Dict[str, str]] = []
+    used = 0
+    for msg in reversed(prior):
+        rendered = f"[{msg['role']}]: {msg['content']}"
+        if used + len(rendered) > budget and chosen:
+            break
+        # A single message larger than the whole budget is the one case where
+        # truncating is better than dropping: it is usually the implementer's
+        # raw output, and its head carries the approach that was tried.
+        if len(rendered) > budget:
+            rendered = rendered[:budget] + "\n... (this message truncated)"
+        chosen.append({"role": msg["role"], "content": rendered})
+        used += len(rendered)
+    chosen.reverse()
+    return "\n\n".join(m["content"] for m in chosen), len(chosen), len(prior)
 
 
 def _compact_findings(content: str) -> str:
