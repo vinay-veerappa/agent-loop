@@ -170,6 +170,12 @@ def run_plan(
     ]
 
     final = "MAX_ROUNDS_EXHAUSTED"
+    # The last plan that PARSED, whether or not it validated. A run that
+    # exhausts its rounds used to write nothing but `result.json`, discarding a
+    # plan that was often one bad anchor away from usable -- and the first round
+    # of a feature plan can cost several minutes, so the only recovery was to
+    # re-run the whole thing or hand-parse `rN_plan_raw.txt`.
+    last_parsed: Any = None
 
     for rnd in range(1, max_rounds + 1):
         try:
@@ -202,6 +208,8 @@ def run_plan(
                 {"role": "user", "content": "Your output did not contain a parseable <<<TICKET>>> block. Re-emit with the correct format."},
             ]
             continue
+
+        last_parsed = tickets if feature else ticket
 
         # Verify regions resolve. For a feature the plan is ordered and later
         # parts legitimately touch files earlier parts create, so validation walks
@@ -312,6 +320,19 @@ def run_plan(
             encoding="utf-8",
         )
         print(f"  PLAN -> {art / 'plan.json'}")
+    elif last_parsed is not None:
+        # Deliberately the SAME wrapper shape as plan.json, and deliberately
+        # under a different NAME: it is directly usable via --tickets once the
+        # rejection is fixed by hand, but nothing downstream can mistake a
+        # rejected plan for an approved one.
+        (art / "plan_rejected.json").write_text(
+            json.dumps(
+                {"tickets": last_parsed if isinstance(last_parsed, list) else [last_parsed]},
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"  REJECTED PLAN -> {art / 'plan_rejected.json'}  ({result.get('error', final)})")
     return result
 
 

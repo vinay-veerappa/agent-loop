@@ -1617,4 +1617,45 @@ Question 3 is the one that decides the shape of the rest.
 
 ---
 
+### 2026-08-11 — found by the first real feature run through the loop: O37, O38
+
+#### O37. `anchor not unique` feedback truncated every hit to the same string — CLOSED
+
+**Found live, not by reading.** A `--feature` plan against the consumer's
+`TradeCopierEngine.cs` was rejected with `anchor not unique (2 hits)` on
+`public int CalculateFollowerQuantity(CopierRelationship rel,`. The file has two
+overloads of that method, and `regions.py` previewed each hit as
+`lines[i].strip()[:60]` — where the two signatures are still BYTE-IDENTICAL. So
+the feedback asserted the hits differed while displaying the same string twice.
+
+The model, given nothing to disambiguate with, lengthened the anchor with an
+INVENTED parameter list (`string leaderSymbol`), which converted a recoverable
+ambiguity into `anchor not found`. **Four of six plan rounds went on this**, and
+the run ended `MAX_ROUNDS_EXHAUSTED` with an otherwise-correct 4-part plan.
+
+**Same class as O8's lint digest: feedback the caller cannot act on is a gate
+that only looks like one.** The fix computes the preview window from the hits —
+past their longest common prefix, so the differing text is always visible — adds
+line numbers, and when the lines are *truly* identical says so explicitly and
+points at `re:`, because no amount of lengthening can separate them.
+
+Seven mutations, all killed. One tightened a test of mine first: asserting the
+two rendered hits merely *differed* was satisfied by the `L1:`/`L5:` prefixes
+even with the 60-char truncation restored — the "assertion the fallback also
+satisfies" shape again. It now compares the code text with the prefix stripped.
+
+#### O38. A rejected plan was discarded entirely — CLOSED
+
+Same run. `plan.json` is only written when a plan is APPROVED, so
+`MAX_ROUNDS_EXHAUSTED` left nothing but `result.json` — discarding a 4-part plan
+that was **one bad anchor** from usable, after a round-1 call that cost 377s.
+The only recovery was to hand-parse `r6_plan_raw.txt`.
+
+The last plan that PARSED is now written to `plan_rejected.json` in the same
+wrapper shape as `plan.json`, so it can be fixed by hand and fed straight to
+`--tickets`. Deliberately a different FILENAME: nothing downstream may mistake a
+rejected plan for an approved one, and a test asserts `plan.json` is absent.
+
+---
+
 *End of backlog. Update as items are completed.*

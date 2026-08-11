@@ -100,6 +100,48 @@ class Region:
         return f"{self.start_line + 1}-{self.end_line + 1}"
 
 
+def _ambiguous_hits_preview(lines: List[str], hits: List[int]) -> str:
+    """Render ambiguous anchor hits so they can actually be told apart.
+
+    A fixed 60-char truncation is not enough. C# overloads -- and Python
+    functions with long first parameters -- routinely share far more than 60
+    characters of prefix, so every hit rendered IDENTICALLY and the feedback
+    told the caller "these two are different" while showing the same string
+    twice. A model handed that cannot lengthen the anchor usefully; the one
+    observed live invented a parameter list that did not exist, turning a
+    recoverable ambiguity into `anchor not found`.
+
+    So the window is computed from the hits: extend past their common prefix
+    far enough that the part which DIFFERS is visible. Line numbers are
+    included because they are the one thing that always distinguishes a hit.
+    """
+    shown = hits[:4]
+    stripped = [lines[i].strip() for i in shown]
+
+    common = 0
+    if len(stripped) > 1:
+        shortest = min(len(s) for s in stripped)
+        while common < shortest and len({s[common] for s in stripped}) == 1:
+            common += 1
+
+    width = max(60, min(200, common + 40))
+    parts = [f"L{i + 1}: {s[:width]}" for i, s in zip(shown, stripped)]
+
+    if len(hits) > len(shown):
+        parts.append(f"... and {len(hits) - len(shown)} more")
+
+    # Truly identical lines cannot be disambiguated by lengthening the anchor
+    # at all. Saying so is more useful than printing the same text twice and
+    # leaving the caller to infer that widening is hopeless.
+    if len(set(stripped)) == 1:
+        parts.append(
+            "these lines are IDENTICAL -- a longer anchor cannot separate them; "
+            "use 're:' with surrounding context, or anchor on the enclosing "
+            "declaration instead"
+        )
+    return "; ".join(parts)
+
+
 def find_region(lines: List[str], anchor: str, kind: str = "decl",
                 profile: Profile | None = None) -> Tuple[int, int]:
     """Return 0-based inclusive (start_line, end_line) for `anchor`."""
@@ -111,7 +153,7 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
     if not hits:
         raise RegionError(f"anchor not found: {anchor!r}")
     if len(hits) > 1:
-        preview = "; ".join(lines[i].strip()[:60] for i in hits[:4])
+        preview = _ambiguous_hits_preview(lines, hits)
         raise RegionError(f"anchor not unique ({len(hits)} hits): {anchor!r} -> {preview}")
 
     start = hits[0]
