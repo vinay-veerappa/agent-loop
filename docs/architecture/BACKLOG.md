@@ -1864,4 +1864,59 @@ needs to know.
 
 ---
 
+### 2026-08-11 — O28 gains its SECOND labelled case, and it indicts the arbiter
+
+O28 has been blocked on labelling, not running: the corpus was one patch, one
+finding set, one ruling. **Here is case 2, labelled by a human, from a real plan
+review of a real trading addon.**
+
+**The case.** Slice 1 of the copier ratio feature, planned by `qwen3.5:cloud`
+(kimi was 503), reviewed by `glm-5.2` + `minimax-m3`, arbitrated by
+`deepseek-v4-pro`. Round 4: `[panel] REVISE [glm=REVISE(7), minimax=REVISE(13)]`,
+then `[arbiter] SHIP (upheld=0 rejected=26 out-of-scope=4)`.
+
+**The arbiter was wrong, and the panel was right.** Human ruling on the two that
+matter, both of which the arbiter rejected:
+
+1. **glm, BLOCKER, CORRECT AND SHOULD HAVE BEEN UPHELD.** The plan's exit formula
+   `Math.Sign(leaderQty) * Math.Min(Math.Abs(leaderQty), Math.Abs(currentFollowerPosition))`
+   is signed, while every existing return from that method is an unsigned
+   magnitude. glm stated the losing sequence exactly as this profile's
+   `arbiter_rules` require: leader `+2`, follower `-3`, and the exit INCREASES the
+   follower's position instead of reducing it. That is a position flip -- the same
+   class as `P1-56`, which this addon was hardened against after it shipped live.
+2. **minimax + glm, BLOCKER, CORRECT.** The plan invented an `ExtractRootSymbol`
+   that "strips trailing non-alpha chars" while giving `MESU25 -> MES` as its
+   example, which requires stripping an alpha character. minimax caught the
+   internal contradiction; the platform's real format is space-separated
+   (`"MES 03-26"`) and the file already parses it as `Split(' ')[0]`. A root parsed
+   wrongly matches no rule, which under this slice refuses EVERY entry.
+
+Also correctly raised and rejected: the entry clamp was written against
+`MaxPositionSize` instead of the existing available-capacity clamp
+(`MaxPositionSize - |position|`), and `TranslateSymbol` was to return `null` as a
+"skip" signal with no region updating either live caller.
+
+**So the score on case 2: the two-family panel found four real defects, at least
+one of which loses money, and the arbiter upheld none of them and shipped.** It
+had upheld 2 findings in round 2 and 3 in round 3, then upheld 0 in round 4 --
+while the panel's finding COUNT went UP (glm 7 -> 10 -> 7, minimax 7 -> 8 -> 13).
+
+**What this means for O20, concretely.** O20 is "mitigated, not closed" and was
+waiting on O28's measurement to decide. Case 2 says the mitigation is not enough:
+an arbiter that rejects a correctly-stated naked-risk finding is worse than no
+arbiter, because the panel's REVISE was the right answer and the arbiter
+overrode it. The cheapest change consistent with both cases is to make SHIP
+unavailable when any counted reviewer returns a BLOCKER that the arbiter does not
+address individually -- i.e. an unaddressed blocker forces ESCALATE. Not
+implemented here; recorded so the decision rests on two cases instead of one.
+
+**Method note for whoever extends the corpus.** These findings were labelled by
+reading the plan against the FILE, not by reading the findings alone. Three of the
+four are only visible if you know what the existing method returns -- which is
+also why the plan contained them: the planner was given anchors and line numbers
+but never the invariants of the code it was rewriting.
+
+---
+
 *End of backlog. Update as items are completed.*
