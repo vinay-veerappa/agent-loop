@@ -27,10 +27,20 @@ import pytest
 
 from agent_loop import workspace
 
+# The two edit sites must be further apart than git's default 3 lines of hunk
+# context, or they are not "non-overlapping" in patch terms at all: each hunk
+# would carry the other's lines as context and could never apply on top of it.
+# The real O1 case was F4 and F5 editing two functions in report.py hundreds of
+# lines apart, which this models. test_edits_inside_one_context_window_refuse
+# pins what happens when they are adjacent instead.
+_FILLER = "".join(f"# filler {i}\n" for i in range(10))
+
 TWO_FUNCS = (
     "def head():\n"
     "    return 'HEAD'\n"
     "\n"
+    + _FILLER
+    + "\n"
     "def tail():\n"
     "    return 'TAIL'\n"
 )
@@ -132,6 +142,40 @@ def test_promote_still_refuses_to_destroy_uncommitted_human_work(tmp_path):
         # force=True remains an explicit override for a caller who means it.
         ws.promote(["src/m.py"], force=True)
         assert "PATCH" in live.read_text(encoding="utf-8")
+
+
+def test_edits_inside_one_context_window_refuse_rather_than_merge(tmp_path):
+    """Two edits closer than git's 3 lines of context cannot compose -- and the
+    refusal is the correct outcome, not a gap.
+
+    `git apply --3way` WOULD merge these, but on a genuine conflict it writes
+    conflict markers into the live file and only then returns non-zero, which
+    destroys atomicity (and it implies --index, staging the result behind the
+    user's back). A refusal the caller can act on beats a merge nobody reviewed.
+    This test exists so that trade-off stays deliberate: if someone later adopts
+    --3way, this test tells them what they are giving up.
+    """
+    tight = "def a():\n    return 1\ndef b():\n    return 2\n"
+    repo = _repo(tmp_path, body=tight)
+    live = repo / "src" / "m.py"
+
+    with workspace.open_workspace(repo, "O1_TIGHT_A") as ws_a:
+        t = ws_a.root / "src" / "m.py"
+        t.write_text(tight.replace("return 1", "return 'A'"), encoding="utf-8")
+        ws_a.promote(["src/m.py"])
+
+    before = live.read_text(encoding="utf-8")
+
+    with workspace.open_workspace(repo, "O1_TIGHT_B") as ws_b:
+        t = ws_b.root / "src" / "m.py"
+        t.write_text(tight.replace("return 2", "return 'B'"), encoding="utf-8")
+        with pytest.raises(workspace.WorkspaceError):
+            ws_b.promote(["src/m.py"])
+
+    assert live.read_text(encoding="utf-8") == before, (
+        "a refused promote must leave the file untouched -- no conflict markers"
+    )
+    assert "<<<<<<<" not in live.read_text(encoding="utf-8")
 
 
 def test_promote_still_works_on_a_clean_target(tmp_path):

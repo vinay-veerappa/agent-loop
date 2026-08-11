@@ -133,19 +133,22 @@ class Workspace:
         out = _git(self.root, "status", "--porcelain")
         return [ln[3:].strip() for ln in out.splitlines() if ln.strip()]
 
-    def diff(self) -> str:
+    def diff(self, paths: Sequence[str] | None = None) -> str:
         """The worktree diff, with content line endings intact.
 
-        Deliberately NOT via _git(): that decodes with text=True, whose
-        universal-newline handling eats the CR of a CRLF source line, because
-        git's own line separator follows it. Combined with export_patch writing
-        through platform newline translation, the exported patch ended up CRLF
-        no matter what the file was -- so it applied to CRLF sources by luck and
-        was rejected on every LF source, with `git apply` reporting only
-        "patch does not apply".
+        Optionally restricted to *paths*. Deliberately NOT via _git(): that
+        decodes with text=True, whose universal-newline handling eats the CR
+        of a CRLF source line, because git's own line separator follows it.
+        Combined with export_patch writing through platform newline
+        translation, the exported patch ended up CRLF no matter what the file
+        was -- so it applied to CRLF sources by luck and was rejected on every
+        LF source, with `git apply` reporting only "patch does not apply".
         """
+        cmd = ["git", "diff"]
+        if paths:
+            cmd.extend(["--"] + [str(p) for p in paths])
         proc = subprocess.run(
-            ["git", "diff"], cwd=str(self.root), capture_output=True, timeout=300
+            cmd, cwd=str(self.root), capture_output=True, timeout=300
         )
         if proc.returncode != 0:
             raise WorkspaceError(
@@ -168,18 +171,64 @@ class Workspace:
         return dest
 
     def promote(self, files: Sequence[str], force: bool = False) -> List[str]:
-        """Copy approved files back into the live repo.
+        """Apply approved worktree changes back into the live repo.
 
-        Deliberately a plain file copy rather than a merge or cherry-pick: the
-        loop makes no commits in the worktree, so there is nothing to cherry-
-        pick, and the user stages and commits the result themselves.
+        Instead of copying whole files, we generate a patch for the requested
+        files in the worktree and apply it to the live repo. This lets a later
+        ticket compose its edits with an earlier promoted ticket's uncommitted
+        changes as long as the two change sets do not overlap.
 
-        A plain copy is also how the hazard this module exists to remove gets
-        back in: overwriting a live file that has uncommitted edits destroys
-        them exactly as `git checkout --` did. So promotion refuses a target
-        the human has unsaved work in, and says what to do about it.
+        Because a half-applied patch would leave files in a state no reviewer
+        approved, the whole patch is verified with ``git apply --check`` before
+        anything is written, and plain ``git apply`` is all-or-nothing.
+
+        Deliberately NOT ``--3way``. A 3-way merge is not needed to compose
+        non-overlapping edits -- their context lines are untouched, so the hunks
+        match -- and on a genuine conflict ``--3way`` does not refuse: it merges,
+        writes CONFLICT MARKERS into the live file, and *then* returns non-zero.
+        That silently traded away the atomicity this method exists to provide
+        (caught by test_conflicting_promote_refuses_and_leaves_the_file_intact).
+        It also implies ``--index``, which would stage the result behind the
+        user's back.
+
+        Known limit, and it is a safe one: two edits closer together than git's
+        3 lines of hunk context each carry the other's lines as context, so the
+        second is refused rather than composed. That is a refusal the caller can
+        act on (commit the first, then promote the second), not data loss.
+
+        ``force=True`` keeps its original meaning: overwrite live targets by
+        plain file copy.
         """
-        if not force:
+        files = list(files)
+        for f in files:
+            if not (self.root / f).exists():
+                raise WorkspaceError(f"cannot promote missing file: {f}")
+
+        if force:
+            moved: List[str] = []
+            for f in files:
+                src = self.root / f
+                dst = self.repo / f
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                moved.append(f)
+            return moved
+
+        # Build a byte-accurate patch for exactly the files being promoted.
+        patch_text = self.diff(paths=files)
+        patch_bytes = patch_text.encode("utf-8", errors="replace")
+        if not patch_bytes.strip():
+            # Live already matches the worktree base for these files.
+            return files
+
+        # Verify the whole change can apply cleanly before touching any file.
+        check = subprocess.run(
+            ["git", "apply", "--check", "-"],
+            cwd=str(self.repo),
+            input=patch_bytes,
+            capture_output=True,
+        )
+        if check.returncode != 0:
             dirty = [f for f in files if self._live_is_dirty(f)]
             if dirty:
                 raise WorkspaceError(
@@ -188,16 +237,23 @@ class Workspace:
                     + ". The patch would overwrite work that is not in git. "
                     "Commit or stash those files first, then promote."
                 )
-        moved: List[str] = []
-        for f in files:
-            src = self.root / f
-            dst = self.repo / f
-            if not src.exists():
-                raise WorkspaceError(f"cannot promote missing file: {f}")
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            moved.append(f)
-        return moved
+            raise WorkspaceError(
+                "refusing to promote: changes overlap in "
+                + ", ".join(files)
+            )
+
+        apply = subprocess.run(
+            ["git", "apply", "-"],
+            cwd=str(self.repo),
+            input=patch_bytes,
+            capture_output=True,
+        )
+        if apply.returncode != 0:
+            raise WorkspaceError(
+                "promotion failed: git apply reported: "
+                + apply.stderr.decode("utf-8", "replace").strip()
+            )
+        return files
 
     def _live_is_dirty(self, path: str) -> bool:
         """Does the LIVE repo have uncommitted changes to this path?"""
