@@ -428,13 +428,25 @@ def _call_gemini(model, messages, temperature, max_tokens, timeout, num_ctx, thi
 
 
 def _call_github(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
+    """GitHub Models. RETIRED -- see the warning below; kept for the plumbing.
+
+    Verified 2026-08-10 with a valid PAT: `models.github.ai/inference` returns
+    HTTP 410 `github_models_retirement_brownout`, and the older
+    `models.inference.ai.azure.com` host returns 404. The token authenticated
+    fine against api.github.com, so this is the SERVICE, not the credential.
+
+    Left in place because `_call_openai` now takes a base URL, key and label,
+    so any OpenAI-compatible service is ~10 lines. Point
+    GITHUB_MODELS_BASE_URL elsewhere and this becomes a generic connector.
+    """
     key = os.getenv("GITHUB_MODELS_TOKEN") or os.getenv("GITHUB_TOKEN", "")
     if not key:
         raise ProviderError(
             "github: set GITHUB_MODELS_TOKEN (or GITHUB_TOKEN) to a PAT with the "
-            "models scope. NOTE this is GitHub MODELS, which is an API; a Copilot "
-            "subscription is licensed for use through Copilot clients and is not "
-            "a chat-completions endpoint for a harness like this."
+            "models scope. NOTE GitHub Models was RETIRING as of 2026-08-10 (HTTP "
+            "410 brownout), so expect this to fail even with a valid token. Also "
+            "note a Copilot subscription is licensed for use through Copilot "
+            "clients and is not a chat-completions endpoint for a harness like this."
         )
     return _call_openai(
         model, messages, temperature, max_tokens, timeout, num_ctx, think, cache,

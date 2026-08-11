@@ -81,6 +81,9 @@ def test_a_missing_key_says_which_one_and_where_to_get_it():
     assert "AI Studio" in str(g.value)
     # The Copilot distinction is recorded where someone will actually hit it.
     assert "Copilot" in str(h.value)
+    # GitHub Models was retiring when this was written; the error says so, so
+    # nobody spends an afternoon debugging a valid token against a dead service.
+    assert "RETIRING" in str(h.value) or "410" in str(h.value)
 
 
 def test_github_models_uses_a_pat_not_a_copilot_subscription():
