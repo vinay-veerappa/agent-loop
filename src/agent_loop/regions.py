@@ -100,6 +100,72 @@ class Region:
         return f"{self.start_line + 1}-{self.end_line + 1}"
 
 
+def _show(text: str, width: int) -> str:
+    """Render one preview line, MARKING truncation rather than hiding it.
+
+    Observed live: a preview cut mid-identifier at
+    `TranslateSymbol(leaderInstrument.FullNam` was copied by the model as its
+    next anchor and COMPLETED from imagination -- `FullName, relationship)`
+    where the file says `FullName, rel)`. A preview that looks like whole code
+    invites that. The marker says outright that the text is partial, so it
+    cannot be mistaken for something copyable.
+    """
+    if len(text) <= width:
+        return text
+    return text[:width] + " ...[TRUNCATED, not a copyable anchor]"
+
+
+def _nearest_lines(lines: List[str], anchor: str, k: int = 5) -> str:
+    """Real lines from the file, ranked by similarity to a failed anchor.
+
+    Why this exists, from two live feature runs: the plan model is asked to
+    supply exact-match anchors into files it has never been shown. Layout
+    context (O31) answers "where does new code go" and nothing answers "what
+    text is actually in this file", so the model anchors from memory. It spent
+    five rounds hunting `LoadCopierConfig` in a file whose method is
+    `LoadFromDisk`, and two more inventing parameter names. No amount of
+    re-prompting fixes a guess about text it cannot see.
+
+    `anchor not found` is the right moment to answer it: the file is already in
+    hand, so the failure can carry the candidates instead of just the verdict.
+    """
+    import difflib
+
+    # `re:` is a mode marker, not content. Stripping it is normalisation only:
+    # a mutation that keeps the prefix does not change any observed ranking, so
+    # this line is deliberately NOT claimed as tested behaviour. It is here
+    # because scoring a flag as text is wrong on its face, not because a test
+    # pins it.
+    needle = anchor[3:] if anchor.startswith("re:") else anchor
+    needle = needle.strip()
+
+    # ONE filter, the similarity floor below -- not two. Two earlier guards
+    # lived here (`s in ("{", "}", "};")`, then a `len(s) < 4` length floor) and
+    # mutation testing killed both: the first was unreachable because every one
+    # of those strings is shorter than 4 characters, and the second was
+    # redundant because a brace scores far below the floor against any realistic
+    # anchor. Overlapping guards where no test pins either one are how a
+    # threshold silently stops meaning anything.
+    scored: List[Tuple[float, int, str]] = []
+    for i, raw in enumerate(lines):
+        s = raw.strip()
+        # Pure character similarity, deliberately. A bonus for lines containing
+        # the anchor's leading identifier was written here first and then
+        # DELETED: it survived mutation, and on all three anchors from the live
+        # runs it produced byte-identical output. An untested weight that
+        # changes nothing is a knob for a later reader to mis-tune.
+        ratio = difflib.SequenceMatcher(None, needle.lower(), s.lower()).ratio()
+        scored.append((ratio, i, s))
+
+    if not scored:
+        return ""
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    best = [t for t in scored[:k] if t[0] > 0.3]
+    if not best:
+        return ""
+    return "; ".join(f"L{i + 1}: {_show(s, 160)}" for _, i, s in best)
+
+
 def _ambiguous_hits_preview(lines: List[str], hits: List[int]) -> str:
     """Render ambiguous anchor hits so they can actually be told apart.
 
@@ -125,7 +191,7 @@ def _ambiguous_hits_preview(lines: List[str], hits: List[int]) -> str:
             common += 1
 
     width = max(60, min(200, common + 40))
-    parts = [f"L{i + 1}: {s[:width]}" for i, s in zip(shown, stripped)]
+    parts = [f"L{i + 1}: {_show(s, width)}" for i, s in zip(shown, stripped)]
 
     if len(hits) > len(shown):
         parts.append(f"... and {len(hits) - len(shown)} more")
@@ -151,6 +217,12 @@ def find_region(lines: List[str], anchor: str, kind: str = "decl",
     else:
         hits = [i for i, ln in enumerate(lines) if anchor in ln]
     if not hits:
+        nearest = _nearest_lines(lines, anchor)
+        if nearest:
+            raise RegionError(
+                f"anchor not found: {anchor!r}. Real lines in this file, closest first "
+                f"-- anchor on one of these EXACTLY, or on a unique substring of one: {nearest}"
+            )
         raise RegionError(f"anchor not found: {anchor!r}")
     if len(hits) > 1:
         preview = _ambiguous_hits_preview(lines, hits)

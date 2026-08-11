@@ -1658,4 +1658,50 @@ rejected plan for an approved one, and a test asserts `plan.json` is absent.
 
 ---
 
+#### O39. Anchors are invented because the plan model has never seen the file — CLOSED
+
+**The root cause behind BOTH failed feature runs**, and the reason O37 alone was
+not enough. Plan mode asks for EXACT-MATCH anchors into existing files, and
+supplies no file content: `build_intent_context` is keyed on symbols (right for a
+defect, empty for a feature) and `build_layout_context` answers "where does new
+code go" (O31), not "what text is in this file". So the model anchors from
+memory. Live evidence:
+
+* five rounds hunting `LoadCopierConfig` in a file whose method is
+  **`LoadFromDisk`** — unguessable, and no amount of re-prompting fixes a guess
+  about text that cannot be seen;
+* `TranslateSymbol(..., CopierRelationship relationship)` where the file says
+  `rel = null`;
+* the O37 preview, truncated mid-identifier at `...FullNam`, COPIED as the next
+  anchor and completed as `FullName, relationship)` where the file says `, rel)`.
+
+`anchor not found` now carries real candidate lines from the file, ranked by
+similarity, with line numbers. On the two anchors that killed run 2 the correct
+line is offered — first, for the one that killed it at round 10. Truncated
+previews are explicitly marked `...[TRUNCATED, not a copyable anchor]`, because
+the model demonstrably treats preview text as copyable.
+
+**What mutation testing changed in the fix itself, which is the durable part:**
+
+* An identifier-match BONUS was deleted, not tested. It survived mutation, and on
+  all three live anchors it produced byte-identical output. An untested weight
+  that changes nothing is a knob for a later reader to mis-tune.
+* Two overlapping noise guards were deleted down to one. `s in ("{", "}", "};")`
+  was unreachable (all shorter than 4 chars) and the `len(s) < 4` floor that
+  replaced it was redundant with the similarity floor. Neither was pinned by a
+  test.
+* The similarity floor (0.3) is now pinned AT ITS BOUNDARY. Two mutations
+  survived because every other test used lines scoring ~1.0 or exactly 0.0 --
+  **a threshold no test approaches can be changed to anything.**
+* One of my own tests asserted an ORDERING that only the deleted bonus produced.
+  Asserting on incidental heuristic output turns a heuristic into a requirement
+  by accident; it now asserts only that both plausible lines are offered.
+
+Also: `_candidates()` in the test file asserts the message is the not-found
+variant first, because twice I chose a fixture anchor that was a literal
+substring, got `anchor not unique`, and misread the resulting IndexError as a
+code defect.
+
+---
+
 *End of backlog. Update as items are completed.*

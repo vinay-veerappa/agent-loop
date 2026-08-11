@@ -104,6 +104,163 @@ def test_short_distinct_lines_are_not_padded_pointlessly():
     assert "IDENTICAL" not in msg
 
 
+# --- anchor NOT FOUND: the feedback must name real lines (O39) --------------
+#
+# Both live feature runs died here. The plan model supplies exact-match anchors
+# into files it has never been shown, so it anchors from memory: five rounds
+# hunting `LoadCopierConfig` in a file whose method is `LoadFromDisk`, then two
+# more inventing a parameter name. Re-prompting cannot fix a guess about text
+# the model cannot see, so the failure now carries the candidates.
+
+FILE = [
+    "namespace Copier\n",
+    "{\n",
+    "    public class Engine\n",
+    "    {\n",
+    "        public void LoadFromDisk(string filePath)\n",
+    "        {\n",
+    "            return;\n",
+    "        }\n",
+    "        public string TranslateSymbol(string rawSymbol, CopierRelationship rel = null)\n",
+    "        {\n",
+    "            string translated = TranslateSymbol(leaderInstrument.FullName, rel);\n",
+    "        }\n",
+    "    }\n",
+    "}\n",
+]
+
+
+_CAND_HEADER = "or on a unique substring of one: "
+
+
+def _candidates(msg):
+    """The offered lines, as (label, text) -- the header itself contains ': '.
+
+    Asserts the message is the NOT-FOUND variant first. Twice while writing
+    these tests I picked an anchor that was a literal substring of the fixture,
+    got `anchor not unique` instead, and read an IndexError here as a code bug.
+    """
+    assert "anchor not found" in msg, (
+        f"expected a not-found failure with candidates, got: {msg[:160]}"
+    )
+    body = msg.split(_CAND_HEADER, 1)[1]
+    out = []
+    for cand in body.split("; "):
+        label, _, text = cand.partition(": ")
+        out.append((label.strip(), text))
+    return out
+
+
+def test_missing_anchor_names_the_real_declaration():
+    msg = _error_for(FILE, anchor="private void LoadCopierConfig")
+    assert "anchor not found" in msg
+    assert "LoadFromDisk(string filePath)" in msg, "the real method was not offered"
+    assert "L5:" in msg
+
+
+def test_the_exact_real_line_is_offered_first():
+    # The live round-10 failure: the model completed a truncated preview as
+    # `FullName, relationship)` where the file says `FullName, rel)`.
+    msg = _error_for(
+        FILE, anchor="string translated = TranslateSymbol(leaderInstrument.FullName, relationship)"
+    )
+    label, text = _candidates(msg)[0]
+    assert label == "L11"
+    assert text == "string translated = TranslateSymbol(leaderInstrument.FullName, rel);"
+
+
+def test_every_candidate_is_a_real_line_from_the_file():
+    """The invariant that matters: feedback may not invent text."""
+    msg = _error_for(FILE, anchor="public string TranslateSymbol(string rawSymbol, X relationship)")
+    source = [ln.strip() for ln in FILE]
+    for label, text in _candidates(msg):
+        text = text.split(" ...[TRUNCATED")[0]
+        assert any(text in s for s in source), f"offered a line that is not in the file: {text!r}"
+
+
+def test_truncated_candidates_are_marked_as_not_copyable():
+    # Long AND similar: SequenceMatcher penalises a big length difference, so a
+    # long line that merely shares a short prefix falls under the floor and is
+    # never offered at all -- it has to be a near-copy to reach the preview.
+    args = ", ".join(f"int arg{i}" for i in range(20))
+    long_line = f"        public void Configure({args})\n"
+    msg = _error_for([long_line, "        public void Other(int y)\n"],
+                     anchor=f"public void Configurex({args})")
+    assert "TRUNCATED" in msg
+    assert "not a copyable anchor" in msg
+    # And it is still a real prefix of the real line.
+    text = _candidates(msg)[0][1].split(" ...[TRUNCATED")[0]
+    assert text in long_line.strip()
+
+
+def test_no_plausible_candidate_leaves_the_bare_message():
+    # Nothing in this file resembles the anchor; offering noise would be worse
+    # than offering nothing.
+    msg = _error_for(["x = 1\n", "y = 2\n"], anchor="zzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+    assert msg == "anchor not found: 'zzzzzzzzzzzzzzzzzzzzzzzzzzzz'"
+
+
+def test_regex_anchors_also_get_candidates():
+    msg = _error_for(FILE, anchor="re:private void LoadCopierConfig")
+    assert "LoadFromDisk" in msg, "an re: anchor that matches nothing needs the same help"
+
+
+def test_a_near_miss_spelling_is_offered_alongside_the_real_line():
+    """Ranking is pure similarity, and both plausible lines must be visible.
+
+    Deliberately NOT asserting which of these comes first. A near-identical
+    misspelling scoring above a longer real signature is reasonable -- the
+    caller sees both and picks. An earlier version of this test asserted an
+    ordering that only an untested weight produced, which is how a heuristic
+    becomes a requirement by accident.
+    """
+    lines = [
+        "        public void Foa(int a)\n",
+        "        public void Foo(int a, int b, int c, int d)\n",
+    ]
+    msg = _error_for(lines, anchor="public void Foo(int a)")
+    labels = [label for label, _ in _candidates(msg)]
+    assert labels == ["L1", "L2"] or labels == ["L2", "L1"]
+
+
+def test_lone_punctuation_is_never_offered():
+    lines = [
+        "{\n",
+        "}\n",
+        "};\n",
+        "        public void Configure(int x)\n",
+    ]
+    msg = _error_for(lines, anchor="public void Configuration(int x)")
+    for label, text in _candidates(msg):
+        assert text not in ("{", "}", "};"), f"offered lone punctuation: {text!r}"
+
+
+def test_the_similarity_floor_is_pinned_at_its_boundary():
+    """The floor is now the ONLY noise filter, so its value must be pinned.
+
+    Two mutations survived before this test existed -- weakening the floor to
+    `> 0.0` and removing a redundant length guard -- because every other test
+    happened to use lines scoring either ~1.0 or exactly 0.0. A threshold no
+    test approaches is a threshold that can be changed to anything.
+    """
+    import difflib
+
+    # None of these lines may CONTAIN the anchor, or the failure is "not unique".
+    anchor = "alphax"
+    weak = "zzzzzalphzzzzzzzzzzzzzzzzzzzzzzzz"
+    strong = "alphaz"
+
+    # Pin the premise: one line straddles the floor from below, one from above.
+    r_weak = difflib.SequenceMatcher(None, anchor, weak).ratio()
+    r_strong = difflib.SequenceMatcher(None, anchor, strong).ratio()
+    assert 0.0 < r_weak < 0.3 < r_strong, f"premise broken: {r_weak} {r_strong}"
+
+    msg = _error_for([f"    {weak}\n", f"    {strong}\n"], anchor=anchor)
+    offered = [text for _, text in _candidates(msg)]
+    assert strong in offered
+    assert weak not in offered, "a line below the floor was offered as a candidate"
+
+
 def test_rejected_feature_plan_is_persisted(tmp_path, monkeypatch):
     """A plan that parses but never validates must survive the run."""
     from agent_loop import plan_mode
