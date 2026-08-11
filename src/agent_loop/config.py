@@ -461,10 +461,24 @@ _DEFAULT_MODES: Dict[str, ModeSettings] = {
     "brainstorm": ModeSettings(max_tokens=16000, think=False),
     # Emits ticket JSON: regions, spec, expected-green tests. Thinking helps
     # here (it is deciding what the ticket IS), so the budget covers both.
-    "plan": ModeSettings(max_tokens=48000, think=True),
+    #
+    # 96000, NOT 48000, and this is measured rather than cautious. A real
+    # multi-part feature brief (5.5 KB, five parts) made the planner spend
+    # 207,078 characters of reasoning and return EMPTY CONTENT --
+    # eval_count=48000, done_reason=length. The example config had been warning
+    # about exactly this number ("48000 with thinking on is the configuration
+    # that returned 125,070 characters of reasoning and EMPTY CONTENT") while
+    # this file shipped it as the default. A documented hazard that is also the
+    # default is not documented.
+    #
+    # Contrast `developer` below, which keeps 48000 ON PURPOSE: its answer is one
+    # tool call. The output SHAPE is what sizes these, not habit -- plan mode
+    # emits a whole ordered ticket set, and a feature plan re-emits all of it
+    # every round.
+    "plan": ModeSettings(max_tokens=96000, think=True),
     # Writes acceptance tests that must be RED for the right reason -- worth
     # reasoning about, hence the same treatment as plan.
-    "test": ModeSettings(max_tokens=48000, think=True),
+    "test": ModeSettings(max_tokens=96000, think=True),
     # Multi-turn tool-calling loop; each turn is small, but it is choosing what
     # to do next, so thinking stays on and the per-turn budget covers it.
     #

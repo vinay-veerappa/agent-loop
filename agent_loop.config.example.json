@@ -8,8 +8,15 @@
     "",
     "BUDGETS AND THINKING: on a reasoning model, chain-of-thought is spent from the",
     "same budget as the answer. If you set think=true, raise max_tokens in the same",
-    "edit -- 48000 with thinking on is the configuration that returned 125,070",
-    "characters of reasoning and EMPTY CONTENT."
+    "edit -- 48000 with thinking on returned 125,070 characters of reasoning and",
+    "EMPTY CONTENT, and later 207,078 characters on a five-part feature brief",
+    "(eval_count=48000, done_reason=length).",
+    "",
+    "This warning used to sit above a plan/test default of exactly 48000 -- the",
+    "number it was warning about. Both are now 96000. Size a budget by the ANSWER",
+    "SHAPE: plan and test re-emit a whole ticket set or a whole test file every",
+    "round, while developer emits ONE TOOL CALL per turn and keeps 48000 on",
+    "purpose, so that a fifteen-turn run stays bounded."
   ],
 
   "roles": {
@@ -38,8 +45,8 @@
   "modes": {
     "docs": {"max_tokens": 32000, "think": false},
     "brainstorm": {"max_tokens": 16000, "think": false},
-    "plan": {"max_tokens": 48000, "think": true},
-    "test": {"max_tokens": 48000, "think": true},
+    "plan": {"max_tokens": 96000, "think": true},
+    "test": {"max_tokens": 96000, "think": true},
     "developer": {"max_tokens": 48000, "think": true}
   },
 

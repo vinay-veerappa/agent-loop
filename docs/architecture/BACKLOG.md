@@ -1737,4 +1737,34 @@ ever stops holding.
 
 ---
 
+#### O42. Plan/test shipped the budget the docs warned about — CLOSED
+
+Run 4 died at round 1 with `IMPLEMENTER_UNREACHABLE`: **207,078 characters of
+reasoning, empty content, eval_count=48000, done_reason=length.** Plan mode
+shipped `max_tokens=48000, think=True`, and `agent_loop.config.example.json`
+had been warning, in prose, that *"48000 with thinking on is the configuration
+that returned 125,070 characters of reasoning and EMPTY CONTENT"*.
+
+**A documented hazard that is also the default is not documented.** Plan and test
+are now 96000, matching the implementer role, because their answer is a whole
+ticket set or a whole test file re-emitted every round. `developer` keeps 48000
+deliberately -- one tool call per turn, bounding a fifteen-turn run -- and a test
+pins that CONTRAST so nobody raises it by analogy.
+
+**Why no test caught this, which is the transferable part.**
+`test_shipped_example_file_loads_and_equals_the_defaults` already asserts the
+example equals `DEFAULTS`, and it passed: the machine-checkable VALUES agreed
+perfectly. The contradiction was between the values and the PROSE sitting six
+lines above them. Consistency tests pin what they can compare, and a warning
+about a number is not comparable to that number. The example's comment now
+records what the defaults are and why they differ from each other.
+
+Also worth carrying: this is the third time in this run of work that a longer
+input caused a failure that a shorter one did not. Run 3's round 1 spent 172k
+chars of reasoning and squeaked in under the same 48000; run 4's brief was 1.8 KB
+longer and did not. **A budget that is passing is not necessarily a budget that
+fits.**
+
+---
+
 *End of backlog. Update as items are completed.*
