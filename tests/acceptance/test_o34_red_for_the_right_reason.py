@@ -196,7 +196,12 @@ def test_tests_that_pass_at_baseline_are_still_refused(tmp_path, capsys):
     prof = _profile("test-o34-green", cmd)
     result, out = _run(_repo(tmp_path), prof, capsys)
 
-    assert "should fail" in out
+    # Was `"should fail" in out` against a WARNING. This is now a refusal that
+    # sets result["error"], so the run exits non-zero instead of printing a
+    # caution above "tests written to: <path>" and returning 0 (O48).
+    assert "REFUSED" in out, out
+    assert "gate nothing" in out, out
+    assert result.get("error"), "a green-at-baseline suite must be an error"
 
 
 # --------------------------------------------------------------------------

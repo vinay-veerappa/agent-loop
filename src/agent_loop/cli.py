@@ -223,7 +223,9 @@ def _test(args, profile, implementer) -> int:
     )
     print(f"\n==== TEST RESULT ====")
     if result.get("test_code"):
-        print(f"tests written to: {args.test_file}")
+        # `result`, not `args`: the path is derived from the profile when the flag
+        # is not given, so echoing the flag printed None.
+        print(f"tests written to: {result.get('test_file')}")
     if result.get("error"):
         print(f"error: {result['error']}")
     # An error is a failure even when test code was written: the tests exist
@@ -382,7 +384,14 @@ def main(argv=None) -> int:
              "and regions may carry op=create for files that do not exist yet.",
     )
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
-    ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
+    # Empty, NOT a Python path. This default was passed unconditionally, so it
+    # overrode any profile-derived choice and told a C# project's test writer to
+    # emit `.py`. Test mode derives the path from `profile.test_sources` when this
+    # is not given.
+    ap.add_argument(
+        "--test-file", default="",
+        help="test mode: where to write tests (default: derived from the profile's test_sources)",
+    )
     ap.add_argument(
         "--docs-type", choices=("changelog", "handover", "design", "prd"),
         default="changelog",

@@ -25,14 +25,14 @@ Your job is to write tests that FAIL at baseline (before the fix) and PASS
 after the fix is applied. The tests must be real tests that assert the
 specific behaviour described in the defect.
 
+Write them in the LANGUAGE AND TEST STYLE named in the request, and match the
+conventions of the existing test sources you are shown. Do not import a testing
+framework the project does not use.
+
 OUTPUT FORMAT - obey exactly:
 <<<TESTS>>>
-```python
-# the test code
-import pytest
-
-def test_name():
-    assert False, "not yet implemented"
+```<language>
+// the complete contents of the test file, in the project's language
 ```
 <<<END TESTS>>>
 <<<NOTES>>>
@@ -41,13 +41,37 @@ def test_name():
 """
 
 
+def default_test_path(profile: profiles.Profile, ticket_id: str) -> str:
+    """Where generated tests go, derived from the PROFILE.
+
+    This used to be a `tests/acceptance/test_generated.py` default in the
+    signature, with nothing consulting the profile. On the C# NT8 profile the
+    consequences compounded: the path told the model the language, so it emitted
+    `import pytest` and a Python module that tried `from TradeCopierEngine import
+    ...` on a `.cs` file; the file landed outside `test_sources`, so the C# test
+    project never compiled it; and the baseline run therefore reported the new
+    tests PASSING, because nothing had run them.
+
+    `test_sources` is the profile's own statement of where tests live, so the
+    first pattern is the answer. Substituting the ticket id for the `*` keeps the
+    generated file matching that glob -- which also keeps it inside the profile's
+    `protected` list, so the implementer cannot edit the tests it must satisfy.
+    """
+    for pattern in profile.test_sources or ():
+        if "*" in pattern:
+            return pattern.replace("*", f"{ticket_id}Generated", 1)
+        return pattern
+    suffix = (profile.file_suffixes or (".py",))[0]
+    return f"tests/acceptance/test_generated{suffix}"
+
+
 def run_test(
     repo: Path,
     defect_description: str,
     ticket: Dict[str, Any],
     profile: profiles.Profile,
     implementer: str,
-    test_file: str = "tests/acceptance/test_generated.py",
+    test_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run test mode: defect + ticket -> failing acceptance tests.
 
@@ -63,6 +87,8 @@ def run_test(
         a result dict with the test file path and whether tests fail at baseline
     """
     tid = ticket.get("id", "TEST")
+    if not test_file:
+        test_file = default_test_path(profile, tid)
     art = repo / "logs" / "agent_loop" / tid
     art.mkdir(parents=True, exist_ok=True)
 
@@ -72,25 +98,59 @@ def run_test(
     prompt = f"# Defect to test\n\n{defect_description}\n\n"
     prompt += f"## Ticket\n```json\n{json.dumps(ticket, indent=2)}\n```\n\n"
 
-    # Read the code under test (the regions from the ticket)
-    for spec in ticket.get("regions", []):
-        path = repo / spec["file"]
-        if path.exists():
-            src = path.read_text(encoding="utf-8")
-            # Show the first 100 lines of the file
-            lines = src.splitlines()[:100]
-            prompt += f"## Code under test: {spec['file']}\n```{profile.language}\n"
-            prompt += "\n".join(lines)
-            prompt += "\n```\n\n"
+    # The code under test is the ticket's RESOLVED REGIONS -- not the head of the
+    # file. This read `src.splitlines()[:100]`, so on a 2,700-line file whose
+    # regions are at 382-534 the test writer was shown the DTO declarations and
+    # never the method it had to test. It then invented a plausible name for it
+    # (`CalculateCopyQuantity` for `CalculateFollowerQuantity`) -- the O39 failure
+    # again, in a mode that had never been run.
+    try:
+        resolved = regions.extract(repo, ticket.get("regions", []), profile)
+    except regions.RegionError as exc:
+        result["error"] = f"cannot read the code under test: {exc}"
+        return result
 
-    # Show the expect_green names so the test writer knows what to name tests
+    for r in resolved:
+        if r.op == regions.CREATE:
+            continue
+        prompt += (
+            f"## Code under test: {r.file} lines {r.lines_1based}\n"
+            f"```{profile.language}\n{r.text}\n```\n\n"
+        )
+
+    # Existing tests, so the generated file matches the project's real harness
+    # rather than a framework the model assumes.
+    for pattern in (profile.test_sources or ())[:1]:
+        existing = sorted(repo.glob(pattern))
+        if existing:
+            sample = existing[0].read_text(encoding="utf-8", errors="replace")
+            prompt += (
+                f"## An EXISTING test source, {existing[0].name} -- match its style, "
+                f"its assertion helper, and its naming\n"
+                f"```{profile.language}\n{sample[:6000]}\n```\n\n"
+            )
+
+    # `expect_green` entries are matched against the FAILURE LINES the runner
+    # prints, so on a harness whose failures read `[FAIL] <message>` these are
+    # assertion messages, not method names. Saying "test names to use" invited
+    # method names that the gate could never match, which makes the test-first
+    # check vacuous -- the one check standing between the loop and a fake gate.
     expect_green = ticket.get("expect_green", [])
     if expect_green:
-        prompt += f"## Test names to use\n"
+        prompt += (
+            "## Acceptance criteria -- each MUST appear verbatim in the output of a "
+            "failing assertion\n"
+            "These strings are matched against the test runner's failure lines. Use "
+            "each one as the assertion message (or test name, if that is what this "
+            "runner prints on failure) so the gate can find it.\n"
+        )
         prompt += "\n".join(f"- {t}" for t in expect_green)
         prompt += "\n\n"
 
-    prompt += f"Write the tests to {test_file}. The tests must FAIL at baseline.\n"
+    prompt += (
+        f"Write the COMPLETE contents of {test_file}, in {profile.language}. "
+        f"The tests must FAIL at baseline, before the fix exists.\n"
+    )
 
     history = [
         {"role": "system", "content": TEST_SYSTEM},
@@ -148,9 +208,28 @@ def run_test(
                 failing = [f for f in outcome.failures if any(
                     gates.names_match(t, f) for t in (ticket.get("expect_green") or [])
                 )] or sorted(outcome.failures)
-                result["tests_pass_baseline"] = not outcome.failures
-                if not outcome.failures:
-                    print("  [test-first] WARNING: tests pass at baseline (they should fail)")
+                # `not outcome.failures` alone is NOT "everything passed": a
+                # runner can report a failure COUNT in its summary while printing
+                # no identifiable failure names, and then the parsed set is empty
+                # for a suite that is red. That was harmless while this only
+                # warned; as a refusal it would reject a correctly-red suite and
+                # blame the wrong thing. Require the count to agree.
+                result["tests_pass_baseline"] = outcome.failed == 0 and not outcome.failures
+                if result["tests_pass_baseline"]:
+                    # An ERROR, not a warning. Tests that are green before the fix
+                    # exists cannot gate anything, and the commonest cause is that
+                    # the runner never executed them at all -- which is exactly
+                    # what happened when a `.py` file was written for a C# project
+                    # whose `dotnet` runner did not compile it. Reporting this as a
+                    # warning and then printing "tests written to: <path>" reads
+                    # like success, so the vacuous gate ships.
+                    result["error"] = (
+                        f"the generated tests PASS at baseline, so they gate nothing. "
+                        f"Either they do not assert the new behaviour, or the runner "
+                        f"never ran them -- check that {test_file} is picked up by "
+                        f"`{profile.test_cmd}`."
+                    )
+                    print(f"  [test-first] REFUSED: {result['error']}")
                 else:
                     # A COUNT of failures is not evidence. This printed
                     # "(correct)" for a test that died in its own stub at

@@ -1953,4 +1953,52 @@ stretch of work has deleted rather than tested.
 
 ---
 
+#### O48. Test mode was Python-only, and its gate was vacuous — CLOSED
+
+**The first `--mode test` run this package has ever had against a non-Python
+profile.** §12i listed it as untried; it was broken four ways at once.
+
+Against the C# NT8 profile (`test_sources = scripts/ninjatrader/addons/*Tests.cs`)
+it wrote **`tests/acceptance/test_generated.py`** containing `import pytest` and
+`from TradeCopierEngine import CopierRelationship`, i.e. Python importing a `.cs`
+file as a module, calling `CalculateCopyQuantity` (the real method is
+`CalculateFollowerQuantity`), and passing a C# `out` parameter by value. Then it
+printed `[test-first] WARNING: tests pass at baseline` and exited 0.
+
+1. **The path was a hardcoded Python default in two places** -- `run_test`'s
+   signature AND `--test-file`, which was passed unconditionally so it overrode
+   anything else. Now derived from `test_sources`, substituting the ticket id for
+   the `*` so the file still matches the glob -- which is also what keeps it inside
+   `protected`, so the implementer cannot edit the tests it must satisfy.
+2. **`TEST_SYSTEM`'s output example was literally ```python / import pytest.** The
+   prompt taught Python regardless of profile.
+3. **"Code under test" was `src.splitlines()[:100]`** -- the head of a 2,700-line
+   file whose regions are at 382-534, so the test writer never saw the method and
+   invented a name for it. It is O39's lesson in a third place: the model was given
+   coordinates and not content. Now the RESOLVED REGION TEXT, plus an existing test
+   source as a style reference so the harness convention is visible.
+4. **`expect_green` was labelled "Test names to use".** These strings are matched
+   against the runner's FAILURE LINES, so on a harness that prints
+   `[FAIL] <message>` they are assertion messages. Method names could never match,
+   and the test-first check -- the one check between the loop and a fake gate --
+   would have passed while verifying nothing.
+
+Green-at-baseline is now an ERROR, not a warning, so the run exits non-zero rather
+than printing a caution above `tests written to: <path>`.
+
+**A pre-existing test caught a flaw in that refusal, which is worth recording.**
+`not outcome.failures` is NOT "everything passed": a runner can report a failure
+COUNT while printing no identifiable failure names, leaving the parsed set empty
+for a suite that is red. Harmless as a warning, wrong as a refusal. The condition
+now requires `outcome.failed == 0` as well.
+
+**Eight mutations. Two survived and both were my tests' fault, the same shape as
+before**: `"TheMethodUnderTest" in prompt` was satisfied by the TICKET JSON's
+region anchor, which is pasted into the same prompt -- so emptying the regions
+entirely stayed green. It now asserts on the method BODY, which only the region
+text can supply. That is the fourth instance in this stretch of an assertion the
+fallback also satisfies.
+
+---
+
 *End of backlog. Update as items are completed.*
