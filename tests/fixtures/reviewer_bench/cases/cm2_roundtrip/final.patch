@@ -1,0 +1,255 @@
+diff --git a/scripts/ninjatrader/addons/TradeCopierEngine.cs b/scripts/ninjatrader/addons/TradeCopierEngine.cs
+index 17af630b..b4321698 100644
+--- a/scripts/ninjatrader/addons/TradeCopierEngine.cs
++++ b/scripts/ninjatrader/addons/TradeCopierEngine.cs
+@@ -688,6 +688,50 @@ namespace NinjaTrader.NinjaScript.AddOns
+         public void LoadFromDisk(string filePath)
+         {
+             if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
++
++            var aliasMap = new Dictionary<string, string>(StringComparer.Ordinal)
++            {
++                ["id"] = "Id",
++                ["leaderAccount"] = "LeaderAccountName",
++                ["followerAccount"] = "FollowerAccountName",
++                ["groupName"] = "GroupName",
++                ["isEnabled"] = "IsEnabled",
++                ["armedForLive"] = "ArmedForLive",
++                ["quantityRatio"] = "QuantityRatio",
++                ["fixedLotMode"] = "FixedLotMode",
++                ["fixedLotSize"] = "FixedLotSize",
++                ["autoSymbolConversion"] = "AutoSymbolConversion",
++                ["maxPositionSize"] = "MaxPositionSize",
++                ["dailyLossLimit"] = "DailyLossLimit",
++                ["isQuarantined"] = "IsQuarantined",
++                ["maxSlippageTicks"] = "MaxSlippageTicks",
++                ["followerAccounts"] = "FollowerAccounts",
++                ["sizingMode"] = "SizingMode",
++                ["mode"] = "Mode",
++                ["perTickerRatios"] = "PerTickerRatios",
++                ["customSymbolMappings"] = "CustomSymbolMappings",
++                ["stealthMode"] = "StealthMode"
++            };
++
++            var settings = new JsonSerializerSettings
++            {
++                MissingMemberHandling = MissingMemberHandling.Ignore,
++                NullValueHandling = NullValueHandling.Ignore,
++                Error = (sender, args) =>
++                {
++                    string member = args.ErrorContext.Member?.ToString();
++                    object target = args.CurrentObject;
++                    if (string.IsNullOrEmpty(member) || target == null)
++                        return;
++                    var prop = target.GetType().GetProperty(member);
++                    if (prop == null)
++                        return;
++                    Type underlying = System.Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType;
++                    if (underlying.IsEnum)
++                        args.ErrorContext.Handled = true;
++                }
++            };
++
+             try
+             {
+                 string json = File.ReadAllText(filePath);
+@@ -710,23 +754,16 @@ namespace NinjaTrader.NinjaScript.AddOns
+                             {
+                                 if (kv.Value is JObject jObj)
+                                 {
+-                                    var rel = new CopierRelationship
++                                    try
++                                    {
++                                        var rel = ParseRelationship(jObj, kv.Key);
++                                        if (rel != null)
++                                            _relationships.Add(rel);
++                                    }
++                                    catch (Exception ex)
+                                     {
+-                                        Id = jObj["Id"]?.ToString() ?? Guid.NewGuid().ToString(),
+-                                        LeaderAccountName = jObj["LeaderAccountName"]?.ToString() ?? jObj["leaderAccount"]?.ToString() ?? (kv.Key.Contains("_") ? kv.Key.Split('_')[0] : kv.Key),
+-                                        FollowerAccountName = jObj["FollowerAccountName"]?.ToString() ?? jObj["followerAccount"]?.ToString() ?? (kv.Key.Contains("_") ? kv.Key.Split('_')[1] : "SimCopy2"),
+-                                        IsEnabled = jObj["IsEnabled"] != null ? (bool)jObj["IsEnabled"] : (jObj["isEnabled"] != null ? (bool)jObj["isEnabled"] : true),
+-                                        ArmedForLive = jObj["ArmedForLive"] != null ? (bool)jObj["ArmedForLive"] : (jObj["armedForLive"] != null ? (bool)jObj["armedForLive"] : false),
+-                                        QuantityRatio = jObj["QuantityRatio"] != null ? (double)jObj["QuantityRatio"] : (jObj["quantityRatio"] != null ? (double)jObj["quantityRatio"] : 1.0),
+-                                        FixedLotMode = jObj["FixedLotMode"] != null ? (bool)jObj["FixedLotMode"] : (jObj["fixedLotMode"] != null ? (bool)jObj["fixedLotMode"] : false),
+-                                        FixedLotSize = jObj["FixedLotSize"] != null ? (int)jObj["FixedLotSize"] : (jObj["fixedLotSize"] != null ? (int)jObj["fixedLotSize"] : 1),
+-                                        AutoSymbolConversion = jObj["AutoSymbolConversion"] != null ? (bool)jObj["AutoSymbolConversion"] : (jObj["autoSymbolConversion"] != null ? (bool)jObj["autoSymbolConversion"] : true),
+-                                        MaxPositionSize = jObj["MaxPositionSize"] != null ? (int)jObj["MaxPositionSize"] : (jObj["maxPositionSize"] != null ? (int)jObj["maxPositionSize"] : 100),
+-                                        DailyLossLimit = jObj["DailyLossLimit"] != null ? (double)jObj["DailyLossLimit"] : (jObj["dailyLossLimit"] != null ? (double)jObj["dailyLossLimit"] : 1000.0),
+-                                        IsQuarantined = jObj["IsQuarantined"] != null ? (bool)jObj["IsQuarantined"] : (jObj["isQuarantined"] != null ? (bool)jObj["isQuarantined"] : false),
+-                                        MaxSlippageTicks = jObj["MaxSlippageTicks"] != null ? (double)jObj["MaxSlippageTicks"] : (jObj["maxSlippageTicks"] != null ? (double)jObj["maxSlippageTicks"] : 0.0)
+-                                    };
+-                                    _relationships.Add(rel);
++                                        Console.WriteLine($"[LoadFromDisk] Skipping relationship '{kv.Key}': {ex.Message}");
++                                    }
+                                 }
+                             }
+                         }
+@@ -737,57 +774,39 @@ namespace NinjaTrader.NinjaScript.AddOns
+                             {
+                                 if (kv.Value is JObject jObj)
+                                 {
+-                                    var followers = new List<string>();
+-                                    var followersToken = jObj["FollowerAccounts"] ?? jObj["followerAccounts"];
+-                                    if (followersToken != null)
++                                    try
+                                     {
+-                                        var parsed = JsonConvert.DeserializeObject<List<string>>(followersToken.ToString());
+-                                        if (parsed != null) followers = parsed;
++                                        var grp = ParseGroup(jObj, kv.Key);
++                                        if (grp != null)
++                                            _groups.Add(grp);
+                                     }
+-
+-                                    var grp = new CopierGroup
++                                    catch (Exception ex)
+                                     {
+-                                        Id = jObj["Id"]?.ToString() ?? Guid.NewGuid().ToString(),
+-                                        GroupName = jObj["GroupName"]?.ToString() ?? kv.Key,
+-                                        LeaderAccountName = jObj["LeaderAccountName"]?.ToString() ?? jObj["leaderAccount"]?.ToString() ?? "Sim101",
+-                                        IsEnabled = jObj["IsEnabled"] != null ? (bool)jObj["IsEnabled"] : (jObj["isEnabled"] != null ? (bool)jObj["isEnabled"] : true),
+-                                        ArmedForLive = jObj["ArmedForLive"] != null ? (bool)jObj["ArmedForLive"] : (jObj["armedForLive"] != null ? (bool)jObj["armedForLive"] : false),
+-                                        QuantityRatio = jObj["QuantityRatio"] != null ? (double)jObj["QuantityRatio"] : (jObj["quantityRatio"] != null ? (double)jObj["quantityRatio"] : 1.0),
+-                                        FixedLotMode = jObj["FixedLotMode"] != null ? (bool)jObj["FixedLotMode"] : (jObj["fixedLotMode"] != null ? (bool)jObj["fixedLotMode"] : false),
+-                                        FixedLotSize = jObj["FixedLotSize"] != null ? (int)jObj["FixedLotSize"] : (jObj["fixedLotSize"] != null ? (int)jObj["fixedLotSize"] : 1),
+-                                        AutoSymbolConversion = jObj["AutoSymbolConversion"] != null ? (bool)jObj["AutoSymbolConversion"] : (jObj["autoSymbolConversion"] != null ? (bool)jObj["autoSymbolConversion"] : true),
+-                                        MaxPositionSize = jObj["MaxPositionSize"] != null ? (int)jObj["MaxPositionSize"] : (jObj["maxPositionSize"] != null ? (int)jObj["maxPositionSize"] : 100),
+-                                        DailyLossLimit = jObj["DailyLossLimit"] != null ? (double)jObj["DailyLossLimit"] : (jObj["dailyLossLimit"] != null ? (double)jObj["dailyLossLimit"] : 1000.0),
+-                                        FollowerAccounts = followers
+-                                    };
+-                                    _groups.Add(grp);
++                                        Console.WriteLine($"[LoadFromDisk] Skipping group '{kv.Key}': {ex.Message}");
++                                    }
+                                 }
+                             }
+                         }
+                     }
+                     else
+                     {
+-                        var dict = JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json);
++                        var dict = JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json, settings);
+                         if (dict != null)
+                         {
+                             foreach (var kv in dict)
+                             {
+-                                var jObj = kv.Value;
+-                                var rel = new CopierRelationship
++                                if (kv.Value == null)
++                                    continue;
++                                try
++                                {
++                                    var rel = ParseRelationship(kv.Value, kv.Key);
++                                    if (rel != null)
++                                        _relationships.Add(rel);
++                                }
++                                catch (Exception ex)
+                                 {
+-                                    LeaderAccountName = jObj["LeaderAccountName"]?.ToString() ?? jObj["leaderAccount"]?.ToString() ?? kv.Key,
+-                                    FollowerAccountName = jObj["FollowerAccountName"]?.ToString() ?? jObj["followerAccount"]?.ToString() ?? "SimCopy2",
+-                                    IsEnabled = jObj["IsEnabled"] != null ? (bool)jObj["IsEnabled"] : (jObj["isEnabled"] != null ? (bool)jObj["isEnabled"] : true),
+-                                    ArmedForLive = jObj["ArmedForLive"] != null ? (bool)jObj["ArmedForLive"] : (jObj["armedForLive"] != null ? (bool)jObj["armedForLive"] : false),
+-                                    QuantityRatio = jObj["QuantityRatio"] != null ? (double)jObj["QuantityRatio"] : (jObj["quantityRatio"] != null ? (double)jObj["quantityRatio"] : 1.0),
+-                                    FixedLotMode = jObj["FixedLotMode"] != null ? (bool)jObj["FixedLotMode"] : (jObj["fixedLotMode"] != null ? (bool)jObj["fixedLotMode"] : false),
+-                                    FixedLotSize = jObj["FixedLotSize"] != null ? (int)jObj["FixedLotSize"] : (jObj["fixedLotSize"] != null ? (int)jObj["fixedLotSize"] : 1),
+-                                    AutoSymbolConversion = jObj["AutoSymbolConversion"] != null ? (bool)jObj["AutoSymbolConversion"] : (jObj["autoSymbolConversion"] != null ? (bool)jObj["autoSymbolConversion"] : true),
+-                                    MaxPositionSize = jObj["MaxPositionSize"] != null ? (int)jObj["MaxPositionSize"] : (jObj["maxPositionSize"] != null ? (int)jObj["maxPositionSize"] : 100),
+-                                    DailyLossLimit = jObj["DailyLossLimit"] != null ? (double)jObj["DailyLossLimit"] : (jObj["dailyLossLimit"] != null ? (double)jObj["dailyLossLimit"] : 1000.0),
+-                                    IsQuarantined = jObj["IsQuarantined"] != null ? (bool)jObj["IsQuarantined"] : (jObj["isQuarantined"] != null ? (bool)jObj["isQuarantined"] : false)
+-                                };
+-                                _relationships.Add(rel);
++                                    Console.WriteLine($"[LoadFromDisk] Skipping legacy relationship '{kv.Key}': {ex.Message}");
++                                }
+                             }
+                         }
+                     }
+@@ -797,6 +816,89 @@ namespace NinjaTrader.NinjaScript.AddOns
+             {
+                 Console.WriteLine($"[LoadFromDisk EXCEPTION] {ex}");
+             }
++
++            JObject NormalizeJObject(JObject source, string fallbackLeader, string fallbackGroupName)
++            {
++                var normalized = new JObject();
++
++                foreach (var prop in source.Properties())
++                {
++                    if (!aliasMap.ContainsKey(prop.Name))
++                        normalized[prop.Name] = prop.Value;
++                }
++
++                foreach (var prop in source.Properties())
++                {
++                    if (aliasMap.TryGetValue(prop.Name, out string canonical))
++                    {
++                        if (normalized[canonical] == null || normalized[canonical].Type == JTokenType.Null)
++                            normalized[canonical] = prop.Value;
++                    }
++                }
++
++                var defaults = new JObject
++                {
++                    ["Id"] = Guid.NewGuid().ToString(),
++                    ["IsEnabled"] = true,
++                    ["ArmedForLive"] = false,
++                    ["QuantityRatio"] = 1.0,
++                    ["FixedLotMode"] = false,
++                    ["FixedLotSize"] = 1,
++                    ["AutoSymbolConversion"] = true,
++                    ["MaxPositionSize"] = 100,
++                    ["DailyLossLimit"] = 1000.0,
++                    ["MaxSlippageTicks"] = 0.0,
++                    ["IsQuarantined"] = false,
++                    ["PerTickerRatios"] = new JObject(),
++                    ["CustomSymbolMappings"] = new JObject(),
++                    ["FollowerAccounts"] = new JArray()
++                };
++
++                foreach (var prop in defaults.Properties())
++                {
++                    if (normalized[prop.Name] == null || normalized[prop.Name].Type == JTokenType.Null)
++                        normalized[prop.Name] = prop.Value;
++                }
++
++                if (fallbackLeader != null && (normalized["LeaderAccountName"] == null || normalized["LeaderAccountName"].Type == JTokenType.Null))
++                    normalized["LeaderAccountName"] = fallbackLeader;
++                if (fallbackGroupName != null && (normalized["GroupName"] == null || normalized["GroupName"].Type == JTokenType.Null))
++                    normalized["GroupName"] = fallbackGroupName;
++
++                return normalized;
++            }
++
++            CopierRelationship ParseRelationship(JObject source, string key)
++            {
++                var normalized = NormalizeJObject(source, fallbackLeader: key, fallbackGroupName: null);
++                var rel = JsonConvert.DeserializeObject<CopierRelationship>(normalized.ToString(), settings);
++                if (rel == null)
++                    return null;
++                if (string.IsNullOrEmpty(rel.Id))
++                    rel.Id = Guid.NewGuid().ToString();
++                if (string.IsNullOrEmpty(rel.LeaderAccountName))
++                    rel.LeaderAccountName = key.Contains("_") ? key.Split('_')[0] : key;
++                if (string.IsNullOrEmpty(rel.FollowerAccountName))
++                    rel.FollowerAccountName = key.Contains("_") ? key.Split('_')[1] : "SimCopy2";
++                return rel;
++            }
++
++            CopierGroup ParseGroup(JObject source, string key)
++            {
++                var normalized = NormalizeJObject(source, fallbackLeader: null, fallbackGroupName: key);
++                var grp = JsonConvert.DeserializeObject<CopierGroup>(normalized.ToString(), settings);
++                if (grp == null)
++                    return null;
++                if (string.IsNullOrEmpty(grp.Id))
++                    grp.Id = Guid.NewGuid().ToString();
++                if (string.IsNullOrEmpty(grp.GroupName))
++                    grp.GroupName = key;
++                if (string.IsNullOrEmpty(grp.LeaderAccountName))
++                    grp.LeaderAccountName = "Sim101";
++                if (grp.FollowerAccounts == null)
++                    grp.FollowerAccounts = new List<string>();
++                return grp;
++            }
+         }
+ 
+         public void SaveToDisk(string filePath)

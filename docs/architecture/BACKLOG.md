@@ -2475,3 +2475,47 @@ so it cannot fail in the O42 direction either.
 lies is how a consumer copies the broken value forward.
 
 ---
+#### O58. The reviewer and arbiter budgets were dead configuration — CLOSED
+
+**Found because the O57 fix did nothing.** `roles.reviewer.max_tokens` was raised
+24000 -> 48000, and on the very next run minimax-m3 died at exactly the same
+`eval_count=24000`. The knob had never been connected to anything.
+
+```python
+def review_panel(..., max_tokens: int = 24000, think: Optional[bool] = False)
+def adjudicate(...,   max_tokens: int = 24000)
+```
+
+**No caller passes either.** All five `review_panel` call sites — loop,
+plan_mode, replay, review_mode, developer/driver — take the default, and
+`loop.py` calls `adjudicate` without a budget.
+
+`ModelRegistry.max_tokens_for` exists for precisely this, and its docstring says
+so: *"ModelConfig.max_tokens was read in exactly one place (compaction), while
+every other call site hardcoded a literal -- so the registry's per-model budgets
+were dead configuration."* That was fixed for the implementer. The other two
+roles kept their literals, and the docstring describing the defect sat three
+lines above two live instances of it.
+
+Both now resolve per MODEL from the registry, then config, then the caller's
+fallback — a two-family panel is two different models and there is no reason
+they share one budget. `think` gets the same treatment: it was a literal `False`
+agreeing with config by coincidence, which is the exact failure `arbiter.py`
+already records for its own `think` flag. The parameters remain as OVERRIDES so
+a bench or a replay can still pin them.
+
+**The tests move the config value rather than asserting the shipped number.**
+Asserting `== 48000` passes against a hardcoded 48000; the fixture sets 31337,
+a value no literal in the tree can be. It also does BOTH steps `cli.main` does —
+`set_active` and `reload_default_registry` — because the registry is built from
+config once at import, and a fixture that skips the second half measures
+staleness rather than wiring.
+
+**The structural guard reads the AST, not the text.** Its first version grepped
+for `max_tokens=24000` and failed on `arbiter.py`'s own docstring quoting the
+signature it had just removed — a test reporting a defect in a sentence
+describing the fix. It now walks function definitions and fails on any integer
+literal default for a `max_tokens` parameter, so the class cannot come back in a
+fourth role.
+
+---

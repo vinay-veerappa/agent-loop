@@ -1,0 +1,12 @@
+C:\Users\vinay\agentloop-CM2-32092\scripts\ninjatrader\addons\RiskGuardAddOnTests.cs(10239,20): warning CS1981: Using 'is' to test compatibility with 'dynamic' is essentially identical to testing compatibility with 'Object' and will succeed for all non-null values [C:\Users\vinay\agentloop-CM2-32092\ninjatrader-addon\RiskGuardTests.csproj]
+C:\Users\vinay\agentloop-CM2-32092\scripts\ninjatrader\addons\RiskGuardAddOn.cs(1160,21): warning CS0169: The field 'RiskGuardAddOn._noDispatcherWarned' is never used [C:\Users\vinay\agentloop-CM2-32092\ninjatrader-addon\RiskGuardTests.csproj]
+
+Build succeeded.
+
+C:\Users\vinay\agentloop-CM2-32092\scripts\ninjatrader\addons\RiskGuardAddOnTests.cs(10239,20): warning CS1981: Using 'is' to test compatibility with 'dynamic' is essentially identical to testing compatibility with 'Object' and will succeed for all non-null values [C:\Users\vinay\agentloop-CM2-32092\ninjatrader-addon\RiskGuardTests.csproj]
+C:\Users\vinay\agentloop-CM2-32092\scripts\ninjatrader\addons\RiskGuardAddOn.cs(1160,21): warning CS0169: The field 'RiskGuardAddOn._noDispatcherWarned' is never used [C:\Users\vinay\agentloop-CM2-32092\ninjatrader-addon\RiskGuardTests.csproj]
+    2 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:02.09
+

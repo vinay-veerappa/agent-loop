@@ -328,6 +328,20 @@ class PanelResult:
         return [v for v in self.votes if not v.counted]
 
 
+def _role_settings(role: str):
+    """The configured settings for a role, or None if config cannot be read.
+
+    None rather than a raise: an unconfigured loop should still review, and the
+    caller supplies the same fallback the literal used to hardcode.
+    """
+    from . import config as _config
+
+    try:
+        return _config.get().roles[role]
+    except (KeyError, AttributeError):
+        return None
+
+
 def review_panel(
     reviewers: Sequence[str],
     prompt: str,
@@ -335,8 +349,8 @@ def review_panel(
     art: Path,
     rnd: int,
     deadline_secs: int = 1800,
-    max_tokens: int = 24000,
-    think: Optional[bool] = False,
+    max_tokens: Optional[int] = None,
+    think: Optional[bool] = None,
 ) -> PanelResult:
     """Run reviewers concurrently. Different families miss different things, so
     a panel finds strictly more than any single reviewer. The verdict is the
@@ -352,16 +366,31 @@ def review_panel(
     T2-sized review with deepseek-v4-pro: thinking on took 159s, burned the
     full 24k-token budget on 90k chars of reasoning and returned NO verdict;
     thinking off took 21s, 2.7k tokens, and returned ten findings.
+
+    `max_tokens` and `think` are OVERRIDES. Left unset they come from the
+    registry and from config, per model -- a two-family panel is two different
+    models and there is no reason they share one budget. They were literal
+    defaults that no caller passed, which made `roles.reviewer` dead
+    configuration: raising it from 24000 to 48000 to fix O57 changed nothing,
+    and minimax-m3 died at the same `eval_count=24000` on the next run (O58).
     """
+    cfg_role = _role_settings("reviewer")
+    think_flag = think if think is not None else (cfg_role.think if cfg_role else False)
 
     def one(model: str) -> Vote:
         t0 = time.time()
+        budget = (
+            max_tokens if max_tokens is not None
+            else DEFAULT_REGISTRY.max_tokens_for(
+                model, "reviewer", cfg_role.max_tokens if cfg_role else 24000
+            )
+        )
         try:
             out: Completion = chat(
                 model,
                 [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                think=think,
+                max_tokens=budget,
+                think=think_flag,
             )
         except ProviderError as exc:
             return Vote(model, UNREACHABLE, secs=round(time.time() - t0, 1), error=str(exc))

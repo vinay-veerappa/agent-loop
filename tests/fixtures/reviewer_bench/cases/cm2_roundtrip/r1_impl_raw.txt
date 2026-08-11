@@ -1,0 +1,292 @@
+<<<BLOCK id="R1">>>
+        public void LoadFromDisk(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath)) return;
+            try
+            {
+                string json = File.ReadAllText(filePath);
+                var jRoot = JObject.Parse(json);
+
+                var aliasMap = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    { "id", "Id" },
+                    { "leaderAccount", "LeaderAccountName" },
+                    { "followerAccount", "FollowerAccountName" },
+                    { "isEnabled", "IsEnabled" },
+                    { "armedForLive", "ArmedForLive" },
+                    { "quantityRatio", "QuantityRatio" },
+                    { "fixedLotMode", "FixedLotMode" },
+                    { "fixedLotSize", "FixedLotSize" },
+                    { "autoSymbolConversion", "AutoSymbolConversion" },
+                    { "maxPositionSize", "MaxPositionSize" },
+                    { "dailyLossLimit", "DailyLossLimit" },
+                    { "isQuarantined", "IsQuarantined" },
+                    { "maxSlippageTicks", "MaxSlippageTicks" },
+                    { "sizingMode", "SizingMode" },
+                    { "mode", "Mode" },
+                    { "stealthMode", "StealthMode" },
+                    { "perTickerRatios", "PerTickerRatios" },
+                    { "customSymbolMappings", "CustomSymbolMappings" },
+                    { "groupName", "GroupName" },
+                    { "followerAccounts", "FollowerAccounts" }
+                };
+
+                bool TryConvertToken(JToken token, Type targetType, out object value)
+                {
+                    value = null;
+                    if (token == null || token.Type == JTokenType.Null)
+                        return false;
+
+                    try
+                    {
+                        if (targetType == typeof(string))
+                        {
+                            value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString();
+                            return true;
+                        }
+
+                        if (targetType == typeof(bool))
+                        {
+                            if (token.Type == JTokenType.Boolean)
+                            {
+                                value = token.Value<bool>();
+                                return true;
+                            }
+                            if (token.Type == JTokenType.String)
+                            {
+                                string s = token.Value<string>();
+                                if (bool.TryParse(s, out bool b))
+                                {
+                                    value = b;
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+
+                        if (targetType == typeof(int))
+                        {
+                            if (token.Type == JTokenType.Integer)
+                            {
+                                value = token.Value<int>();
+                                return true;
+                            }
+                            if (token.Type == JTokenType.String)
+                            {
+                                string s = token.Value<string>();
+                                if (int.TryParse(s, out int i))
+                                {
+                                    value = i;
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+
+                        if (targetType == typeof(double))
+                        {
+                            if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
+                            {
+                                value = token.Value<double>();
+                                return true;
+                            }
+                            if (token.Type == JTokenType.String)
+                            {
+                                string s = token.Value<string>();
+                                if (double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double d))
+                                {
+                                    value = d;
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+
+                        if (targetType.IsEnum)
+                        {
+                            if (token.Type == JTokenType.String)
+                            {
+                                string s = token.Value<string>();
+                                if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))
+                                {
+                                    value = e;
+                                    return true;
+                                }
+                            }
+                            else if (token.Type == JTokenType.Integer)
+                            {
+                                int i = token.Value<int>();
+                                object e = Enum.ToObject(targetType, i);
+                                if (Enum.IsDefined(targetType, e))
+                                {
+                                    value = e;
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }
+
+                        if (targetType == typeof(Dictionary<string, double>))
+                        {
+                            if (token.Type != JTokenType.Object)
+                                return false;
+                            var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                            foreach (JProperty p in ((JObject)token).Properties())
+                            {
+                                if (TryConvertToken(p.Value, typeof(double), out object dv))
+                                    dict[p.Name] = (double)dv;
+                            }
+                            value = dict;
+                            return true;
+                        }
+
+                        if (targetType == typeof(Dictionary<string, string>))
+                        {
+                            if (token.Type != JTokenType.Object)
+                                return false;
+                            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (JProperty p in ((JObject)token).Properties())
+                            {
+                                dict[p.Name] = p.Value.Type == JTokenType.String ? p.Value.Value<string>() : p.Value.ToString();
+                            }
+                            value = dict;
+                            return true;
+                        }
+
+                        if (targetType == typeof(List<string>))
+                        {
+                            if (token.Type != JTokenType.Array)
+                                return false;
+                            var list = new List<string>();
+                            foreach (JToken t in ((JArray)token))
+                            {
+                                list.Add(t.Type == JTokenType.String ? t.Value<string>() : t.ToString());
+                            }
+                            value = list;
+                            return true;
+                        }
+
+                        try
+                        {
+                            value = token.ToObject(targetType);
+                            return true;
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+
+                void Populate(JObject jObj, object target)
+                {
+                    Type type = target.GetType();
+                    foreach (JProperty jp in jObj.Properties())
+                    {
+                        string propName;
+                        if (!aliasMap.TryGetValue(jp.Name, out propName))
+                            propName = jp.Name;
+
+                        System.Reflection.PropertyInfo prop = type.GetProperty(propName,
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+                        if (prop == null || prop.GetSetMethod() == null)
+                            continue;
+
+                        object value;
+                        if (TryConvertToken(jp.Value, prop.PropertyType, out value))
+                            prop.SetValue(target, value, null);
+                    }
+                }
+
+                CopierRelationship ParseRelationship(JObject jObj, string key)
+                {
+                    var rel = new CopierRelationship();
+                    Populate(jObj, rel);
+                    if (rel.Id == null)
+                        rel.Id = Guid.NewGuid().ToString();
+                    if (rel.LeaderAccountName == null)
+                        rel.LeaderAccountName = key.Contains("_") ? key.Split('_')[0] : key;
+                    if (rel.FollowerAccountName == null)
+                        rel.FollowerAccountName = key.Contains("_") ? key.Split('_')[1] : "SimCopy2";
+                    return rel;
+                }
+
+                CopierGroup ParseGroup(JObject jObj, string key)
+                {
+                    var grp = new CopierGroup();
+                    Populate(jObj, grp);
+                    if (grp.Id == null)
+                        grp.Id = Guid.NewGuid().ToString();
+                    if (grp.GroupName == null)
+                        grp.GroupName = key;
+                    if (grp.LeaderAccountName == null)
+                        grp.LeaderAccountName = "Sim101";
+                    if (grp.FollowerAccounts == null)
+                        grp.FollowerAccounts = new List<string>();
+                    return grp;
+                }
+
+                lock (_lock)
+                {
+                    _relationships.Clear();
+                    _groups.Clear();
+
+                    var relsObj = jRoot["Relationships"] as JObject ?? jRoot["relationships"] as JObject;
+                    var grpsObj = jRoot["Groups"] as JObject ?? jRoot["groups"] as JObject;
+                    bool hasStructuredSections = relsObj != null || grpsObj != null;
+
+                    if (hasStructuredSections)
+                    {
+                        if (relsObj != null)
+                        {
+                            foreach (var kv in relsObj)
+                            {
+                                JObject jObj = kv.Value as JObject;
+                                if (jObj != null)
+                                    _relationships.Add(ParseRelationship(jObj, kv.Key));
+                            }
+                        }
+
+                        if (grpsObj != null)
+                        {
+                            foreach (var kv in grpsObj)
+                            {
+                                JObject jObj = kv.Value as JObject;
+                                if (jObj != null)
+                                    _groups.Add(ParseGroup(jObj, kv.Key));
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var dict = JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json);
+                        if (dict != null)
+                        {
+                            foreach (var kv in dict)
+                            {
+                                _relationships.Add(ParseRelationship(kv.Value, kv.Key));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LoadFromDisk EXCEPTION] {ex}");
+            }
+        }
+<<<END id="R1">>>
+
+<<<NOTES>>>
+- Replaced the three separate hand-rolled construction sites in `LoadFromDisk` with one shared `Populate(JObject, object)` helper that is used by the structured Relationships path, the structured Groups path, and the flat legacy dictionary path.
+- Added an explicit camelCase alias map so fields such as `leaderAccount`, `followerAccount`, `quantityRatio`, `maxPositionSize`, `sizingMode`, `mode`, `stealthMode`, `perTickerRatios`, `customSymbolMappings`, and `maxSlippageTicks` are mapped to their PascalCase properties.
+- Added type-safe token conversion that leaves the property initializer default when a field is absent or malformed, so a bad number never silently becomes zero.
+- Added enum conversion that ignores unknown enum names (keeps the default) instead of throwing, preventing one bad value from wiping the entire configuration.
+- Rebuilt `PerTickerRatios` and `CustomSymbolMappings` with `StringComparer.OrdinalIgnoreCase` so case-insensitive ticker lookups continue to work.
+- Did not introduce `ObjectCreationHandling.Replace` or a blanket Json.NET error handler.
+- No new persisted fields or config keys were added; the change makes the fields already written by `SaveToDisk` actually survive a round trip through `LoadFromDisk`.
+<<<END NOTES>>>

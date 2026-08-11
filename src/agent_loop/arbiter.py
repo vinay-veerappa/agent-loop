@@ -273,6 +273,25 @@ def _blocker_indices(findings: Sequence[Any]) -> List[int]:
     ]
 
 
+def _arbiter_max_tokens(model: str, fallback: int) -> int:
+    """The arbiter's output budget, per model, from the registry then config.
+
+    Sibling of `_arbiter_think` and added for the same reason it exists: the
+    budget was a literal default (`max_tokens: int = 24000`) that `loop.py`'s
+    call never passed, so `roles.arbiter.max_tokens` was dead configuration --
+    the exact condition `ModelRegistry.max_tokens_for` was written to end, and
+    which its docstring already describes (O58).
+    """
+    from . import config
+    from .models import DEFAULT_REGISTRY
+
+    try:
+        role_default = config.get().roles["arbiter"].max_tokens
+    except (KeyError, AttributeError):
+        role_default = fallback
+    return DEFAULT_REGISTRY.max_tokens_for(model, "arbiter", role_default)
+
+
 def _arbiter_think() -> bool:
     """Whether the arbiter reasons before answering, per config.
 
@@ -296,7 +315,7 @@ def adjudicate(
     patch_diff: str,
     settled: Sequence[str] = (),
     round_history: str = "",
-    max_tokens: int = 24000,
+    max_tokens: Optional[int] = None,
     timeout: int = 900,
     context: str = "",
     rules: str = "",
@@ -307,6 +326,9 @@ def adjudicate(
 
     `rules` is the consumer's Profile.arbiter_rules: what "blocks" means in
     this codebase and what an unsound SHIP costs there.
+
+    `max_tokens` is an OVERRIDE. Left unset it comes from the registry and
+    config, per model -- see `_arbiter_max_tokens`.
 
     `prompt_override` sends a previously recorded prompt verbatim instead of
     building one. Only replay should use it: holding the prompt constant is the
@@ -325,7 +347,8 @@ def adjudicate(
                 {"role": "system", "content": arbiter_system(rules)},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=max_tokens,
+            max_tokens=_arbiter_max_tokens(model, 24000)
+            if max_tokens is None else max_tokens,
             timeout=timeout,
             # From config, not hardcoded. This was a literal `think=False` while
             # config.py ALSO declared think=False for the arbiter role -- the two

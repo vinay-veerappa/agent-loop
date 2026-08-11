@@ -1,0 +1,14 @@
+REGRESSIONS (not in baseline):
+  - the flat legacy form still loads and takes the leader from the key
+
+Newly passing:
+  - a relationship round tripped through disk sized 1 leader MES as 3 follower MES (got 1)
+  - reloaded PerTickerRatios kept both entries (got 0)
+  - reloaded PerTickerRatios still matches 'mes' against the stored 'MES' (got 0)
+  - reloaded PerTickerRatios['MES'] is 3.0 (got 0)
+  - reloaded SizingMode is PerTickerMatrix (got QuantityRatio)
+  - reloaded StealthMode kept its non default value of false
+  - reloaded group MaxSlippageTicks is 4.0 (got 0)
+  - reloaded group PerTickerRatios['MES'] is 3.0 (got 0)
+  - reloaded group SizingMode is PerTickerMatrix (got QuantityRatio)
+  - the flat legacy form also carries SizingMode and the ratio table (mode QuantityRatio, MES 0)
