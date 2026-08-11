@@ -31,10 +31,28 @@ which is precisely how this survived so long.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
+import agent_loop
+
+# The subprocess must import THIS checkout, not whatever is installed for the
+# interpreter running the tests. Without it these pass on 3.14 (where the package
+# is installed) and fail on 3.12 (where it is not) -- measuring the environment
+# instead of the import order they exist to test.
+_SRC = str(Path(agent_loop.__file__).resolve().parent.parent)
+
+
+def _run(code: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _SRC + os.pathsep + env.get("PYTHONPATH", "")
+    return subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env
+    )
 
 # Each of these is a plausible FIRST import of the package from a consumer
 # script or a test module.
@@ -52,10 +70,7 @@ FIRST_IMPORTS = [
 
 @pytest.mark.parametrize("stmt", FIRST_IMPORTS)
 def test_any_module_may_be_the_first_import(stmt):
-    proc = subprocess.run(
-        [sys.executable, "-c", stmt],
-        capture_output=True, text=True,
-    )
+    proc = _run(stmt)
     assert proc.returncode == 0, (
         f"`{stmt}` fails as the first import of the package:\n{proc.stderr}"
     )
@@ -64,11 +79,9 @@ def test_any_module_may_be_the_first_import(stmt):
 def test_model_family_is_still_reachable_from_models():
     """cli.py and two existing tests import it from `models`. Moving it must not
     become a rename."""
-    proc = subprocess.run(
-        [sys.executable, "-c",
-         "from agent_loop.models import model_family;"
-         "print(model_family('agy:claude-sonnet-4-6'))"],
-        capture_output=True, text=True,
+    proc = _run(
+        "from agent_loop.models import model_family;"
+        "print(model_family('agy:claude-sonnet-4-6'))"
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "claude"
@@ -78,13 +91,11 @@ def test_the_panel_policy_still_runs_at_import():
     """The check must not have been deferred to fix the cycle: a default that
     drifts to one reviewer, or to two of one family, has to fail at import and
     not at whatever time someone first calls a function."""
-    proc = subprocess.run(
-        [sys.executable, "-c",
-         "import agent_loop.config as c;"
-         "import dataclasses;"
-         "r = dataclasses.replace(c.DEFAULTS.roles['reviewer'], extra_members=());"
-         "c.check_panel_policy({**c.DEFAULTS.roles, 'reviewer': r})"],
-        capture_output=True, text=True,
+    proc = _run(
+        "import agent_loop.config as c;"
+        "import dataclasses;"
+        "r = dataclasses.replace(c.DEFAULTS.roles['reviewer'], extra_members=());"
+        "c.check_panel_policy({**c.DEFAULTS.roles, 'reviewer': r})"
     )
     assert proc.returncode != 0, "a one-member panel was accepted"
     assert "panel" in proc.stderr.lower()
