@@ -75,12 +75,14 @@ profile has `graph_project` set. The `design` and `prd` sub-modes use the
 graph to answer "what existing code does this touch?" — the same graph the
 loop uses for passive context injection.
 
-**Reference**: the documentation architect skill (`.agents/skills/doc-architect`
-or equivalent) defines the conventions for documentation structure — section
-headers, ADR format, handover format. The docs mode follows these conventions
-in its system prompts. When the skill is available, its conventions should be
-injected into the docs mode's system prompt to ensure generated docs match
-the project's established format.
+**Reference — not yet implemented.** The documentation architect skill
+(`.agents/skills/doc-architect` or equivalent) defines the conventions for
+documentation structure — section headers, ADR format, handover format. Docs
+mode does **not** currently read that skill: its four system prompts are
+hardcoded in `docs_mode.py` and contain no project-specific conventions, so
+generated documents will not match a repo's house format without editing.
+Injecting the skill's conventions into the system prompt is tracked as
+BACKLOG O10.
 
 ```bash
 # Generate a changelog from the last commit
@@ -95,6 +97,12 @@ agent-loop --mode docs --docs-type design --defect "Add a trailing stop to the c
 # Generate a PRD for a defect
 agent-loop --mode docs --docs-type prd --defect "Fix the copier not copying exits"
 ```
+
+Output goes to `docs/generated/<docs-type>.md` unless `--docs-out` says
+otherwise. That directory is gitignored: these are model artifacts, regenerated
+on demand, and should not be reviewed as if a human wrote them. `changelog` is
+the only sub-mode that needs `--review-base`; `design` and `prd` require
+`--defect`.
 
 ## Install
 

@@ -9,7 +9,11 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-129/129 tests pass. `v0.1.0` is tagged but predates Phase 9 and these fixes.
+**173/173 tests pass on Python 3.12 and 3.14.** Current tag: **`v0.2.2`**, which
+is what tvDownloadOHLC pins and has installed.
+
+Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
+the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.2.2` or later.
 
 ### 2026-08-10 review — 22 defects found and fixed
 
@@ -191,6 +195,66 @@ the least coverage.
   format; ruff-style output matches nothing and falls through to the raw tail.
 * `_call_openai` does not capture its cached-token usage field, so the OpenAI
   backend cannot report cache hits at all.
+
+### 2026-08-10 (later) — consumer unblock session: O9-O11
+
+Found while making tvDownloadOHLC able to consume the package at all. The two
+CLOSED items below were both invisible to the existing test suite for the same
+structural reason: **the tests call the library functions directly, with correct
+arguments, so nothing exercised the CLI wiring that end users actually go
+through.** Both were found by running the shipped commands, not by review.
+
+#### O9. `Path.read_text(newline=)` breaks every Python < 3.13 — CLOSED (`27eeacc`, v0.2.1)
+
+`Path.read_text`/`Path.write_text` only accept `newline=` on Python 3.13+, but
+`requires-python` is `>=3.10`. Six call sites used that form, so on 3.10-3.12
+`regions.read_source` raised `TypeError` — and since `regions.extract` calls it,
+**every ticket died before reaching a model, including `--list`.**
+`developer/_edit_file` and `workspace.export_patch` were dead the same way.
+Unseen because the dev interpreter is 3.14; surfaced the instant the package was
+installed into the consumer venv (3.12). Fixed by `agent_loop._io`
+(`read_text_verbatim`/`write_text_verbatim` over `open(newline="")`). The suite
+now runs green on **both** 3.12 and 3.14, and a static guard test
+(`test_no_path_text_newline_kwarg`, mutation-checked) fails if the kwarg returns.
+
+**Lesson for CI:** a single-interpreter test run cannot see this class of defect.
+The suite should run on the lowest supported version, not just the dev version.
+
+#### O10. Docs mode had never run — CLOSED for wiring, OPEN for conventions
+
+`cli._docs()` called `run_docs()` **positionally** against a signature it did not
+match: `profile` received the `--review-base` string, `implementer` received the
+`Profile`, and `docs_type` received the model name. Every sub-mode of every
+invocation returned `unknown docs type: 'kimi-k2.7-code:cloud'`. Four further
+wiring defects in the same 18-line function:
+
+* no `--docs-type` argument existed, so 3 of the 4 sub-modes were unselectable
+  even after the call was fixed (the README documented the flag regardless);
+* `--review-base` was required for all four, though only `changelog` reads a diff;
+* `--defect` was never forwarded, so `design`/`prd` had no input; and
+* `output_path` was `args.test_file or "docs/UPDATES.md"` — and `--test-file`
+  **defaults** to `tests/acceptance/test_generated.py`, so the left side was
+  never falsy and docs mode would have written markdown over a test file.
+
+Fixed with `--docs-type` + `--docs-out`, keyword-only forwarding, per-sub-mode
+validation, and defaults under gitignored `docs/generated/`. 18 regression tests
+in `tests/acceptance/test_docs_mode_cli.py` drive `main(argv)` so argparse is in
+the loop; 17 of the 18 fail against the pre-fix `cli.py`. `changelog` and
+`handover` have now been run end to end against a live model.
+
+**Still OPEN (MED):** the README claims docs mode follows the doc-architect
+skill's conventions. It does not — the four system prompts in `docs_mode.py` are
+hardcoded and contain nothing project-specific, so generated docs do not match
+any repo's house format. Either inject the skill's conventions into the system
+prompt or add a `Profile.docs_conventions` field. README now says so explicitly.
+
+#### O11. Consumer pin and install — CLOSED
+
+`agent_loop` was not installed in the tvDownloadOHLC venv (every documented
+command raised `ModuleNotFoundError`), and `requirements.txt` pinned `@v0.1.0`,
+14 commits and ~25 known defects behind. Now pinned to and installed at
+**v0.2.2**. Note `v0.2.0` is a **poisoned tag**: it carries the O9 defect, so it
+is unusable on any Python below 3.13. Do not pin it.
 
 ### Note on graph re-index for tvDownloadOHLC
 

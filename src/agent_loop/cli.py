@@ -208,20 +208,44 @@ def _brainstorm(args, profile, implementer) -> int:
 
 
 def _docs(args, profile, implementer) -> int:
-    """Docs mode: diff -> documentation updates."""
+    """Docs mode: codebase (or diff) -> documentation.
+
+    Every argument here is passed by KEYWORD. This function used to call
+    run_docs(Path("."), args.review_base, profile, implementer, ...)
+    positionally against the signature
+    run_docs(repo, profile, implementer, docs_type, diff_ref, intent, output_path),
+    so `profile` received a ref string, `implementer` received the Profile, and
+    `docs_type` received the model name -- every invocation of every sub-mode
+    died on "unknown docs type: '<model>'". Docs mode had never run.
+    """
     from .docs_mode import run_docs
 
-    if not args.review_base:
-        print("--mode docs needs --review-base (e.g. HEAD~1)")
+    # Only the changelog sub-mode reads a diff. Demanding --review-base for the
+    # other three made them unreachable even once the call was correct.
+    if args.docs_type == "changelog" and not args.review_base:
+        print("--mode docs --docs-type changelog needs --review-base (e.g. HEAD~1)")
+        return 2
+    if args.docs_type in ("design", "prd") and not args.defect:
+        print(f"--mode docs --docs-type {args.docs_type} needs --defect")
         return 2
 
+    # NOT args.test_file: that argument defaults to
+    # tests/acceptance/test_generated.py, so `args.test_file or <default>` was
+    # never falsy and docs mode would have written markdown over a test file.
+    output_path = args.docs_out or f"docs/generated/{args.docs_type}.md"
+
     result = run_docs(
-        Path("."), args.review_base, profile, implementer,
-        output_path=args.test_file or "docs/UPDATES.md",
+        Path("."),
+        profile=profile,
+        implementer=implementer,
+        docs_type=args.docs_type,
+        diff_ref=args.review_base or "HEAD~1",
+        intent=args.defect,
+        output_path=output_path,
     )
     print(f"\n==== DOCS RESULT ====")
     if result.get("docs"):
-        print(f"docs written to: {result.get('output_path', 'docs/UPDATES.md')}")
+        print(f"docs written to: {result.get('output_path', output_path)}")
     elif result.get("error"):
         print(f"error: {result['error']}")
     return 0 if result.get("docs") else 1
@@ -267,6 +291,17 @@ def main(argv=None) -> int:
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
     ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
+    ap.add_argument(
+        "--docs-type", choices=("changelog", "handover", "design", "prd"),
+        default="changelog",
+        help="docs mode: which document to generate (changelog reads a diff; "
+             "design/prd read --defect; handover reads the ledger)",
+    )
+    ap.add_argument(
+        "--docs-out", default="",
+        help="docs mode: where to write the document "
+             "(default: docs/generated/<docs-type>.md)",
+    )
     ap.add_argument("--review-base", default="", help="review mode: base ref (e.g. main, HEAD~3)")
     ap.add_argument("--review-head", default="HEAD", help="review mode: head ref")
     ap.add_argument("--report-last", type=int, default=0, help="report mode: show only the last N tickets (0 = all)")

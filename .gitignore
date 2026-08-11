@@ -10,3 +10,8 @@ build/
 .pytest_cache/
 logs/
 *.log
+
+# docs mode writes here (--docs-out overrides). Generated documents are model
+# output, not source: they are regenerated on demand and must not be reviewed
+# as if a human wrote them.
+docs/generated/
