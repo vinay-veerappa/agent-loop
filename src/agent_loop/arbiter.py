@@ -133,6 +133,11 @@ class Adjudication:
     raw: str = ""
     error: str = ""
     usage: str = ""
+    # The rendered user prompt actually sent. Recorded so a replay can re-send it
+    # byte-for-byte: rebuilding it from findings cannot reproduce the original
+    # (the ticket, diff and round history are not all recoverable), and a replay
+    # against a different prompt measures nothing.
+    prompt: str = ""
 
     def by(self, verdict: str) -> List[Ruling]:
         return [r for r in self.rulings if r.verdict == verdict]
@@ -242,16 +247,22 @@ def adjudicate(
     timeout: int = 900,
     context: str = "",
     rules: str = "",
+    prompt_override: str = "",
 ) -> Adjudication:
     """Rule on findings. Never raises -- an unreachable arbiter yields ok=False,
     which the caller must treat as "not adjudicated", never as approval.
 
     `rules` is the consumer's Profile.arbiter_rules: what "blocks" means in
     this codebase and what an unsound SHIP costs there.
+
+    `prompt_override` sends a previously recorded prompt verbatim instead of
+    building one. Only replay should use it: holding the prompt constant is the
+    entire point of a replay, and build_prompt cannot reproduce a recorded prompt
+    from findings alone.
     """
     if not findings:
         return Adjudication(True, SHIP, rationale="No findings to adjudicate.")
-    prompt = build_prompt(
+    prompt = prompt_override or build_prompt(
         ticket, findings, gate_summary, patch_diff, settled, round_history, context
     )
     try:
@@ -266,13 +277,13 @@ def adjudicate(
             think=False,
         )
     except ProviderError as exc:
-        return Adjudication(False, error=str(exc))
+        return Adjudication(False, error=str(exc), prompt=prompt)
 
     text = out.text or ""
     rec_raw = _section(text, "RECOMMENDATION").upper()
     rec = next((c for c in (ESCALATE, REVISE, SHIP) if c in rec_raw), "")
     if not rec:
-        return Adjudication(False, raw=text, error="no parseable recommendation", usage=out.usage_line())
+        return Adjudication(False, raw=text, error="no parseable recommendation", usage=out.usage_line(), prompt=prompt)
 
     rulings = [
         Ruling(int(m.group(2)), m.group(1), m.group(3).strip())
@@ -301,12 +312,14 @@ def adjudicate(
             settled=settled_out,
             raw=text,
             usage=out.usage_line(),
+            prompt=prompt,
         )
     if rec == SHIP and any(r.verdict == UPHELD for r in rulings):
         rec = REVISE  # self-contradiction: upheld findings cannot ship
 
     return Adjudication(
-        True, rec, rulings, _section(text, "RATIONALE"), settled_out, text, usage=out.usage_line()
+        True, rec, rulings, _section(text, "RATIONALE"), settled_out, text,
+        usage=out.usage_line(), prompt=prompt,
     )
 
 

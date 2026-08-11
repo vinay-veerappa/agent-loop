@@ -26,8 +26,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import arbiter as arbiter_mod
 from . import profiles
-from .loop import review_panel, PanelResult, Finding, parse_blocks, RoundRecord
-from .providers import Completion, ProviderError, chat
+from ._io import read_text_verbatim
+from .loop import review_panel, parse_blocks
+
+
+def _review_prompt_path(ticket_dir: Path, impl_file: Path) -> Path:
+    """The recorded review prompt that pairs with an `r{N}_impl_raw.txt` file.
+
+    Derived from the implementer filename rather than the loop index so the
+    pairing survives a corpus whose rounds are not 1..N contiguous (a resumed or
+    partially pruned run).
+    """
+    stem = impl_file.name.replace("_impl_raw.txt", "")
+    return ticket_dir / f"{stem}_review_prompt.md"
 
 
 def run_replay(
@@ -64,11 +75,35 @@ def run_replay(
     if not impl_files:
         return {"error": f"no r*_impl_raw.txt files in {ticket_dir}"}
 
-    # Load the ticket spec (if available)
-    ticket_spec_path = ticket_dir / "00_implement_prompt.md"
-    ticket_spec = ""
-    if ticket_spec_path.exists():
-        ticket_spec = ticket_spec_path.read_text(encoding="utf-8")
+    # A replay is only a measurement if the prompt is held constant. A corpus
+    # recorded before the loop started saving the rendered prompt cannot support
+    # one, so refuse rather than approximate: this function used to rebuild a
+    # prompt from the truncated implement prompt plus the truncated implementer
+    # output, which meant a "flip" reported the difference between two prompts
+    # and not the effect of the change under test. Refusing costs nothing;
+    # a plausible-looking non-measurement is what does the damage.
+    missing = [
+        f.name for f in impl_files[:max_rounds]
+        if not _review_prompt_path(ticket_dir, f).exists()
+    ]
+    if missing:
+        return {
+            "ticket": ticket_id,
+            "error": (
+                "no recorded review prompt for "
+                + ", ".join(missing)
+                + f" in {ticket_dir}. This corpus predates prompt recording, so a "
+                "replay cannot hold the prompt constant and any verdict flip "
+                "would be meaningless. Re-run the ticket to record "
+                "r{N}_review_prompt.md, then replay it."
+            ),
+        }
+
+    # Replay artifacts go in a subdirectory. `art = ticket_dir` handed the corpus
+    # to review_panel, which writes r{N}_review_{model}.txt -- so a replay
+    # overwrote the very recording it was measuring against.
+    art_root = ticket_dir / "replay"
+    art_root.mkdir(parents=True, exist_ok=True)
 
     # Replay each round
     replay_rounds: List[Dict[str, Any]] = []
@@ -79,23 +114,16 @@ def run_replay(
         raw_impl = impl_file.read_text(encoding="utf-8")
         blocks, notes = parse_blocks(raw_impl)
 
-        # Build the review prompt (same as the loop does)
-        # We don't have the original regions, but we can build a minimal
-        # review prompt from the ticket spec + the implementer output
-        review_prompt = (
-            f"# Replay review for ticket {ticket_id} (round {rnd_idx})\n\n"
-            f"## Ticket spec\n{ticket_spec[:2000]}\n\n"
-            f"## Implementer output\n```\n{raw_impl[:8000]}\n```\n\n"
-            f"Review this output: is it correct? Does it close the defect?\n"
-        )
+        # The recorded prompt, verbatim. Read as bytes-preserving text so a CRLF
+        # corpus is re-sent exactly as it was recorded: re-encoding the prompt
+        # would itself be a prompt change.
+        review_prompt = read_text_verbatim(_review_prompt_path(ticket_dir, impl_file))
 
-        # Run the panel
-        art = ticket_dir
         panel = review_panel(
             reviewers,
             review_prompt,
             profile.reviewer_system,
-            art,
+            art_root,
             rnd_idx,
             deadline_secs=1800,
         )
@@ -122,8 +150,16 @@ def run_replay(
             final_verdict = "PANEL_UNREACHABLE"
             break
 
-        # Run the arbiter
+        # Run the arbiter. If the corpus recorded the arbiter's rendered prompt,
+        # re-send it verbatim for the same reason the review prompt is re-sent:
+        # the ticket, the diff and the round history are not recoverable here, so
+        # a rebuilt prompt ("replay"/"replay"/"" as ticket, gate summary and
+        # diff) is not the prompt that produced the recorded verdict.
         if arbiter_model and all_findings:
+            arb_prompt_path = ticket_dir / f"r{rnd_idx}_arbiter_prompt.md"
+            arb_override = (
+                read_text_verbatim(arb_prompt_path) if arb_prompt_path.exists() else ""
+            )
             adj = arbiter_mod.adjudicate(
                 arbiter_model,
                 {"id": ticket_id, "title": "replay", "defect": "replay", "spec": "replay"},
@@ -132,6 +168,10 @@ def run_replay(
                 "",  # no diff available in replay
                 settled=profile.settled,
                 round_history=_history_note(convergence),
+                prompt_override=arb_override,
+            )
+            (art_root / f"r{rnd_idx}_arbiter.txt").write_text(
+                adj.raw or adj.error, encoding="utf-8"
             )
             if adj.ok:
                 if adj.recommendation == arbiter_mod.SHIP:

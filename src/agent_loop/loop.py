@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import arbiter, gates, profiles, regions, workspace
+from ._io import write_text_verbatim
 from .models import DEFAULT_REGISTRY
 from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
@@ -681,6 +682,16 @@ def run_ticket(
             learning_ctx = build_learning_context(repo)
             if learning_ctx:
                 prompt += f"\n\n{learning_ctx}"
+            # Record the FULLY rendered review prompt -- after graph context and
+            # learning feedback are appended, i.e. exactly the bytes the panel
+            # sees. Replay re-sends this verbatim; without it, replay had to
+            # rebuild an approximation and a verdict flip measured the prompt
+            # difference rather than the change under test (O2).
+            # write_text_verbatim, NOT write_text: on Windows write_text
+            # translates "\n" to "\r\n", so the recorded prompt would differ from
+            # the prompt actually sent on every single line -- and a replay
+            # re-sending it would not be byte-for-byte after all.
+            write_text_verbatim(art / f"r{rnd}_review_prompt.md", prompt)
             panel = review_panel(
                 reviewers, prompt, profile.reviewer_system, art, rnd, deadline_secs=panel_deadline
             )
@@ -768,6 +779,13 @@ def run_ticket(
                 (art / f"r{rnd}_arbiter.txt").write_text(
                     adj.raw or adj.error, encoding="utf-8"
                 )
+                # As with the review prompt: recorded so a replay can re-send it
+                # verbatim. build_prompt cannot reconstruct it -- the diff and
+                # round history are not recoverable from the corpus (O2).
+                if adj.prompt:
+                    write_text_verbatim(
+                        art / f"r{rnd}_arbiter_prompt.md", adj.prompt
+                    )
                 if adj.ok:
                     arbiter_consulted = True
                     print(f"           [arbiter] {adj.summary()}  {adj.usage}")
