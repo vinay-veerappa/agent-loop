@@ -2028,4 +2028,47 @@ language and every layer of it had to be found separately, by running it.
 
 ---
 
+#### O50. The promote command the loop prints deleted its own input — CLOSED
+
+**Found by following the loop's own instruction, verbatim, after a successful
+ARBITER_SHIP on a real ticket.** The loop printed:
+
+    promote: --resume-raw logs/agent_loop/CM1/r3_impl_raw.txt --allow-unapproved --apply
+
+and running it produced:
+
+    ERROR CM1: FileNotFoundError: No such file or directory:
+               'logs/agent_loop/CM1/r3_impl_raw.txt'
+
+The file existed when the command was issued. `run_ticket` purges every
+`r*_*.txt` in the artifact directory before the round loop starts (deliberately --
+T4/T5, so the on-disk artifacts cannot contradict result.json's round count), and
+the printed hint is built from that same directory. **So the resume source is
+always inside the purge's blast radius, and the documented promote command could
+never have worked.**
+
+**The collateral was the worse half.** The purge also took r1/r2/r3 review files,
+both arbiter rulings, and the build and test logs. `final.patch` survived only
+because it is not an `r*` file, and it was the only reason the candidate was
+recoverable -- reviewed by hand and applied with `git apply`.
+
+The resume source is now read into memory BEFORE the purge, and a bad path raises
+before anything is deleted, naming `final.patch` as the surviving recovery route.
+Four mutations, all killed.
+
+**A first hypothesis was wrong and worth recording**: I assumed `--resume-raw`
+resolved relative to the WORKTREE. It does not -- the path was correct and the
+file had simply been deleted. Reading the ordering of two statements settled in
+seconds what the error message had made look like a path-resolution problem.
+
+**Two notes on the tests.** The first draft asserted against a HELPER that mirrored
+`run_ticket`'s ordering, which would have passed whatever `run_ticket` actually
+did; they now drive `run_ticket` against a real git repo. And a hand-rolled
+`_Out` stub with only `text` and `usage_line()` reached
+`result["cost_usd"] += out.cost_usd` and raised AttributeError -- a double that
+omits a field the caller uses reports a defect in the code under test. The tests
+use the real `Completion`.
+
+---
+
 *End of backlog. Update as items are completed.*

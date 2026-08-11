@@ -638,6 +638,30 @@ def run_ticket(
         # the top of each round only cleans the current round's stale files;
         # purging here cleans ALL rounds' stale files so the on-disk artifacts
         # always match the result.json's round count.
+        # Read the resume candidate BEFORE that purge, and fail before it if the
+        # path is wrong.
+        #
+        # The promote hint this loop PRINTS is built from `art`, so it always
+        # points at logs/agent_loop/<TICKET>/rN_impl_raw.txt -- squarely inside the
+        # purge's blast radius. Following the documented command therefore deleted
+        # its own input and then raised FileNotFoundError naming the file it had
+        # just removed, and the failure took every other per-round artifact
+        # (reviews, arbiter rulings, build and test logs) with it. Only
+        # final.patch survived, and only because it is not an `r*` file.
+        #
+        # Holding the text in memory means the purge cannot reach it, and
+        # validating the path first means a typo costs nothing.
+        resumed_text: Optional[str] = None
+        if resume_raw:
+            resume_path = Path(resume_raw)
+            if not resume_path.is_file():
+                raise FileNotFoundError(
+                    f"--resume-raw {resume_raw}: no such file. Nothing has been "
+                    f"deleted. Candidates live in {art} as rN_impl_raw.txt; "
+                    f"final.patch there holds the last promotable diff."
+                )
+            resumed_text = resume_path.read_text(encoding="utf-8")
+
         for stale in art.glob("r*_*.txt"):
             stale.unlink()
 
@@ -652,7 +676,8 @@ def run_ticket(
                 stale.unlink()
             # ---- implement
             if rnd == 1 and resume_raw:
-                raw = Path(resume_raw).read_text(encoding="utf-8")
+                # Already in memory: see the note above the purge.
+                raw = resumed_text or ""
                 # Persist the resumed candidate under this round's name. Without
                 # this the round-1 artifact is whatever a PREVIOUS run left there,
                 # while every "resume with"/"promote:" hint below is built from the
