@@ -108,7 +108,7 @@ def split_model(spec: str) -> Tuple[str, str]:
     Ollama model names contain colons themselves ('kimi-k2.7-code:cloud'), so
     only a known backend prefix is treated as one.
     """
-    for backend in ("anthropic", "openai", "ollama"):
+    for backend in ("anthropic", "openai", "ollama", "gemini", "github"):
         if spec.startswith(backend + ":"):
             return backend, spec[len(backend) + 1 :]
     return "ollama", spec
@@ -376,9 +376,10 @@ def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, 
     )
 
 
-def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
-    base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    key = os.getenv("OPENAI_API_KEY", "")
+def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, think=None,
+                 cache=False, base="", key="", label="openai"):
+    base = (base or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+    key = key or os.getenv("OPENAI_API_KEY", "")
     payload = {
         "model": model,
         "messages": messages,
@@ -394,7 +395,7 @@ def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     message = choice.get("message") or {}
     return Completion(
         text=message.get("content", "") or "",
-        model=f"openai:{model}",
+        model=f"{label}:{model}",
         input_tokens=usage.get("prompt_tokens", 0) or 0,
         output_tokens=usage.get("completion_tokens", 0) or 0,
         stop_reason=choice.get("finish_reason", "") or "",
@@ -403,7 +404,52 @@ def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     )
 
 
-_BACKENDS = {"ollama": _call_ollama, "anthropic": _call_anthropic, "openai": _call_openai}
+# Google and GitHub both publish OpenAI-compatible chat-completions endpoints,
+# so they need a base URL and a key rather than a new transport. They get their
+# OWN prefix instead of being an OPENAI_BASE_URL trick for two reasons: the env
+# var is global, so pointing it at Google silently redirects every `openai:`
+# model in the same run; and a model named in a config file should say which
+# service it comes from.
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+GITHUB_MODELS_BASE = "https://models.github.ai/inference"
+
+
+def _call_gemini(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+    if not key:
+        raise ProviderError(
+            "gemini: set GEMINI_API_KEY (or GOOGLE_API_KEY) from Google AI Studio. "
+            "Model ids are Google's own, e.g. gemini:gemini-3.1-pro."
+        )
+    return _call_openai(
+        model, messages, temperature, max_tokens, timeout, num_ctx, think, cache,
+        base=os.getenv("GEMINI_BASE_URL", GEMINI_BASE), key=key, label="gemini",
+    )
+
+
+def _call_github(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
+    key = os.getenv("GITHUB_MODELS_TOKEN") or os.getenv("GITHUB_TOKEN", "")
+    if not key:
+        raise ProviderError(
+            "github: set GITHUB_MODELS_TOKEN (or GITHUB_TOKEN) to a PAT with the "
+            "models scope. NOTE this is GitHub MODELS, which is an API; a Copilot "
+            "subscription is licensed for use through Copilot clients and is not "
+            "a chat-completions endpoint for a harness like this."
+        )
+    return _call_openai(
+        model, messages, temperature, max_tokens, timeout, num_ctx, think, cache,
+        base=os.getenv("GITHUB_MODELS_BASE_URL", GITHUB_MODELS_BASE), key=key,
+        label="github",
+    )
+
+
+_BACKENDS = {
+    "ollama": _call_ollama,
+    "anthropic": _call_anthropic,
+    "openai": _call_openai,
+    "gemini": _call_gemini,
+    "github": _call_github,
+}
 
 
 def chat(
