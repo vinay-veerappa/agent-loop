@@ -22,6 +22,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .._io import read_text_verbatim, write_text_verbatim
 from ..profiles import Profile
 
 
@@ -267,7 +268,7 @@ def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
     # Match against LF-normalised text but write back the file's own line
     # terminators, so editing one line of a CRLF file does not rewrite every
     # line of it.
-    raw = path.read_text(encoding="utf-8", newline="")
+    raw = read_text_verbatim(path)
     newline = "\r\n" if "\r\n" in raw else "\n"
     content = raw.replace("\r\n", "\n")
     old_str = args["old_str"].replace("\r\n", "\n")
@@ -283,7 +284,7 @@ def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
     new_content = content.replace(old_str, new_str, 1)
     if newline != "\n":
         new_content = new_content.replace("\n", newline)
-    path.write_text(new_content, encoding="utf-8", newline="")
+    write_text_verbatim(path, new_content)
     return f"OK: edited {args['path']} (replaced {len(old_str)} chars with {len(new_str)} chars)"
 
 

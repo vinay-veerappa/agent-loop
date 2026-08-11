@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ._io import read_text_verbatim, write_text_verbatim
 from .profiles import Profile
 
 
@@ -280,7 +281,7 @@ def read_source(path: Path) -> Tuple[List[str], str, bool]:
     and \\u2028, so a form feed anywhere in the file shifts every index after
     it and the splice lands in the wrong place.
     """
-    raw = path.read_text(encoding="utf-8", newline="")
+    raw = read_text_verbatim(path)
     newline = "\r\n" if "\r\n" in raw else "\n"
     had_trailing_newline = raw.endswith(("\n", "\r"))
     lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -342,6 +343,6 @@ def apply(regions: List[Region], blocks: Dict[str, str]) -> List[str]:
             changed = True
         if changed:
             out = newline.join(lines) + (newline if had_trailing_newline else "")
-            path.write_text(out, encoding="utf-8", newline="")
+            write_text_verbatim(path, out)
             touched.append(regs[0].file)
     return touched

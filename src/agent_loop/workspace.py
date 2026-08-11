@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
+from ._io import write_text_verbatim
+
 
 class WorkspaceError(RuntimeError):
     pass
@@ -162,7 +164,7 @@ class Workspace:
         # newline="" writes the diff bytes verbatim. Without it, every line
         # terminator becomes the platform's, which on Windows rewrites an
         # LF-source patch into CRLF and makes `git apply` reject it.
-        dest.write_text(d, encoding="utf-8", newline="")
+        write_text_verbatim(dest, d)
         return dest
 
     def promote(self, files: Sequence[str], force: bool = False) -> List[str]:
