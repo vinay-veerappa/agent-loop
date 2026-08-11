@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from . import arbiter, gates, profiles, regions, workspace
+from . import arbiter, config, gates, profiles, regions, workspace
 from ._io import write_text_verbatim
 from .models import DEFAULT_REGISTRY
 from .compaction import compact_history, history_token_count
@@ -422,15 +422,21 @@ def run_ticket(
     profile: profiles.Profile,
     implementer: str,
     reviewers: Sequence[str],
-    max_rounds: int = 4,
+    max_rounds: int = 0,   # 0 = use config.loop.max_rounds
     apply: bool = False,
     allow_unapproved: bool = False,
     resume_raw: str = "",
     orchestrator_note: str = "",
-    panel_deadline: int = 1800,
+    panel_deadline: int = 0,   # 0 = use config.loop.panel_deadline_secs
     keep_worktree: bool = False,
     arbiter_model: str = "",
 ) -> Dict[str, Any]:
+    # 0 means "ask config", so these limits have exactly one literal definition
+    # (config.py) rather than one per signature that happens to agree with it.
+    _loop_cfg = config.get().loop
+    max_rounds = max_rounds or _loop_cfg.max_rounds
+    panel_deadline = panel_deadline or _loop_cfg.panel_deadline_secs
+
     tid = ticket["id"]
     art = repo / "logs" / "agent_loop" / tid
     art.mkdir(parents=True, exist_ok=True)

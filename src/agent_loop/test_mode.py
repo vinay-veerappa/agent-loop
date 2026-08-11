@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import gates, profiles, regions, workspace
+from . import config, gates, profiles, regions, workspace
 from .providers import Completion, ProviderError, chat
 
 
@@ -98,7 +98,8 @@ def run_test(
     ]
 
     try:
-        out = chat(implementer, history, max_tokens=16000)
+        _c = config.get().mode("test")
+        out = chat(implementer, history, max_tokens=_c.max_tokens, think=_c.think)
     except ProviderError as exc:
         result["error"] = str(exc)
         return result

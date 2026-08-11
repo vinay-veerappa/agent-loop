@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import arbiter as arbiter_mod
+from . import config
 from . import gates, profiles, regions, workspace
 from .context import build_context_slice
 from .memory import inject_settled
@@ -105,7 +106,8 @@ def run_plan(
                 after = history_token_count(history)
                 if after < before:
                     print(f"           [compaction] {before} -> {after} tokens")
-            out = chat(implementer, history, max_tokens=24000)
+            _c = config.get().mode("plan")
+            out = chat(implementer, history, max_tokens=_c.max_tokens, think=_c.think)
         except ProviderError as exc:
             result["rounds"].append({"round": rnd, "error": str(exc)})
             final = "IMPLEMENTER_UNREACHABLE"
@@ -153,7 +155,7 @@ def run_plan(
         )
         panel = review_panel(
             reviewers, review_prompt, profile.reviewer_system, art, rnd,
-            deadline_secs=1800,
+            deadline_secs=config.get().loop.panel_deadline_secs,
         )
         desc = ", ".join(f"{v.model.split(':')[0]}={v.status}({v.blockers})" for v in panel.votes)
         print(f"           [panel] {panel.verdict or 'INVALID'}  [{desc}]")

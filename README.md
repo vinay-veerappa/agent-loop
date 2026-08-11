@@ -104,6 +104,41 @@ on demand, and should not be reviewed as if a human wrote them. `changelog` is
 the only sub-mode that needs `--review-base`; `design` and `prd` require
 `--defect`.
 
+## Configuration
+
+Every tunable number — which model does which job, token budgets, whether a role
+thinks, round limits, panel deadlines, transport settings — lives in one place:
+[`src/agent_loop/config.py`](src/agent_loop/config.py). That module carries the
+**reason** each default has its value; read it before changing one.
+
+Override without editing the package by copying
+[`agent_loop.config.example.json`](agent_loop.config.example.json) to
+`agent_loop.config.json` and deleting everything you are not changing:
+
+```json
+{
+  "roles": {"reviewer": {"model": "kimi-k3:cloud"}},
+  "modes": {"docs": {"max_tokens": 48000}},
+  "loop":  {"max_rounds": 6}
+}
+```
+
+Resolution order: `--config PATH` → `$AGENT_LOOP_CONFIG` → `./agent_loop.config.json`
+→ built-in defaults. A path that does not exist is an error rather than a silent
+fallback, and **unknown keys are rejected** — a typo that is quietly ignored is
+worse than no config file, because you believe the setting took effect.
+Underscore-prefixed keys (`"_comment"`) are treated as comments.
+
+> **Budgets and thinking.** On a reasoning model, chain-of-thought is spent from
+> the *same budget as the answer*, and `think=None` leaves the model's own
+> default in force — which is ON. A budget sized for the expected output
+> therefore becomes a budget shared with an unbounded reasoning prefix. This is
+> not hypothetical: the implementer had 48000, and on a two-region ticket the
+> model spent 125,070 characters reasoning and returned **empty content**, so the
+> run died having produced nothing. Every role and mode declares `think`
+> explicitly, and anything with `think: true` is budgeted for reasoning *plus*
+> answer. If you turn thinking on, raise the budget in the same edit.
+
 ## Install
 
 ```bash

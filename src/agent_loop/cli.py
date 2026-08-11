@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import profiles, regions, workspace
+from . import config, models, profiles, regions, workspace
 from .loop import run_ticket
 from .models import DEFAULT_REGISTRY
 
@@ -272,7 +272,14 @@ def main(argv=None) -> int:
         default="",
         help="model that rules on reviewer findings. Must be from a different family than the reviewers.",
     )
-    ap.add_argument("--max-rounds", type=int, default=4)
+    ap.add_argument(
+        "--config", default="",
+        help="path to a JSON config overriding agent_loop/config.py defaults "
+             "(default: $AGENT_LOOP_CONFIG, then ./agent_loop.config.json)",
+    )
+    # 0 = "use the configured value". A literal here would be a second
+    # definition of the same limit, silently shadowing config.py.
+    ap.add_argument("--max-rounds", type=int, default=0)
     ap.add_argument("--apply", action="store_true", help="promote an approved patch into the live tree")
     ap.add_argument(
         "--allow-unapproved",
@@ -281,7 +288,7 @@ def main(argv=None) -> int:
     )
     ap.add_argument("--resume-raw", default="", help="reuse an rN_impl_raw.txt as round 1")
     ap.add_argument("--orchestrator-note", default="", help="authoritative directive; outranks reviewers")
-    ap.add_argument("--panel-deadline", type=int, default=1800, help="wall-clock seconds for the whole panel")
+    ap.add_argument("--panel-deadline", type=int, default=0, help="wall-clock seconds for the whole panel (0 = configured value)")
     ap.add_argument("--keep-worktree", action="store_true", help="leave the worktree for post-mortem")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
@@ -326,6 +333,16 @@ def main(argv=None) -> int:
         help="review mode: run the profile's build+test first so the panel is told the true gate state",
     )
     args = ap.parse_args(argv)
+
+    # Install the effective config before anything reads a tunable, then
+    # rebuild the model registry from it so role->model bindings and budgets
+    # come from the same place.
+    try:
+        config.set_active(config.load(args.config))
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"config error: {exc}")
+        return 2
+    models.reload_default_registry()
 
     # Import the profile module if specified (registers profiles at import time)
     if args.profile_module:

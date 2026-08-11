@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Copy to agent_loop.config.json (gitignored) and delete what you are not changing.",
+    "Only the keys present here override; everything else inherits from",
+    "src/agent_loop/config.py, which carries the REASON for each default -- read it",
+    "before changing a budget. Unknown keys are a hard error, not a silent no-op.",
+    "Point at a different file with --config PATH or $AGENT_LOOP_CONFIG.",
+    "",
+    "BUDGETS AND THINKING: on a reasoning model, chain-of-thought is spent from the",
+    "same budget as the answer. If you set think=true, raise max_tokens in the same",
+    "edit -- 48000 with thinking on is the configuration that returned 125,070",
+    "characters of reasoning and EMPTY CONTENT."
+  ],
+
+  "roles": {
+    "implementer": {
+      "model": "kimi-k2.7-code:cloud",
+      "max_tokens": 96000,
+      "think": true
+    },
+    "reviewer": {
+      "model": "glm-5.2:cloud",
+      "max_tokens": 24000,
+      "think": false
+    },
+    "arbiter": {
+      "model": "deepseek-v4-pro:cloud",
+      "max_tokens": 24000,
+      "think": false
+    },
+    "compactor": {
+      "model": "glm-5.2:cloud",
+      "max_tokens": 8000,
+      "think": false
+    }
+  },
+
+  "modes": {
+    "docs": {"max_tokens": 32000, "think": false},
+    "brainstorm": {"max_tokens": 16000, "think": false},
+    "plan": {"max_tokens": 48000, "think": true},
+    "test": {"max_tokens": 48000, "think": true},
+    "developer": {"max_tokens": 48000, "think": true}
+  },
+
+  "loop": {
+    "max_rounds": 4,
+    "panel_deadline_secs": 1800,
+    "context_token_budget": 3000,
+    "round_input_token_budget": 40000
+  },
+
+  "provider": {
+    "temperature": 0.1,
+    "timeout_secs": 900,
+    "num_ctx": 32768,
+    "max_retries": 3,
+    "default_max_tokens": 16000
+  }
+}

@@ -31,6 +31,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import config
+
 ANTHROPIC_VERSION = "2023-06-01"
 
 # USD per 1M tokens (input, output). Anthropic rates as of 2026-06-24; Ollama
@@ -348,11 +350,11 @@ _BACKENDS = {"ollama": _call_ollama, "anthropic": _call_anthropic, "openai": _ca
 def chat(
     model_spec: str,
     messages: List[Dict[str, str]],
-    temperature: float = 0.1,
-    max_tokens: int = 16000,
-    timeout: int = 900,
-    num_ctx: int = 32768,
-    max_retries: int = 3,
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    timeout: Optional[int] = None,
+    num_ctx: Optional[int] = None,
+    max_retries: Optional[int] = None,
     think: Optional[bool] = None,
     cache: bool = False,
 ) -> Completion:
@@ -362,6 +364,15 @@ def chat(
     from a low-quality answer: a reviewer that could not be reached has not
     voted, and must not be counted as a dissent.
     """
+    # None means "whatever config says", so the transport defaults live in one
+    # place with the rest of the tunables instead of in this signature.
+    _p = config.get().provider
+    temperature = _p.temperature if temperature is None else temperature
+    max_tokens = _p.default_max_tokens if max_tokens is None else max_tokens
+    timeout = _p.timeout_secs if timeout is None else timeout
+    num_ctx = _p.num_ctx if num_ctx is None else num_ctx
+    max_retries = _p.max_retries if max_retries is None else max_retries
+
     backend, model = split_model(model_spec)
     fn = _BACKENDS[backend]
     last: Optional[Exception] = None

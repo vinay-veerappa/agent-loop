@@ -32,6 +32,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import config
 from .profiles import Profile
 from .providers import Completion, ProviderError, chat
 
@@ -357,7 +358,8 @@ def _generate_and_write(
     ]
 
     try:
-        out = chat(implementer, history, max_tokens=8000)
+        cfg = config.get().mode("docs")
+        out = chat(implementer, history, max_tokens=cfg.max_tokens, think=cfg.think)
     except ProviderError as exc:
         result["error"] = str(exc)
         return result

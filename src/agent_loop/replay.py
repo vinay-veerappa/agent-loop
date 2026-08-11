@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import arbiter as arbiter_mod
+from . import config
 from . import profiles
 from ._io import read_text_verbatim
 from .loop import review_panel, parse_blocks
@@ -47,7 +48,7 @@ def run_replay(
     profile: profiles.Profile,
     reviewers: List[str],
     arbiter_model: str,
-    max_rounds: int = 4,
+    max_rounds: int = 0,
 ) -> Dict[str, Any]:
     """Replay a recorded ticket against the current panel + arbiter.
 
@@ -61,6 +62,10 @@ def run_replay(
         - flipped: whether the verdict changed
         - rounds: list of per-round replay results
     """
+    # 0 means "ask config". A literal default here would be a fourth copy of the
+    # round limit; `impl_files[:0]` would also silently replay nothing.
+    max_rounds = max_rounds or config.get().loop.max_rounds
+
     # Load the recorded result
     result_path = ticket_dir / "result.json"
     if not result_path.exists():
@@ -125,7 +130,7 @@ def run_replay(
             profile.reviewer_system,
             art_root,
             rnd_idx,
-            deadline_secs=1800,
+            deadline_secs=config.get().loop.panel_deadline_secs,
         )
 
         all_findings = [f for v in panel.votes if v.counted for f in v.finding_list]
@@ -214,7 +219,7 @@ def run_replay_corpus(
     profile: profiles.Profile,
     reviewers: List[str],
     arbiter_model: str,
-    max_rounds: int = 4,
+    max_rounds: int = 0,   # 0 = use config.loop.max_rounds (resolved in run_replay)
 ) -> Dict[str, Any]:
     """Replay an entire corpus of recorded tickets.
 

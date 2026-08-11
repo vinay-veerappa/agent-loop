@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from . import config
 from .profiles import Profile
 from .providers import Completion, ProviderError, chat
 
@@ -83,7 +84,8 @@ def run_brainstorm(
     ]
 
     try:
-        out = chat(implementer, history, max_tokens=8000)
+        cfg = config.get().mode("brainstorm")
+        out = chat(implementer, history, max_tokens=cfg.max_tokens, think=cfg.think)
     except ProviderError as exc:
         result["error"] = str(exc)
         return result

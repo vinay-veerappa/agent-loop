@@ -11,6 +11,10 @@ build/
 logs/
 *.log
 
+# Local config override. agent_loop.config.example.json IS tracked; the live one
+# is per-machine (model availability, budgets tuned to your account).
+agent_loop.config.json
+
 # docs mode writes here (--docs-out overrides). Generated documents are model
 # output, not source: they are regenerated on demand and must not be reviewed
 # as if a human wrote them.

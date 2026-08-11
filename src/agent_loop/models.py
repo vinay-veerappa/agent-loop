@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from . import config
+
 
 @dataclass
 class ModelConfig:
@@ -112,13 +114,38 @@ class ModelRegistry:
         ) / 1e6
 
 
-# Default registry. Consumers override by registering their own configs.
+# Default registry, built FROM config.py rather than repeating it. These four
+# entries were previously literals here, duplicating the literals at the call
+# sites that spend them -- see config.py for why that went wrong and for the
+# reason behind each number.
 DEFAULT_REGISTRY = ModelRegistry()
-# 48000 was not enough: on a two-region ticket this model spent 125,070 chars on
-# reasoning and returned empty content, so the run failed as
-# IMPLEMENTER_UNREACHABLE without ever emitting a patch. think=True is deliberate
-# (it is planning a patch), so the budget has to cover reasoning AND the answer.
-DEFAULT_REGISTRY.register(ModelConfig("kimi-k2.7-code:cloud", "implementer", "strong-coder", 0.0, think=True, max_tokens=96000))
-DEFAULT_REGISTRY.register(ModelConfig("glm-5.2:cloud", "reviewer", "fast", 0.0, think=False, max_tokens=24000))
-DEFAULT_REGISTRY.register(ModelConfig("deepseek-v4-pro:cloud", "arbiter", "strong-reasoner", 0.0, think=False, max_tokens=24000))
-DEFAULT_REGISTRY.register(ModelConfig("glm-5.2:cloud", "compactor", "cheap", 0.0, think=False, max_tokens=8000))
+
+
+def registry_from_config(cfg: "config.Config") -> ModelRegistry:
+    """A registry populated from a Config. One conversion, no duplicated values."""
+    reg = ModelRegistry()
+    for role, rs in cfg.roles.items():
+        reg.register(
+            ModelConfig(
+                rs.model, role, rs.capability, rs.cost_per_1m_out,
+                think=rs.think, max_tokens=rs.max_tokens,
+                cost_per_1m_in=rs.cost_per_1m_in,
+            )
+        )
+    return reg
+
+
+def reload_default_registry(cfg: "Optional[config.Config]" = None) -> ModelRegistry:
+    """Repopulate DEFAULT_REGISTRY in place from `cfg` (default: the active one).
+
+    In place, because callers hold a reference to DEFAULT_REGISTRY; rebinding the
+    module global would leave them reading a stale registry.
+    """
+    src = registry_from_config(cfg or config.get())
+    DEFAULT_REGISTRY._configs = {  # noqa: SLF001 - same module family, by design
+        role: list(cfgs) for role, cfgs in src._configs.items()
+    }
+    return DEFAULT_REGISTRY
+
+
+reload_default_registry(config.DEFAULTS)

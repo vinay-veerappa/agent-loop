@@ -9,11 +9,11 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**185/185 tests pass on Python 3.12 and 3.14.** Current tag: **`v0.2.2`**, which
+**215/215 tests pass on Python 3.12 and 3.14.** Current tag: **`v0.3.0`**, which
 is what tvDownloadOHLC pins and has installed.
 
 Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
-the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.2.2` or later.
+the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.2.3` or later.
 
 ### 2026-08-10 review — 22 defects found and fixed
 
@@ -121,7 +121,39 @@ right failure, but the capability is still missing. Two candidate fixes:
 
 The F1-F6 patches were landed with `git apply` by hand for exactly this reason.
 
-#### O2. `replay` mode does not hold the prompt constant — HIGH
+#### O2. `replay` mode does not hold the prompt constant — CLOSED (`973f370` + `f3fda21`)
+
+**Fixed.** The loop now records the fully rendered review prompt
+(`r{N}_review_prompt.md`, written after graph context and learning feedback are
+appended — the exact bytes the panel sees) and the rendered arbiter prompt
+(`r{N}_arbiter_prompt.md`, via a new `Adjudication.prompt` set on all four return
+paths). Replay re-sends both verbatim; `arbiter.adjudicate` gained
+`prompt_override` because `build_prompt` cannot reconstruct the original (the
+ticket, diff and round history are not recoverable from a corpus — replay was
+passing the literals `"replay"`/`"replay"`/`""`). Artifacts go to
+`ticket_dir/replay/`, so a replay no longer overwrites the corpus it measures.
+
+Three things worth carrying forward:
+
+* **A corpus with no recorded prompt is refused**, not approximated, and without
+  spending a model call. An unfaithful comparison is worse than none: it looks
+  like a measurement. The F1-F6 corpus predates recording and correctly refuses.
+* **Recording must use `write_text_verbatim`.** A test caught `Path.write_text`
+  translating `
+`→`
+` on Windows, which would have made the recorded prompt
+  differ from the sent prompt on *every line* while looking identical in a diff
+  viewer — byte-for-byte fidelity that wasn't.
+* **Exit codes are three-valued now**: `2` = could not measure, `1` = measured and
+  a verdict flipped, `0` = measured and stable. It was `0 if flipped == 0 else 1`,
+  which ignored errors — and since a legacy corpus now errors by design, that
+  would have made replay a green CI gate measuring nothing. The corpus printout
+  no longer labels an errored ticket `same` for the same reason.
+
+Also closed the rest of O8's replay bullets: `--replay-dir` now exists (the
+module docstring documented it from the start) and the six unused imports are gone.
+
+#### O2 (original). `replay` mode does not hold the prompt constant — HIGH
 
 `replay.run_replay` cannot reconstruct the regions, so it builds its own review
 prompt (`replay.py:84-90`): the implement prompt truncated to 2000 chars plus
@@ -274,7 +306,7 @@ hardcoded and contain nothing project-specific, so generated docs do not match
 any repo's house format. Either inject the skill's conventions into the system
 prompt or add a `Profile.docs_conventions` field. README now says so explicitly.
 
-#### O12. Per-model token budgets in the registry are dead configuration — PARTIALLY FIXED (`2fbf1b6`)
+#### O12. Per-model token budgets in the registry are dead configuration — CLOSED (`2fbf1b6` + config.py)
 
 `ModelConfig.max_tokens` was read in exactly **one** place in the package
 (`compaction.py`). Every other call site hardcoded a literal that happened to
@@ -298,9 +330,22 @@ literal. Kimi's registered budget is now 96000, and the round-3 implement call
 used 52,139 output tokens against 222,413 chars of reasoning, so the old 48000
 ceiling was genuinely the binding constraint.
 
-**Still open (LOW):** the other four modes. Each literal may have been chosen
-deliberately, so they were not changed blind. `ModelConfig.think` should be
-audited the same way.
+**Now fully closed** by `config.py`, which is the single definition of every
+tunable. All five mode literals are gone; `models.DEFAULT_REGISTRY` is built from
+the config rather than repeating it; `providers.chat`'s transport defaults come
+from it; and the three copies of the 1800s panel deadline and the four copies of
+the round limit are one value each.
+
+The `ModelConfig.think` audit is done too, and it found a live hazard: every mode
+called `chat()` with `think` unset, which omits the field and leaves the MODEL's
+default in force — ON for a reasoning model. So `docs` and `brainstorm` were
+running an 8000-token budget shared with an unbounded reasoning prefix, which is
+the 48000 failure in miniature. Every role and mode now declares `think`
+explicitly, and anything that thinks is budgeted for reasoning plus answer.
+
+Two static guards (`test_no_budget_literals_at_call_sites`,
+`test_no_panel_deadline_literals_at_call_sites`) fail the build if a literal
+returns; both were mutation-checked.
 
 #### O13. `--max-rounds 3` was not enough for a two-region ticket — OBSERVATION
 
@@ -325,6 +370,21 @@ command raised `ModuleNotFoundError`), and `requirements.txt` pinned `@v0.1.0`,
 14 commits and ~25 known defects behind. Now pinned to and installed at
 **v0.2.2**. Note `v0.2.0` is a **poisoned tag**: it carries the O9 defect, so it
 is unusable on any Python below 3.13. Do not pin it.
+
+#### O14. `test_graph_freshness_marker_round_trip` is flaky — LOW
+
+Observed failing once in a full-suite run on Python 3.12 and passing both in
+isolation and on the next full run, so it is a flake rather than a regression.
+
+Mechanism: `check_graph_freshness` compares `newest_source_mtime > last_indexed`,
+and `mark_graph_fresh` records `time.time()` immediately after the test writes
+`a.py`. When the filesystem's mtime granularity rounds the write up into the same
+tick as the marker, the comparison reports `stale` where the test asserts
+`fresh`. Pre-existing and unrelated to the config work.
+
+Fix when convenient: have the test advance the marker deliberately rather than
+racing the clock. A flaky gate is worse than a missing one — it teaches people to
+re-run instead of read.
 
 ### Note on graph re-index for tvDownloadOHLC
 

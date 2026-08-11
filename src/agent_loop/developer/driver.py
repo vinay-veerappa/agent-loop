@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from .. import arbiter, gates, profiles, regions, workspace
+from .. import arbiter, config, gates, profiles, regions, workspace
 from ..providers import Completion, ProviderError, chat
 from .tools import execute_tool, render_tool_docs
 
@@ -150,7 +150,8 @@ def _run_turns(
         try:
             # Multi-turn tool loop: the defect prompt at turns[0] never changes,
             # so it is worth a cache breakpoint across turns. See providers.
-            out = chat(implementer, history, max_tokens=16000, cache=True)
+            _c = config.get().mode("developer")
+            out = chat(implementer, history, max_tokens=_c.max_tokens, think=_c.think, cache=True)
         except ProviderError as exc:
             result["verdict"] = "IMPLEMENTER_UNREACHABLE"
             result["error"] = str(exc)
@@ -276,7 +277,7 @@ def _run_turns(
                 )
                 panel = review_panel(
                     reviewers, review_prompt, profile.reviewer_system, art, 1,
-                    deadline_secs=1800,
+                    deadline_secs=config.get().loop.panel_deadline_secs,
                 )
                 desc = ", ".join(f"{v.model.split(':')[0]}={v.status}({v.blockers})" for v in panel.votes)
                 print(f"  [panel] {panel.verdict or 'INVALID'}  [{desc}]")
