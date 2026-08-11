@@ -10,14 +10,14 @@ not current state. When two sections disagree, the higher-numbered one wins.
 
 ---
 
-## START HERE — checkpoint, 2026-08-11 (session 5)
+## START HERE — checkpoint, 2026-08-11 (session 6)
 
 | | |
 |---|---|
-| `main` | see `git log --oneline -1`; clean at last commit, **nothing unpushed** |
-| Tag | **`v0.6.2`**, on origin. Verified green on 3.12 *and* 3.14 |
-| Tests | **542 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
-| Consumer | tvDownloadOHLC **pins and has installed `v0.6.2`**. Do not trust a number written here — it went stale three times in session 4 and moved eight times in session 5. Run `git log --oneline v0.6.2..HEAD` for how stale the TAG is (non-empty means cut a new one rather than pinning this) |
+| `main` | see `git log --oneline -1`; clean at last commit |
+| Tag | **`v0.6.2`** is on origin but is now STALE — session 6 landed on top of it. Cut `v0.6.3` before re-pinning the consumer |
+| Tests | **551 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Consumer | tvDownloadOHLC **pins and has installed `v0.6.2`**, so it does NOT yet have the blocker rule (§14). Do not trust a number written here — it went stale three times in session 4 and moved eight times in session 5. Run `git log --oneline v0.6.2..HEAD` for how stale the TAG is (non-empty means cut a new one rather than pinning this) |
 
 **Session 5 was one long exercise of `--feature` → `--mode test` → the loop against a
 real feature in the consumer repo (the NT8 trade copier), which is what §12i asked
@@ -35,7 +35,7 @@ it by quoting a short version:
 | | |
 |---|---|
 | **O28** | Second labelled arbiter corpus. **The bottleneck is the LABELLING, not the running** — someone must judge which findings were actually correct. The corpus today is literally one case: `o3.patch` + one finding set + one shipped ruling. The 12-entry results JSON is 12 model CONFIGS against that one case, not 12 cases. |
-| **O20** | *Mitigated, not closed.* Arbiter 3/5. **Cannot close before O28**, because O28 is the measurement it would need. |
+| **O20** | *Mitigated further 2026-08-11 (session 6), still not closed.* **`SHIP` is now unavailable while any BLOCKER stands dismissed** — the arbiter can reject one, but rejecting one and shipping is converted to ESCALATE (§14). In practice SHIP now requires that no BLOCKER was filed at all. The arbiter is no better at judging; the damage a bad judgement can do is bounded. Arbiter still 3/5, and **cannot close before O28**, because O28 is the measurement it would need. |
 | **O5** | `Finding.signature` breaks on suffix changes, so `thrashing()` can fire on a converging ticket. Its planned fix delegates dedup to the arbiter — **revisit that premise first**, given O20. |
 | **O21** | Self-authored tests covering half a fix. **Six mutations survived a green suite this session**, all found by mutating and none by reading. Wants a design answer, not a patch. |
 | **O10** | Closed for wiring, **open for conventions** — docs mode does not inject the house format, so generated docs need editing. |
@@ -51,18 +51,19 @@ ticket size, re-confirmed when the four-part feature plan exhausted
 
 **Next, in the order argued for:**
 
-1. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
+1. **O28** — the arbiter ranking rests on ONE patch and TWO finding sets. A third
    labelled corpus is worth more than a fifteenth model, and both developer mode
-   and feature planning now produce suitable material every run.
+   and feature planning now produce suitable material every run. ✅ *The change
+   case 2 licensed is done (§14); the measurement it asked for is not.*
 2. **O21** — a self-authored acceptance test can cover half a fix. Not
-   theoretical: **six mutations survived a green suite this session**, every one
+   theoretical: **six mutations survived a green suite in session 5**, every one
    found by mutating and none by reading. Wants a design answer (review the test
    against the diff's blast radius before it locks), not a patch.
 
-Also outstanding and cheap: **cut `v0.5.0` and re-pin the consumer to it.**
-`v0.4.0` is already several fixes stale, so cutting the tag is the cheaper half of
-the job. Until the consumer is re-pinned, O30 still throws its bare
-`FileNotFoundError` in that venv, and none of O23/O31/O33/O34/O36 is present there.
+Also outstanding and cheap: **cut `v0.6.3` and re-pin the consumer to it.**
+`v0.6.2` went stale the moment session 6 landed, so cutting the tag is the
+cheaper half of the job. Until the consumer is re-pinned, an `ARBITER_SHIP` in
+that venv is still reachable over a dismissed BLOCKER (§14).
 Bump `__version__` and `pyproject.toml` together — a test pins them to each other.
 
 **The one lesson session 4 kept re-learning**, in six separate items: *a check
@@ -1096,3 +1097,69 @@ code. The ticket, with its five recorded human corrections, is
 plan/test MODES at 64000. Those are separate knobs; capping only the modes left the
 role at 96000 and the first loop run died on qwen3.5's 65536 ceiling. 64000 fits
 qwen3.5 and is ample for kimi, so a substituted implementer does not break the run.
+
+---
+
+## §14 Session 6 (2026-08-11) — the arbiter can no longer ship over a blocker
+
+One change, the one §13 ended by asking for: *"an unaddressed BLOCKER forces
+ESCALATE rather than permitting SHIP. Not implemented. Do that before anyone runs
+this unattended."*
+
+**The proposal's wording pointed at a check that already existed.** `adjudicate`
+has downgraded SHIP-with-*unruled*-findings to ESCALATE since T3. Case 2 ruled on
+all thirty findings and rejected four real ones, so that check never fired.
+**Ruling on every finding is not the same as ruling well** — which is precisely
+what the older check assumed. The new rule bites on a blocker the arbiter
+addressed and dismissed.
+
+`_blocker_indices` plus a third downgrade: if the recommendation is still SHIP
+after the upheld→REVISE step and any counted reviewer filed a BLOCKER, it becomes
+ESCALATE, carrying the arbiter's own rationale so the human can read why it
+thought the blocker did not hold. An upheld blocker is already REVISE by then, so
+**in practice SHIP now requires that no BLOCKER was filed at all.**
+
+**That is a strong rule and it was chosen deliberately.** Most rounds carry a
+BLOCKER, so most runs that used to print `ARBITER_SHIP` will now print
+`ESCALATED`. The loop already stopped and waited for a human on both, so nothing
+is burned — what changes is that the human is told to decide instead of told a
+model approved it. With 0 of 66 findings upheld across four SHIP rulings, the
+SHIP label was carrying information it did not have.
+
+**BLOCKER only, never `Finding.blocking`.** That property also covers MAJOR, and
+an adversarial reviewer with no stopping rule files a MAJOR nearly every round.
+
+### Two things this session re-taught, both already on the list
+
+* **The fifth inert guard, deleted rather than tested.** The helper first
+  excluded upheld blockers (`i not in upheld`). Removing the clause changed no
+  outcome — it cannot be reached with an upheld blocker, because the
+  upheld→REVISE downgrade runs first. Deleted; a test that fails if the two
+  downgrades are swapped is what protects the ordering now.
+* **`assert "BLOCKER" in contract` was vacuous** — the word appears throughout
+  the ruling vocabulary, so the *pre-fix* text satisfied it too. That is the
+  "assertion the fallback also satisfies" shape §13's checkpoint names as the
+  most common way to write a useless test. It now pins the rule sentence, and
+  pins it through a consumer-supplied `arbiter_rules` as well.
+
+### The selftest was asserting the old contract, and said so immediately
+
+`selftest` dropped to 11/12 on the first run after the change: its *"dissent +
+arbiter rejects every finding -> ARBITER_SHIP"* scenario feeds a `[BLOCKER]`
+dissent and a rejecting arbiter, which is now the escalation case exactly. **The
+loop's own end-to-end check had encoded shipping over a dismissed blocker as
+correct behaviour.** The SHIP scenario now dissents at `[MINOR]`, and a new
+scenario pins the rule through the whole loop rather than only through
+`adjudicate` — 13/13.
+
+That is worth more than the unit tests here: it is the only place the rule is
+proved to survive `run_ticket`'s verdict handling, where SHIP and ESCALATE take
+different branches.
+
+Six mutations: five killed, one deleted as inert. 551 pass on 3.12 and 3.14,
+selftest 13/13.
+
+**What this does NOT do.** The arbiter is no better at adjudicating. O20 stays
+open, O28 still needs a third labelled case, and `ARBITER_SHIP` on the NT8
+profile is still not a review — it is now merely a claim that no reviewer thought
+anything blocked.

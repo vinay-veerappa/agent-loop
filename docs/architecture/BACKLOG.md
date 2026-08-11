@@ -2071,4 +2071,64 @@ use the real `Completion`.
 
 ---
 
-*End of backlog. Update as items are completed.*
+*End of backlog. Update as items are completed.*### 2026-08-11 (session 6) — the arbiter can no longer ship over a blocker: O20
+
+The change O28's case 2 proposed and did not implement. **Not a new defect ID**:
+it is the decision the two labelled cases license, taken.
+
+**The gap was narrower than the proposal's wording suggests.** BACKLOG said "an
+unaddressed BLOCKER forces ESCALATE", but `adjudicate` has downgraded
+SHIP-with-*unruled*-findings to ESCALATE since T3 — and case 2 ruled on all
+thirty findings before rejecting four real ones. Ruling on every finding is not
+the same as ruling well, which is exactly what that older check assumed. So the
+rule had to bite on a blocker the arbiter **addressed and dismissed**.
+
+`_blocker_indices` + a third downgrade in `adjudicate`: if the recommendation is
+still SHIP after the upheld→REVISE step, and any counted reviewer filed a
+BLOCKER, the verdict becomes ESCALATE. An upheld blocker has already become
+REVISE by then, so the practical rule is **SHIP requires that no BLOCKER was
+filed at all.**
+
+**The cost is deliberate and small.** Most rounds carry a BLOCKER, so most runs
+that used to end `ARBITER_SHIP` will now end `ESCALATED`. The loop already
+stopped and waited for a human on both, so no rounds are burned; what changes is
+that the human is told to decide rather than told a model approved it. Given
+0 of 66 findings upheld across four SHIP rulings, the SHIP label was carrying
+information it did not have.
+
+**BLOCKER only, not `Finding.blocking`** — that property also covers MAJOR, and
+an adversarial reviewer with no stopping rule produces a MAJOR nearly every
+round. Escalating on those escalates everything.
+
+The contract now states the rule to the arbiter as well, because a mechanical
+downgrade the model cannot see produces a verdict contradicting its own
+rationale. The arbiter's rationale is carried into the escalation verbatim: why
+it thought the blocker did not hold is the thing the human needs to read.
+
+**Six mutations, five killed and one deleted.** The survivor is worth recording:
+the helper (then `_dismissed_blockers`, now `_blocker_indices`) was first written
+to exclude upheld blockers (`i not in upheld`), and removing that clause changed
+no outcome — it cannot be
+reached with an upheld blocker, because the upheld→REVISE downgrade runs first.
+Deleted rather than kept as decoration; the ordering is protected by a test that
+fails if the two downgrades are swapped. That is the fifth inert guard this
+project has deleted rather than tested.
+
+**A test in the first draft was vacuous and was caught by the recurring shape.**
+`assert "BLOCKER" in contract` passes on the word's incidental uses in the ruling
+vocabulary — an assertion the *pre-fix* text also satisfies. It now pins the rule
+sentence, and pins it through a consumer-supplied `arbiter_rules` too, since
+those replace `DEFAULT_ARBITER_RULES` but not the contract.
+
+**`selftest` failed on the first run and was right to.** Its *"dissent + arbiter
+rejects every finding -> ARBITER_SHIP"* scenario feeds a `[BLOCKER]` dissent to a
+rejecting arbiter — the escalation case exactly. The loop's own end-to-end check
+had encoded shipping over a dismissed blocker as correct. The SHIP scenario now
+dissents at `[MINOR]`; a new scenario pins the rule through `run_ticket`, where
+SHIP and ESCALATE take different branches. 13/13.
+
+**O20 is not closed by this.** The arbiter is no better at judging; the damage a
+bad judgement can do is bounded. O28 — a third labelled case — is still the
+measurement, and still blocked on human labelling.
+
+---

@@ -24,6 +24,10 @@ Authority is deliberately bounded:
     lock-scope violations are facts, not opinions.
   * It cannot ship. It recommends; a human runs --apply. On an addon that moves
     real money, a model does not get the last word on naked-position risk.
+  * It cannot dismiss a BLOCKER on its own authority. Rejecting one is allowed;
+    rejecting one *and* recommending SHIP is not, because two labelled corpus
+    cases show it doing exactly that to findings that were correct. See
+    `_blocker_indices`.
 """
 from __future__ import annotations
 
@@ -71,11 +75,18 @@ Rule on EVERY finding, using its number:
                  introducing new ones.
 
 Then recommend:
-  SHIP     - no upheld findings. The patch closes its defect and introduces no new risk.
+  SHIP     - no upheld findings AND no reviewer filed a BLOCKER. The patch closes its defect and
+             introduces no new risk.
   REVISE   - upheld findings remain; the implementer gets ONLY those.
   ESCALATE - you cannot rule safely: the reviewers disagree on a load-bearing fact, the patch is
              too large to reason about, or the ticket itself looks wrong. Say what a human must
              decide.
+
+A BLOCKER you believe is wrong does NOT license SHIP. Rule it REJECTED and say why the mechanism
+does not hold, then recommend ESCALATE so a human confirms it. The reviewers do over-produce -- but
+a blocking finding they got right and you dismissed is the one mistake this loop cannot absorb, and
+it has happened. If you recommend SHIP over a BLOCKER anyway it is converted to ESCALATE and your
+rationale is handed to a human as-is, so write it for them.
 
 You are the last automated gate before a human, not a rubber stamp.
 
@@ -235,6 +246,33 @@ def build_prompt(
     return "\n".join(parts)
 
 
+def _blocker_indices(findings: Sequence[Any]) -> List[int]:
+    """1-based indices of the BLOCKER-severity findings.
+
+    BLOCKER only, not `Finding.blocking` -- that property also covers MAJOR, and
+    an adversarial reviewer with no stopping rule produces a MAJOR on almost
+    every round, so escalating on those would escalate everything and the
+    arbiter would stop meaning anything at all.
+
+    It does NOT exclude upheld blockers, because it cannot be reached with one:
+    its only caller runs after `rec == SHIP and any(UPHELD)` has already become
+    REVISE, so no UPHELD ruling survives to that point. An `i not in upheld`
+    clause was written here first and SURVIVED mutation -- deleted rather than
+    kept as decoration. What protects the ordering is a test
+    (`test_an_upheld_blocker_still_revises_rather_than_escalating`), which fails
+    if the two downgrades are ever swapped.
+
+    `getattr` rather than `f.severity` for the replay path, which is the one
+    caller that can reach here without `build_prompt` having already required
+    the attribute. A finding with no severity is not treated as a blocker.
+    """
+    return [
+        i
+        for i, f in enumerate(findings, 1)
+        if str(getattr(f, "severity", "")).upper() == "BLOCKER"
+    ]
+
+
 def _arbiter_think() -> bool:
     """Whether the arbiter reasons before answering, per config.
 
@@ -337,6 +375,31 @@ def adjudicate(
         )
     if rec == SHIP and any(r.verdict == UPHELD for r in rulings):
         rec = REVISE  # self-contradiction: upheld findings cannot ship
+
+    # O28/O20: SHIP is unavailable while a BLOCKER stands dismissed. Ruling on
+    # every finding is not the same as ruling WELL, which is what the check
+    # above assumed -- corpus case 2 ruled on all thirty and rejected four real
+    # defects, one of them a position flip stated with its losing sequence. An
+    # upheld blocker has already become REVISE by here, so what remains is a
+    # blocker the arbiter addressed and waved through.
+    if rec == SHIP:
+        dismissed = _blocker_indices(findings)
+        if dismissed:
+            named = ", ".join(f"#{i}" for i in dismissed)
+            return Adjudication(
+                True,
+                ESCALATE,
+                rulings,
+                rationale=(
+                    f"Arbiter recommended SHIP while dismissing BLOCKER finding(s) {named}. "
+                    "Whether a blocking finding holds is a call a human makes here. "
+                    f"Arbiter's rationale: {_section(text, 'RATIONALE')}"
+                ),
+                settled=settled_out,
+                raw=text,
+                usage=out.usage_line(),
+                prompt=prompt,
+            )
 
     return Adjudication(
         True, rec, rulings, _section(text, "RATIONALE"), settled_out, text,

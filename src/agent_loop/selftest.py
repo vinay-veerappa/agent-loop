@@ -58,6 +58,11 @@ REVISE_BODY = (
     "<<<FINDINGS>>>\n- [BLOCKER] X: invented problem\n<<<END FINDINGS>>>\n"
     "<<<REQUIRED>>>\n- do something\n<<<END REQUIRED>>>"
 )
+# The same dissent below BLOCKER severity. Since session 6 an arbiter cannot
+# recommend SHIP over a dismissed BLOCKER, so the scenario that exercises the
+# SHIP path end-to-end needs a dissent that does not trip that rule -- and the
+# scenario that exercises the new rule needs one that does. Both exist below.
+REVISE_MINOR_BODY = REVISE_BODY.replace("[BLOCKER]", "[MINOR]")
 
 
 def _identity_patch(ticket: Dict) -> str:
@@ -292,8 +297,16 @@ def main() -> int:
         scenario(
             "dissent + arbiter rejects every finding -> ARBITER_SHIP (human signs off)",
             t3_states, R,
-            {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "REJECTED", "SHIP")},
+            {"rev-a": APPROVE_BODY, "rev-b": REVISE_MINOR_BODY,
+             ARB: _arbiter_body(1, "REJECTED", "SHIP")},
             "ARBITER_SHIP", arbiter_model=ARB,
+        ),
+        scenario(
+            "arbiter rejects a BLOCKER and ships anyway -> ESCALATED, not ARBITER_SHIP",
+            t3_states, R,
+            {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY,
+             ARB: _arbiter_body(1, "REJECTED", "SHIP")},
+            "ESCALATED", arbiter_model=ARB,
         ),
         scenario(
             "dissent + arbiter upholds -> keeps revising, never auto-ships",
