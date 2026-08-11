@@ -1,4 +1,7 @@
 """Test that the package imports and the core interfaces are sound."""
+import re
+from pathlib import Path
+
 from agent_loop.profiles import Profile, register, get, DEFAULT_PROTECTED
 from agent_loop.models import ModelConfig, ModelRegistry, DEFAULT_REGISTRY
 from agent_loop.gates import GateResult, check_protected_paths, check_static
@@ -7,9 +10,22 @@ from agent_loop.providers import ProviderError, chat, Completion, split_model
 
 
 def test_import():
-    """Package imports without error."""
+    """Package imports, and __version__ is the single source of truth.
+
+    Asserting a literal here means every release breaks this test for no
+    reason. The invariant that matters is that __version__ and the version
+    setuptools ships from pyproject.toml cannot drift apart -- a mismatch
+    makes an installed wheel report a version it is not.
+    """
     import agent_loop
-    assert agent_loop.__version__ == "0.1.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", agent_loop.__version__), agent_loop.__version__
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), re.M)
+    assert declared, "pyproject.toml has no version"
+    assert agent_loop.__version__ == declared.group(1), (
+        f"__init__.py says {agent_loop.__version__}, pyproject.toml says {declared.group(1)}"
+    )
 
 
 def test_profile_dataclass():

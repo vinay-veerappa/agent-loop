@@ -1,3 +1,3 @@
 """agent-loop: language-agnostic AI agent loop for software engineering."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

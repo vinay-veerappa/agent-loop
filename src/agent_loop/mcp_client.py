@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent_loop import __version__
+
 
 # --------------------------------------------------------------------------
 # MCP client
@@ -74,7 +76,7 @@ class MCPClient:
         resp = self._send("initialize", {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "agent-loop", "version": "0.1.0"},
+            "clientInfo": {"name": "agent-loop", "version": __version__},
         })
         if resp is None:
             raise RuntimeError(f"MCP server {self.server_name} did not respond to initialize")
