@@ -343,6 +343,10 @@ if a file you did not touch is staged, another session is mid-edit in it.
 | `08ad362` | **developer mode is test-first** — the red phase |
 | `679962c` | the model can see WHY a test failed |
 | `cf88846` | **O3 closed** |
+| `2c326ca` | three reviewer findings the arbiter wrongly rejected |
+| `f97492f` | **arbiter chosen by measurement**; `think` read from config |
+| `4546db7` | the compactor read an eighth of what it summarised |
+| `89c7c22` | **MODEL_CATALOG**; a mode can name its own model |
 
 **Verified green:** 255 tests on 3.14, selftest 12/12, and every load-bearing
 guard mutation-checked. **Not verified:** the suite has not been re-run on
@@ -354,18 +358,40 @@ and not fixed: O20 (arbiter), O21 (half-covered acceptance tests), O22
 (one-member default panel), O23 (four small ones). O22 in particular needs a
 schema decision, not a patch.
 
-**The model/role audit** the last session asked for, since it is short:
+**The model/role audit**, now measured rather than argued:
 
-| role | model | verdict |
+| role | model | basis |
 |---|---|---|
-| implementer | `kimi-k2.7-code:cloud`, 96000, think=True | **right.** Localised correctly across 34 turns unaided; it is the code-specialised model available |
-| reviewer | `glm-5.2:cloud`, 24000, think=False | model fine, **count wrong** — one member, see O22. Add `minimax-m3:cloud` (different family) |
-| arbiter | `deepseek-v4-pro:cloud`, 24000, think=False | family separation correct; **judgement is the problem**, see O20 |
-| compactor | `glm-5.2:cloud`, 8000, think=False | fine; bounded output by construction |
+| implementer | `kimi-k2.7-code:cloud`, 96000, think=True | **measured.** Localised O3 unaided across 34 turns, correct file and field |
+| reviewer | `glm-5.2:cloud`, 24000, think=False | **measured.** Five correct findings on the O3 patch. Model right, **count wrong** — one member, O22 |
+| arbiter | `mistral-large-3:675b-cloud`, 24000, think=False | **measured.** Best of ten arms, 3/5 on all four runs. Was deepseek-v4-pro, which scored 0/5 twice |
+| compactor | `glm-5.2:cloud`, 8000, think=False | shape is right (bounded extraction); see O24 for the benchmark |
 
 No `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set, so ollama is the only live
-backend and the choice is bounded by what `ollama list` shows. All four assigned
-models exist there.
+backend. `MODEL_CATALOG` in config.py now records what every model IS —
+parameters, context, modalities, thinking/tools support, cost — harvested from
+`ollama show`, with guards that fail the build when config and catalogue
+disagree.
+
+**Three things to carry into any future model decision**, all from BACKLOG O20:
+
+1. **Size does not predict quality for adjudication.** A 32B model beat a 1.6T
+   one and both Qwens on the arbiter benchmark. Measure; do not reason from
+   parameter counts.
+2. **Role competence does not transfer.** glm-5.2 is excellent at generating
+   findings and poor at adjudicating the same ones. "Strongest model" is not a
+   single axis.
+3. **`think=True` is not a free upgrade.** It did not help the arbiter and made
+   glm strictly worse. And `mistral-large-3` has no thinking capability at all,
+   so setting it there is a no-op that reads like a decision.
+
+To re-run either benchmark (both are frozen corpora, no live run needed):
+
+```powershell
+python tests/fixtures/arbiter_bench/run_bench.py            # defaults
+python tests/fixtures/arbiter_bench/run_bench.py qwen3.5:cloud:false:24000
+python tests/fixtures/compactor_bench/run_bench.py          # rejection recall
+```
 
 **Traps not already in §6.**
 
@@ -384,3 +410,15 @@ models exist there.
   built `Completion` objects by hand and none had ever seen a real provider
   response. Same structural cause as O9 and O10. Prefer tests that drive
   `main(argv)` or a real response shape.
+* **`main()` reloads config from disk unconditionally.** A test that calls
+  `config.set_active()` before `main()` proves nothing — it is discarded. The
+  first CLI test for per-mode models did exactly that and PASSED while
+  measuring a stale default. Drive it through a real `--config` file.
+* **Ask the tool, do not estimate.** `ollama show <model>` reports parameters,
+  context length and capabilities. It settled in one command that
+  `mistral-large-3` cannot think at all — something two sessions of reasoning
+  about `think` flags had not surfaced.
+* **A defect that only appears at scale needs a test at scale.** The compactor
+  read an eighth of its input, and every existing test used toy histories where
+  that is invisible. The new ones build 160000 chars because that is where
+  Phase 4b actually runs.

@@ -682,6 +682,122 @@ roles), so it is recorded rather than patched.
   it under the MODE budget of 48000. Harmless today — per-turn output is small —
   but the two numbers are unrelated by accident rather than by decision.
 
+### 2026-08-10 (session 3, later) — the arbiter measured, models catalogued: O20 partly closed, O24-O26
+
+#### O20. Arbiter reliability — MITIGATED (`f97492f`), not closed
+
+Measured rather than argued. The session produced a **labelled** test case: glm-5.2
+raised six findings on the O3 patch, five verified correct by hand (four of them
+fixed in `2c326ca`). Metric: of those five, how many does an arbiter uphold?
+Corpus frozen at `tests/fixtures/arbiter_bench/`, n=2 per arm.
+
+| model | size | correct upheld | ruling |
+|---|---|---|---|
+| **mistral-large-3** | 675B | **3/5 on all 4 runs** | REVISE |
+| gemma4:31b | 32B | 1/5, 1/5 | REVISE |
+| glm-5.2 | 756B | 0/5, 1/5 | REVISE |
+| qwen3.5 | 397B | 0/5, 0/5 | REVISE, SHIP |
+| qwen3.5:397b | 397B | 0/5, 0/5 | SHIP |
+| minimax-m3 | — | 0/5, 0/5 | SHIP |
+| deepseek-v4-flash | 304B | 0/5, 0/5 | SHIP |
+| deepseek-v4-pro | 1.6T | 0/5, 0/5 | SHIP |
+
+Four results worth keeping:
+
+1. **The benchmark validated itself.** deepseek-v4-pro (the shipped default)
+   reproduced its live failure exactly and deterministically — SHIP on a patch
+   with five real defects, twice, upholding none. O20 was never a fluke.
+2. **Size does not predict adjudication quality.** A 32B model beat a 1.6T one
+   and both Qwens. Do not pick an arbiter by parameter count.
+3. **`think=True` did not help and is not a budget artifact** — both arms
+   returned complete parseable recommendations at 64000. On glm it was strictly
+   WORSE, flipping REVISE to SHIP on both runs.
+4. **Role competence does not transfer.** glm-5.2 is excellent at GENERATING
+   findings (five correct) and poor at ADJUDICATING the same ones (≤1 upheld).
+   It stays on the panel; it was not promoted.
+
+Arbiter is now `mistral-large-3:675b-cloud`. **Still open**, hence mitigated
+rather than closed: 3/5 is an improvement, not a solution, and mistral misses
+both findings about TEST quality — the class that let a tautological assertion
+through. Do not read its REVISE as a thorough review.
+
+Also fixed here: `adjudicate` hardcoded `think=False` while config separately
+declared `think=False` for the arbiter. They agreed by coincidence — the exact
+failure config.py exists to end — so the config flag did nothing.
+
+#### O6. Does the panel earn its cost — ANSWERED: yes
+
+O6 recorded that two reviewers produced zero findings across six F1-F6 patches.
+On the O3 patch **glm-5.2 produced five correct findings**, including a
+tautological assertion in a generated acceptance test that had already been
+committed. The panel is not the weak link; the arbiter was. Fixed in `2c326ca`:
+
+* the generated test's `out.count("test") == 0 or ...` assertion, which passed
+  whenever the header appeared after the first "test" anywhere in the report;
+* `Counter.most_common()` leaving ties in insertion order — same data in a
+  different ledger order printed a different report;
+* a **third** `append_ledger` site: `review_mode.py` writes an entry with no
+  gate BY DESIGN (it runs no gate ladder), so every review-mode entry was
+  counted as "written before the field existed" forever.
+
+#### O24. The compactor read a tenth of what it claimed to summarise — CLOSED (`4546db7`)
+
+Phase 4b fires only once the pruned history exceeds `round_input_token_budget`
+(40000 tokens = 160000 chars). At that exact moment `_llm_summary` cut each
+prior message to 2000 chars and the whole prompt to 20000 — about an eighth —
+and labelled the result `[PRIOR ROUNDS SUMMARY (LLM compacted)]` as though it
+covered everything. The implementer's next round then reasons from an account of
+"what was tried and rejected" that silently omits most of it, which is how a
+loop re-proposes a patch the panel already refused.
+
+The input budget is config now (`loop.compactor_input_token_budget`, 48000),
+sized above the trigger. When it still does not fit, the OLDEST messages are
+dropped WHOLE — half a finding reads as complete and the implementer cannot
+tell. Coverage is stated in the label. `except Exception: return None` reported
+nothing, so a working compactor and a broken one looked identical; failures are
+printed now.
+
+This code has still never run in a real loop (O7): everything converges in
+round 1. The tests use a 160000-char history because the defect is invisible at
+toy sizes.
+
+#### O25. No catalogue of what each model IS — CLOSED (`89c7c22`)
+
+`MODEL_CATALOG` in config.py: parameters, context window, modalities, thinking
+and native-tool-call support, cost — harvested from `ollama show`, not
+estimated — plus `suited` roles, which is a CLAIM and marked MEASURED only where
+it is one. Four guards fail the build when config and catalogue disagree.
+
+Harvesting settled a question the config could not express: **mistral-large-3
+has no thinking capability at all**, so the arbiter's `think=False` is the only
+valid setting rather than a trade-off. A guard now rejects `think=True` on any
+model that cannot think.
+
+Costs: ollama cloud models are billed by SUBSCRIPTION, so `0.0` means "not
+metered per token", NOT free. The Anthropic entries carry real per-token prices
+so that switching a role to one is visibly a cost change.
+
+#### O26. A mode could not choose its own model — CLOSED (`89c7c22`)
+
+`ModeSettings` had `max_tokens` and `think` but no `model`, so every non-patch
+mode ran on the implementer — a CODE-specialised model — including `docs`,
+which writes prose, and `brainstorm`, which enumerates approaches. The right
+answer was unexpressible.
+
+`ModeSettings.model` added, empty meaning "inherit the implementer". **Every
+mode still inherits**: the mechanism was missing, the evidence for changing any
+particular assignment is not. Guards reject a mode pinning a model that is
+uncatalogued, unsuited, or cannot think while `think=True`.
+
+Two traps recorded while testing this:
+
+* `main()` reloads config from disk unconditionally, so a test that calls
+  `config.set_active()` before `main()` proves nothing — it is discarded. The
+  first version of the CLI test did exactly that and passed while measuring a
+  stale default. Drive it through a real `--config` file.
+* All mode budgets fit their models' context windows; the implementer ROLE is
+  budgeted 96000 while developer MODE runs it at 48000 (O23).
+
 ---
 
 ## 3. Missing modes (deferred per the plan)
