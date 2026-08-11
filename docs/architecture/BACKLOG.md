@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**306/306 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**318/318 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
 has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
 
@@ -963,7 +963,31 @@ passes arguments that match its `run_*` signature, so the O10 defect class
 (`_docs` calling `run_docs` positionally against a mismatched signature) is not
 present here. The defects below are all behavioural.
 
-#### O33. Plan mode's output cannot be consumed by anything — HIGH, OPEN
+#### O33. Plan mode's output cannot be consumed by anything — CLOSED
+
+**Fixed in two halves**, because either alone leaves a trap:
+
+* `cli.load_tickets()` is now the ONE loader both call sites use. It accepts the
+  wrapper `{"tickets": [...]}`, a bare list, or a single bare ticket object —
+  that last shape being every `plan.json` already on disk — and raises
+  `TicketFileError` naming the file and the expected shapes instead of a
+  `KeyError` from inside a dict subscript. Both CLI paths return exit 2 with a
+  message.
+* Plan mode writes the canonical wrapper.
+
+12 acceptance tests, driving `main(argv)` for the two wired paths. Verified on
+the real artifact: the bare `plan.json` from the O7 run now lists.
+
+**A mutation survived the first pass** and is worth recording: deleting the
+per-ticket `id` validation left all ten tests green, because
+`test_an_object_without_an_id_is_not_mistaken_for_a_ticket` is caught by the
+SHAPE branch and never reaches the per-ticket check. A twelfth test covers a
+well-formed wrapper containing a malformed ticket. That is O21 in miniature,
+found by mutation and not by reading.
+
+Original defect text follows.
+
+#### O33 (original). Plan mode's output cannot be consumed by anything — HIGH
 
 Plan mode's entire purpose is to turn a defect into a ticket the loop can run.
 It writes `logs/agent_loop/PLAN/plan.json` as a **bare ticket object**
@@ -1046,9 +1070,16 @@ prompt += f"Test: {profile.test_cmd or '(none)'}
 "
 ```
 
-No graph context, no source, no regions — `in=264` tokens on a live run. Plan
-mode imports `build_context_slice` and docs mode has `_build_graph_context`;
-brainstorm alone injects nothing.
+No graph context, no source, no regions — `in=264` tokens on a live run.
+
+**Correction (while fixing O33):** brainstorm is not alone. `plan_mode.py:23`
+imports `build_context_slice` and **never calls it** — the import is dead, and
+plan mode builds its prompt from the same four profile fields. That is why the
+live plan run was `in=319` tokens. Only docs mode actually injects context
+(`_build_graph_context`). So the mode whose entire job is to LOCALISE a defect
+in the codebase has never been shown any of it — and it still produced a
+correctly-anchored ticket, which says more about the defect description it was
+given than about the mode.
 
 It still returned a recommendation that reads as authoritative and happened to
 match O22's recorded fix — because the *defect description* named `Config.roles`,

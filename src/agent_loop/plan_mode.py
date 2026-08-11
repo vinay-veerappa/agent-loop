@@ -88,6 +88,16 @@ def run_plan(
     prompt += f"File suffixes: {', '.join(profile.file_suffixes)}\n"
     prompt += f"Build: {profile.build_cmd or '(none)'}\n"
     prompt += f"Test: {profile.test_cmd or '(none)'}\n"
+    # Where tests are ALLOWED to live. Without this the model invents a path:
+    # on the O7 run it emitted `expect_green: tests/test_review_mode.py::...`
+    # for a repo whose tests are all in tests/acceptance/, which is the only
+    # place the test-first machinery may write. A convention the model is never
+    # shown is a convention it cannot honour.
+    if profile.test_sources:
+        prompt += (
+            f"Tests live in: {', '.join(profile.test_sources)}\n"
+            "Every path in `expect_green` MUST match one of those patterns.\n"
+        )
 
     history = [
         {"role": "system", "content": PLAN_SYSTEM},
@@ -206,7 +216,14 @@ def run_plan(
     result["verdict"] = final
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     if result["plan"]:
-        (art / "plan.json").write_text(json.dumps(result["plan"], indent=2), encoding="utf-8")
+        # The WRAPPER shape, not the bare ticket. Plan mode's output exists to be
+        # fed to `--mode test` and `--tickets`, and a bare object made both raise
+        # KeyError: 'tickets' (O33). The loader accepts either shape now, but
+        # writing the canonical one keeps the documented pipeline honest and
+        # makes the file paste-able into a hand-written ticket set.
+        (art / "plan.json").write_text(
+            json.dumps({"tickets": [result["plan"]]}, indent=2), encoding="utf-8"
+        )
         print(f"  PLAN -> {art / 'plan.json'}")
     return result
 

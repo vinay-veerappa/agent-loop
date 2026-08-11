@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O32 closed; O20 mitigated; O21-O23, O28, O31, O33-O35 open |
+| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O32-O33 closed; O20 mitigated; O21-O23, O28, O31, O34, O35 open |
 | Pushed? | **YES** (session 4). `main` and `v0.4.0` are on origin. The 23-commit unpushed backlog described below is cleared |
-| Tests | **306 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
+| Tests | **318 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -605,3 +605,23 @@ failures; it cannot tell a defect-driven failure from a broken test, and prints
     review, minimax raised in `<thinking>` that production profiles also hardcode
     bare `python`, reasoned it out of scope, and emitted `NONE`. It was right
     (O35). The thinking block is worth reading when the verdict is APPROVE.
+
+### §12a O33 closed — the plan→test→loop seam
+
+`cli.load_tickets()` is now the one loader both call sites use. It takes the
+wrapper `{"tickets": [...]}`, a bare list, or a single bare ticket object (every
+`plan.json` already on disk), and raises `TicketFileError` naming the file and
+the expected shapes rather than `KeyError` from inside a subscript. Plan mode
+writes the canonical wrapper. 12 tests; verified on the real O7 artifact.
+
+Two things this turned up:
+
+* **A mutation survived the first pass.** Deleting the per-ticket `id` check left
+  all ten tests green — the "no id" test is caught by the SHAPE branch and never
+  reaches the per-ticket one. O21 in miniature, found by mutating, not reading.
+* **`plan_mode.py:23` imports `build_context_slice` and never calls it.** So
+  plan mode has no codebase context either, which corrects what §12 said about
+  O31: brainstorm is not alone, and only docs mode actually injects context. The
+  mode whose whole job is to LOCALISE a defect has never been shown the code.
+  It still produced a correctly-anchored ticket — which says more about the
+  defect description it was handed than about the mode.

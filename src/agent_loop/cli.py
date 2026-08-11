@@ -24,6 +24,57 @@ from .loop import run_ticket
 from .models import DEFAULT_REGISTRY
 
 
+class TicketFileError(Exception):
+    """A ticket file that cannot be read as tickets."""
+
+
+def load_tickets(path: Path) -> list:
+    """Read a ticket file, accepting every shape anything in this package emits.
+
+    Two call sites used to do `spec["tickets"]` directly. Plan mode writes a
+    BARE ticket object, so `--mode plan` -> `--mode test` and `--mode plan` ->
+    `--tickets` both died on `KeyError: 'tickets'` -- a traceback from inside a
+    dict subscript, naming neither the file nor the expected shape. That is the
+    whole of O33: plan mode's only purpose is to feed the loop, and its output
+    had never been loadable by it.
+
+    Accepted:
+      {"tickets": [...]}   the canonical wrapper, and what plan mode writes now
+      [...]                a bare list
+      {...}                a single bare ticket -- every plan.json already on disk
+
+    A ticket is recognised by having an `id`; that is the field both consumers
+    index on, so anything without one could not be selected or reported anyway.
+    """
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise TicketFileError(f"no such ticket file: {path}") from None
+    except json.JSONDecodeError as exc:
+        raise TicketFileError(f"{path} is not valid JSON: {exc}") from None
+
+    if isinstance(spec, dict) and "tickets" in spec:
+        tickets = spec["tickets"]
+    elif isinstance(spec, list):
+        tickets = spec
+    elif isinstance(spec, dict) and "id" in spec:
+        tickets = [spec]
+    else:
+        raise TicketFileError(
+            f"{path} has no tickets. Expected {{'tickets': [...]}}, a list of "
+            f"tickets, or a single ticket object with an 'id'; "
+            f"found a {type(spec).__name__} with keys "
+            f"{sorted(spec)[:6] if isinstance(spec, dict) else '(n/a)'}."
+        )
+
+    if not isinstance(tickets, list) or not tickets:
+        raise TicketFileError(f"{path} contains no tickets.")
+    missing = [i for i, t in enumerate(tickets) if not isinstance(t, dict) or "id" not in t]
+    if missing:
+        raise TicketFileError(f"{path}: ticket(s) at index {missing} have no 'id'.")
+    return tickets
+
+
 def _list(tickets, profile) -> int:
     """Confirm every ticket's regions still resolve against the current tree."""
     from . import gates
@@ -136,9 +187,12 @@ def _test(args, profile, implementer) -> int:
         print("--mode test needs --tickets (path to the ticket JSON from plan mode)")
         return 2
 
-    spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
-    tickets = spec["tickets"]
-    ticket = tickets[0] if tickets else {}
+    try:
+        tickets = load_tickets(Path(args.tickets))
+    except TicketFileError as exc:
+        print(f"  {exc}")
+        return 2
+    ticket = tickets[0]
     if args.ticket:
         for t in tickets:
             if t["id"] == args.ticket[0]:
@@ -467,8 +521,11 @@ def main(argv=None) -> int:
             return 2
         return 1 if result["flipped"] else 0
 
-    spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
-    tickets = spec["tickets"]
+    try:
+        tickets = load_tickets(Path(args.tickets))
+    except TicketFileError as exc:
+        print(f"  {exc}")
+        return 2
 
     if args.list:
         return _list(tickets, profile)
