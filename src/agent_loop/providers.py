@@ -108,7 +108,7 @@ def split_model(spec: str) -> Tuple[str, str]:
     Ollama model names contain colons themselves ('kimi-k2.7-code:cloud'), so
     only a known backend prefix is treated as one.
     """
-    for backend in ("anthropic", "openai", "ollama", "gemini", "github"):
+    for backend in ("anthropic", "openai", "ollama", "gemini", "github", "agy"):
         if spec.startswith(backend + ":"):
             return backend, spec[len(backend) + 1 :]
     return "ollama", spec
@@ -455,12 +455,119 @@ def _call_github(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     )
 
 
+AGY_BIN_DEFAULT = os.path.join(
+    os.path.expanduser("~"), "AppData", "Local", "agy", "bin", "agy.exe"
+)
+# CreateProcess caps a Windows command line at 32767 characters, and agy takes
+# the prompt as an ARGUMENT. Refuse above this rather than truncate: a silently
+# shortened arbiter prompt would drop the end of the diff and the model would
+# rule on a patch it was never shown.
+_AGY_PROMPT_LIMIT = 30000
+
+
+def _call_agy(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
+    """Antigravity's `agy` CLI: a SUBPROCESS, not an HTTP endpoint.
+
+    Worth using despite that, because it authenticates through the Antigravity
+    subscription rather than an AI Studio key -- so it reaches gemini-3.1-pro
+    without the free tier's input-token quota, and it exposes models the direct
+    API path does not (`agy models`): claude-opus-4-6-thinking,
+    claude-sonnet-4-6, gpt-oss-120b-medium.
+
+    Reasoning effort is part of the model NAME here (gemini-3.1-pro-high), not
+    a separate flag, so `think` is not used. This is why the direct-API arms
+    measured Google's default effort and the agy arms do not: same model,
+    different setting, not comparable.
+
+    Two safety choices, both deliberate:
+
+    * `--sandbox` and a scratch cwd. agy is an AGENT with file and terminal
+      tools, not a completions endpoint. Run in the repo it would be able to
+      edit the code under review.
+    * `--dangerously-skip-permissions` is required for a non-interactive run --
+      without it a permission prompt blocks until the timeout. It is only
+      acceptable BECAUSE of the sandbox and the scratch directory above.
+    """
+    import subprocess
+    import tempfile
+
+    binpath = os.getenv("AGY_BIN", AGY_BIN_DEFAULT)
+    if not os.path.exists(binpath):
+        raise ProviderError(
+            f"agy: CLI not found at {binpath}. Set AGY_BIN, or install Antigravity. "
+            f"`agy models` lists the ids this backend accepts."
+        )
+
+    prompt = "\n\n".join(m.get("content", "") for m in messages if m.get("content"))
+    if len(prompt) > _AGY_PROMPT_LIMIT:
+        raise ProviderError(
+            f"agy: prompt is {len(prompt)} chars, over the {_AGY_PROMPT_LIMIT} limit "
+            f"imposed by the Windows command line (agy takes the prompt as an "
+            f"argument). Refusing rather than truncating -- a shortened prompt would "
+            f"silently drop the end of the diff. Use an HTTP backend for inputs this "
+            f"large."
+        )
+
+    env = os.environ.copy()
+    env["PATH"] = os.path.dirname(binpath) + os.pathsep + env.get("PATH", "")
+    cmd = [
+        binpath, "--sandbox", "--dangerously-skip-permissions",
+        f"--model={model}", f"--print-timeout={timeout}s", "-p", prompt,
+    ]
+    t0 = time.time()
+    # NOT TemporaryDirectory(): agy keeps a file open in its working directory,
+    # so the context manager's cleanup raises WinError 32 -- AFTER a successful
+    # call -- and the exception discards a completion that had already arrived.
+    # Clean up best-effort instead; a leftover temp dir is a smaller problem
+    # than losing the answer.
+    scratch = tempfile.mkdtemp(prefix="agy-")
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout + 30,
+            env=env, cwd=scratch,
+        )
+    except subprocess.TimeoutExpired:
+        raise ProviderError(f"agy: {model} timed out after {timeout}s")
+    except OSError as exc:
+        raise ProviderError(f"agy: could not run {binpath}: {exc}")
+    finally:
+        # Belt and braces. `ignore_errors=True` swallows OSError, which covers
+        # the observed WinError 32, but this runs in a `finally`: ANY exception
+        # escaping here replaces a completed answer with a cleanup failure.
+        # Nothing about removing a temp directory is worth that.
+        import shutil
+        try:
+            shutil.rmtree(scratch, ignore_errors=True)
+        except Exception:  # noqa: BLE001 - see above
+            pass
+
+    text = (proc.stdout or "").strip()
+    if not text:
+        raise ProviderError(
+            f"agy: {model} returned nothing (exit {proc.returncode}). "
+            f"stderr: {(proc.stderr or '')[:400]}"
+        )
+    return Completion(
+        text=text,
+        model=f"agy:{model}",
+        # agy's print mode reports no usage, so these are UNKNOWN, not zero.
+        # Cost and token lines for an agy arm are therefore not comparable with
+        # an HTTP arm's.
+        input_tokens=0,
+        output_tokens=0,
+        stop_reason="stop",
+        secs=round(time.time() - t0, 1),
+        raw={"returncode": proc.returncode, "stderr": (proc.stderr or "")[:2000]},
+    )
+
+
 _BACKENDS = {
     "ollama": _call_ollama,
     "anthropic": _call_anthropic,
     "openai": _call_openai,
     "gemini": _call_gemini,
     "github": _call_github,
+    "agy": _call_agy,
 }
 
 
