@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-loop"
-version = "0.2.2"
+version = "0.2.3"
 description = "Language-agnostic AI agent loop for software engineering: implement -> gate -> review -> arbitrate -> apply"
 readme = "README.md"
 license = {text = "MIT"}
