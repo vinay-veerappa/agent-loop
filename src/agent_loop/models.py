@@ -107,11 +107,11 @@ class ModelRegistry:
         """
         for cfg in self._configs.get(role, []):
             if cfg.name == model:
-                return cfg.max_tokens
+                return _clamp_to_ceiling(model, cfg.max_tokens)
         try:
-            return self.get(role).max_tokens
+            return _clamp_to_ceiling(model, self.get(role).max_tokens)
         except KeyError:
-            return fallback
+            return _clamp_to_ceiling(model, fallback)
 
     def cost_summary(self, role: str, input_tokens: int, output_tokens: int) -> float:
         """Estimate the cost of a call. Returns 0.0 for subscription models."""
@@ -130,6 +130,24 @@ DEFAULT_REGISTRY = ModelRegistry()
 
 # Backend prefixes. `agy:` is a TRANSPORT, not a viewpoint: two agy-routed Claudes
 # are one family, and treating the prefix as the family would count them as two.
+
+def _clamp_to_ceiling(model: str, budget: int) -> int:
+    """Cap a budget at the model's MEASURED output ceiling, if one is recorded.
+
+    A budget has to serve the model configured AND any model substituted for it,
+    so without this it gets set for the weakest of them -- and both directions
+    have killed a run. qwen3.5 refuses 96000 with an HTTP 400; kimi-k2.7-code
+    then died at the 64000 chosen to accommodate qwen, having spent all of it on
+    reasoning (O59).
+
+    A model with no recorded ceiling is returned unchanged. Guessing one would
+    trade a loud refusal for a silently truncated answer.
+    """
+    prof = config.MODEL_CATALOG.get(model)
+    ceiling = getattr(prof, "max_output_tokens", None) if prof else None
+    return min(budget, ceiling) if ceiling else budget
+
+
 def registry_from_config(cfg: "config.Config") -> ModelRegistry:
     """A registry populated from a Config. One conversion, no duplicated values."""
     reg = ModelRegistry()

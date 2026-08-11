@@ -198,6 +198,20 @@ class ModelProfile:
     cost_per_1m_out: float
     suited: Tuple[str, ...]            # roles this is a reasonable choice for
     note: str = ""
+    # The largest `max_tokens` this model will ACCEPT, which is not the same as
+    # what it can read. Recorded ONLY where measured -- from a provider refusal
+    # or the vendor's own limit -- and None everywhere else.
+    #
+    # Without it, one budget number has to serve the configured model AND any
+    # model that might be substituted for it, so it gets set for the weakest of
+    # them and the configured one runs at the substitute's ceiling. Both halves
+    # of that cost a real run: qwen3.5 refused 96000 outright, and kimi-k2.7-code
+    # then died at the 64000 chosen to accommodate qwen (O59).
+    #
+    # None is deliberately NOT a guess. Inventing a ceiling trades a loud HTTP
+    # 400 for a silently truncated answer, and confident wrong readings of an
+    # unverifiable API have cost this project twice already (O24, O34).
+    max_output_tokens: Optional[int] = None
 
 
 # Harvested 2026-08-10. `local` in the note means no network and no
@@ -256,6 +270,7 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         "MEASURED BAD as arbiter, both sizes: 0 of 5 correct findings upheld over "
         "2 runs each, mostly ruling SHIP. Not an arbiter candidate. MEASURED "
         "fine for compaction (7/8, twice).",
+        max_output_tokens=65536,   # MEASURED: HTTP 400 from the provider at 96000
     ),
     "mistral-large-3:675b-cloud": ModelProfile(
         "675B", 262_144, ("text", "vision"), False, True, 0.0, 0.0,

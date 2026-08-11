@@ -2519,3 +2519,38 @@ literal default for a `max_tokens` parameter, so the class cannot come back in a
 fourth role.
 
 ---
+#### O59. One budget had to serve the configured model AND its substitute — CLOSED
+
+The catalogue recorded what a model can READ (`context_tokens`) and never what it
+can WRITE, so a budget was set for the weakest model that might be substituted
+in, and the model actually configured ran at the substitute's ceiling on every
+round. **Both directions killed a run.**
+
+* `qwen3.5` refuses a 96000 budget outright:
+  `HTTP 400 max_tokens (96000) exceeds model's maximum output tokens (65536)`.
+  The consumer therefore capped its implementer at 64000.
+* At that 64000, CM2 round 1 died: `kimi-k2.7-code` emitted **282935 characters
+  of thinking and empty content** at `eval_count=64000`. Earlier rounds had used
+  34889 and 46651, so it was always close — the cap was never sized for the
+  model doing the work.
+
+`ModelProfile.max_output_tokens`, recorded ONLY where measured, and
+`max_tokens_for` clamps to it. Today that is one entry: qwen3.5's 65536, which
+the provider itself stated in a refusal.
+
+**None is deliberately not a guess.** Inventing a ceiling for the rest would
+trade a loud HTTP 400 for a silently truncated answer, and confident wrong
+readings of an API that could not be checked have cost this project twice
+already (O24, O34). `kimi`'s ceiling is still unknown: it accepted 96000 and it
+accepted 64000, and neither tells us where it stops.
+
+A parametrised test asserts any recorded ceiling is `<= context_tokens` — a
+model cannot emit more than it can hold, so a larger number is a transcription
+error rather than a capability. It skips the 22 models with nothing measured,
+which is the honest shape: the suite reports what is known and does not pretend
+about the rest.
+
+Three mutations killed, including "clamp everything to 65536 when unmeasured",
+which is the tempting version of this fix and the one that silently truncates.
+
+---
