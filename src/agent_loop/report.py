@@ -293,12 +293,21 @@ def _print_arbiter_calibration(
         if rounds:
             rounds_per_ticket[ticket] = rounds
 
-    # Compute correlation between upheld count and rounds
-    pairs: List[Tuple[int, int]] = []
+    # Correlate upheld-per-ROUND against rounds, not the raw sum.
+    #
+    # O4: `upheld_per_ticket` sums upheld findings ACROSS rounds while the
+    # y-variable IS the round count, so a ticket that took four rounds had four
+    # rounds' worth of findings recorded against it. The two variables were
+    # mechanically coupled, and the metric therefore reported "the arbiter is
+    # upholding noise" almost regardless of how good the arbiter was. Dividing by
+    # rounds removes that coupling: the question is whether the arbiter upholds
+    # MORE per round on tickets that go on longer, which is a real signal.
+    pairs: List[Tuple[float, int]] = []
     for ticket, upheld in upheld_per_ticket.items():
         rounds = rounds_per_ticket.get(ticket)
         if rounds and rounds > 0:
-            pairs.append((upheld, rounds))
+            upheld_per_round = upheld / rounds
+            pairs.append((upheld_per_round, rounds))
 
     if len(pairs) < 3:
         print(f"\n--- Arbiter calibration ---")
@@ -311,7 +320,11 @@ def _print_arbiter_calibration(
     corr = _pearson(xs, ys)
 
     print(f"\n--- Arbiter calibration ---")
-    print(f"  Correlation (upheld_count vs rounds_to_converge): {corr:.2f}")
+    print(f"  Correlation (upheld_per_round vs rounds_to_converge): {corr:.2f}")
+    print(
+        "  Read with care: this measures an arbiter with two known bad rulings "
+        "(O20), so a clean number here is not evidence the arbiter is sound."
+    )
     if corr < -0.3:
         print(f"  Interpretation: arbiter is filtering real findings (more upheld = fewer rounds)")
     elif corr > 0.3:

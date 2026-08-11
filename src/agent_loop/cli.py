@@ -432,6 +432,13 @@ def main(argv=None) -> int:
         print(f"pruned {len(stale)} worktree(s)")
         return 0
 
+    # `report` reads the ledger. It has no profile to honour and no panel to be
+    # one-membered, so demanding --profile and printing the panel warning were
+    # both noise on the one command you run to find out how the loop is doing.
+    if args.mode == "report":
+        from .report import run_report
+        return run_report(Path("."), last_n=args.report_last)
+
     if not args.profile:
         print("--profile is required (e.g. --profile nt8-riskguard)")
         return 2
@@ -489,10 +496,6 @@ def main(argv=None) -> int:
 
     if args.mode == "docs":
         return _docs(args, profile, implementer)
-
-    if args.mode == "report":
-        from .report import run_report
-        return run_report(Path("."), last_n=args.report_last)
 
     if args.mode == "replay":
         from .replay import run_replay_corpus

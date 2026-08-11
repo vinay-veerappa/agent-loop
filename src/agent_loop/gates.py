@@ -157,7 +157,7 @@ def check_lint(
     secs = round(time.time() - t0, 1)
     if code == 0:
         return GateResult("lint", True, "lint clean", out, secs)
-    d = _digest(out)
+    d = lint_digest(out)
     return GateResult(
         "lint",
         False,
@@ -183,6 +183,40 @@ def _run(cmd: str, cwd: Path, timeout: int) -> Tuple[int, str]:
         cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
     )
     return proc.returncode, (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+
+# A linter diagnostic, across the shapes the profiles actually use. `_DIAG` above
+# matches only MSBuild's `error CS1234`, so on ruff or eslint output NOTHING
+# matched and `_digest` fell through to `output[-4000:]` -- handing the model a raw
+# tail to find the errors in. Feedback the model cannot act on is a gate that only
+# looks like one.
+_LINT_DIAG = re.compile(
+    r"""(
+        \b(?:error|warning)\s+[A-Z]{2}\d{3,}        # MSBuild: error CS1002
+      | :\d+:\d+:\s*[A-Z]+\d+\b                     # ruff: path:12:1: F401
+      | ^\s*\d+:\d+\s+(?:error|warning)\b           # eslint: "  12:1  error ..."
+      | \b(?:error|warning):\s                      # gcc/clang, tsc
+    )""",
+    re.VERBOSE | re.MULTILINE,
+)
+
+
+def lint_digest(output: str, limit: int = 40) -> str:
+    """The diagnostic lines from a linter's output, deduplicated.
+
+    Separate from `_digest` rather than a widened version of it: the compile gate
+    wants MSBuild's shape specifically, and broadening that regex would make the
+    C# compile digest start matching prose. Same reason `op` is not folded into
+    `kind` -- two callers, two jobs.
+    """
+    seen: Set[str] = set()
+    uniq: List[str] = []
+    for ln in output.splitlines():
+        ln = ln.strip()
+        if ln and _LINT_DIAG.search(ln) and ln not in seen:
+            seen.add(ln)
+            uniq.append(ln)
+    return "\n".join(uniq[:limit]) or output[-4000:]
 
 
 def _digest(output: str, limit: int = 40) -> str:

@@ -15,22 +15,39 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | | |
 |---|---|
 | `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
-| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 434 now |
-| Tests | **434 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 448 now |
+| Tests | **448 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
 | Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`**. Do not trust a number written here — it went stale three times in one session. Run `git log --oneline v0.3.0..HEAD \| wc -l` for how far behind the consumer is, and `git log --oneline v0.4.0..HEAD` for how stale the latest TAG is (non-empty means cut `v0.5.0` rather than pinning `v0.4.0`) |
 
-**Closed in session 4:** O7 (modes), O14, O23, O29-O34, **O36**.
-**Open:** O21, O22, O28, O35. O20 mitigated, not closed.
+**Closed in session 4:** O4, O7 (modes), O8, O14, O23, O29-O36.
+**Open:** O21, O22, O28, plus one deliberate remainder — the OpenAI cached-token
+field in O8, which cannot be verified without a key. O20 mitigated, not closed.
 
 **Next, in the order argued for:**
 
 1. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
    labelled corpus is worth more than a fifteenth model, and both developer mode
    and feature planning now produce suitable material every run.
-2. **O22** — the one-member default panel. Needs a schema decision, not a patch;
-   brainstorm mode has already proposed four approaches (see
-   `logs/agent_loop/BRAINSTORM/approaches.md`) and, now that O31 is fixed, did so
-   while actually looking at `config.py`.
+2. **O22** — the one-member default panel. The schema call, stated precisely:
+   **`Config.roles` conflates "the settings for a role" with "the members playing
+   it"** — one-to-one for implementer/arbiter/compactor, one-to-many for reviewer.
+   `ModelRegistry` already stores `role -> [ModelConfig]` and appends, so the
+   registry can hold a panel; `registry_from_config` can only ever put one member
+   in it. Four ways out, in increasing cost:
+   * **A. `RoleSettings.models` becomes a tuple** (keep `model` as the derived
+     single value). Smallest change, matches what the registry already does, and
+     existing config files keep working. No per-member overrides.
+   * **B. a separate `panel: [{model, think, max_tokens}]` on `Config`.** Most
+     expressive; `roles` becomes a template. Two places then define reviewer
+     settings, which invites drift.
+   * **C. key `roles` by MEMBER id with a `role:` field inside.** Arbitrary
+     members with per-member settings, but the key stops being the role name, so
+     `cfg.role("reviewer")` and every `roles["implementer"]` lookup changes
+     meaning and config files in the wild break.
+   * **D. suffixed keys** (`reviewer`, `reviewer_2`), suffix stripped at
+     registration. Cheapest, and makes the key mean "role name, sometimes with a
+     number" — the same one-field-two-meanings problem `op`/`kind` avoided.
+   **A is the recommendation**, and it does not block B later.
 
 Also outstanding and cheap: **cut `v0.5.0` and re-pin the consumer to it.**
 `v0.4.0` is already several fixes stale, so cutting the tag is the cheaper half of
@@ -41,17 +58,23 @@ Bump `__version__` and `pyproject.toml` together — a test pins them to each ot
 **The one lesson session 4 kept re-learning**, in six separate items: *a check
 that has only ever run on the machine, or against the double, or against the
 assumed output format, it was written for is not a check.* Its corollary cost the
-most and is now the local standard: **mutate the fix.** Four mutations survived a
+most and is now the local standard: **mutate the fix.** SIX mutations survived a
 green suite this session:
 
 * a half-covered `id` validation (O33),
 * a flag that was forwarded but never honoured (O23),
 * a guard whose real job turned out to be the error message, because `rmdir`
   already provided the safety (O23),
-* and an empty-context guard shadowed by an earlier return (O31).
+* an empty-context guard shadowed by an earlier return (O31),
+* a lint assertion the `output[-4000:]` FALLBACK also satisfied, so reverting the
+  fix stayed green (O8),
+* and a mock returning a dict where the real function returns an int, which made
+  `main()` return a dict and the test blame the code (O8).
 
-**Three of those four are the same shape** — two guards that can return the same
-value, where a test only ever reaches the first. Check for it by reflex.
+**Two recurring shapes, and both are worth a reflex check.** *Two guards that can
+return the same value, where the test only ever reaches the first* (three
+instances). And *an assertion the fallback path also satisfies* — which is the
+single most common way I wrote a useless test in this session.
 
 ---
 
@@ -84,7 +107,7 @@ directory or serialise.
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
 | `agent-loop` HEAD, tag, tests | **see START HERE at the top of this file** — these rows went stale three times in one session, so they now live in exactly one place |
-| Closed / open issues | O3, O6, O14-O19, O23, O24-O27, O29-O34 closed; O20 mitigated; O21, O22, O28, O35 open; O36 part-closed |
+| Closed / open issues | O3, O6, O14-O19, O23, O24-O27, O29-O36 closed, plus O4 and O8; O20 mitigated; O21, O22, O28 open |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -846,3 +869,41 @@ rounds by parts, not by habit.
 
 **Not yet run:** the full `--feature` → `--mode test` → loop chain. The plan is
 produced and validated; nothing has yet implemented one of these parts end to end.
+
+### §12g O4, O8, O35 — the small ones, and two BACKLOG entries that were stale
+
+**The real one in O8** was `check_lint` reusing the compile gate's digest, whose
+regex is MSBuild's `error CS1234`. On ruff or eslint output nothing matched and the
+model was handed `output[-4000:]` — a raw tail to find its own errors in. Feedback
+the model cannot act on is a gate that only looks like one. New
+`gates.lint_digest()` is deliberately SEPARATE from `_digest`: the compile gate
+wants MSBuild's shape specifically, and widening that regex would make the C#
+digest start matching prose.
+
+**`replay` had drifted back into O2.** It adjudicated without
+`rules=profile.arbiter_rules` and read `profile.settled` instead of
+`inject_settled(...)`, so it judged under a different contract than the run it was
+replaying — which makes every flip it reports meaningless. O2's defect,
+reintroduced one argument at a time.
+
+**Two O8 entries were STALE** and this is the reusable lesson: `--replay-dir` does
+exist, and the unused imports were already gone. **My test asserted the flag's
+ABSENCE and would have had me "fix" correct code.** Check the claim against the
+tree before implementing an old backlog entry — BACKLOG is authoritative for what
+is open, not for what is still true.
+
+**Two mutations survived, both my tests' fault, both the same shape as before:**
+the lint test asserted `"F401" in feedback`, which the `output[-4000:]` fallback
+also satisfies on a short fixture, so reverting the fix stayed green; and a mock
+returned a dict where `run_report` is annotated `-> int`, so `main()` returned a
+dict and the test blamed the code. **Assertions satisfied by the fallback path are
+now the single most common way I have written a useless test in this session.**
+
+**O35 is closed for this repo only.** `profiles/self.py` uses `sys.executable`;
+the consumer's profile still uses bare `python` and was left alone on purpose — it
+lives in tvDownloadOHLC where another session is committing, and it is verified
+working today. Fix it there.
+
+**Left open on purpose:** the OpenAI cached-token field. No `OPENAI_API_KEY` is
+set, so the fix cannot be checked against a real response — and guessing a response
+format is precisely what produced O24's and O34's confident wrong readings.

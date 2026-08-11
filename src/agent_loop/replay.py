@@ -29,6 +29,7 @@ from . import config
 from . import profiles
 from ._io import read_text_verbatim
 from .loop import review_panel, parse_blocks
+from .memory import inject_settled
 
 
 def _review_prompt_path(ticket_dir: Path, impl_file: Path) -> Path:
@@ -171,7 +172,14 @@ def run_replay(
                 all_findings,
                 "replay",
                 "",  # no diff available in replay
-                settled=profile.settled,
+                # The real pipeline passes the profile's arbiter RULES and
+                # INJECTS auto-extracted settled decisions. Omitting either made
+                # replay adjudicate under a different contract than the run it is
+                # replaying -- and replay exists to hold everything constant but
+                # one variable, so a divergence here does not add noise, it makes
+                # every flip it reports meaningless (the O2 defect, again).
+                rules=profile.arbiter_rules,
+                settled=inject_settled(profile.settled, repo),
                 round_history=_history_note(convergence),
                 prompt_override=arb_override,
             )

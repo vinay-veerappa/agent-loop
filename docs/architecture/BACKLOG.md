@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**434/434 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**448/448 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` has moved on past that
 tag, so **cut `v0.5.0` before re-pinning anything**
 (`git log --oneline v0.4.0..HEAD` for how far).
@@ -191,7 +191,16 @@ the same 8 selftest rejections counted twice because their detail text mentions
 `run_ticket` already knows `failed.name`. Record it in the ledger and read that
 instead of scanning prose.
 
-#### O4. `report` arbiter calibration correlates coupled variables — MEDIUM
+#### O4. `report` arbiter calibration correlates coupled variables — CLOSED
+
+The x-variable is `upheld_per_round` now, not the sum across rounds, so it is no
+longer mechanically coupled to the y-variable. The printed line also carries the
+caveat that it is measuring an arbiter with two known bad rulings (O20), because a
+number with a known confound gets read as a measurement unless it says otherwise.
+
+Original text follows.
+
+#### O4 (original). `report` arbiter calibration correlates coupled variables — MEDIUM
 
 `_pearson` is now arithmetically correct (F5), but its inputs are not
 independent: `upheld_per_ticket` sums upheld findings **across rounds** while the
@@ -255,7 +264,46 @@ these. Modes never run at all: `plan`, `test`, `developer`, `brainstorm`,
 changes (worktree, frozen baseline, protected-path gate in `_edit_file`) and has
 the least coverage.
 
-#### O8. Small, unticketed — LOW
+#### O8. Small, unticketed — CLOSED (two entries were already stale)
+
+* **`check_lint` reused the MSBuild digest** — the real one of the six. `_DIAG`
+  matches `error CS1234`, so on ruff or eslint output nothing matched and
+  `_digest` fell through to `output[-4000:]`, handing the model a raw tail to find
+  the errors in. New `gates.lint_digest()` covers ruff, eslint, gcc/clang/tsc and
+  MSBuild. Kept SEPARATE from `_digest` rather than widening it: the compile gate
+  wants MSBuild's shape specifically, and broadening that regex would make the C#
+  digest start matching prose. Same reasoning as keeping `op` out of `kind`.
+* **`--mode report` demanded `--profile` and printed the one-member panel
+  warning.** It reads a ledger; there is no profile to honour and no panel to be
+  one-membered. Dispatched before both checks now.
+* **`replay` diverged from the real pipeline in two ways** — it omitted
+  `rules=profile.arbiter_rules` and read `profile.settled` instead of
+  `inject_settled(...)`. This is not cosmetic: replay exists to hold everything
+  constant but one variable, so adjudicating under a different contract than the
+  run being replayed makes every flip it reports meaningless. That was O2's whole
+  point, reintroduced one argument at a time.
+* ~~`replay.py` documents a `--replay-dir` flag the CLI does not implement~~ —
+  **STALE.** The flag exists (`cli.py`, `nargs="*"`). The test now asserts the
+  useful invariant instead: every flag the docstring names must be a real
+  argument. Worth recording because the first version of that test asserted the
+  flag's ABSENCE and would have had someone "fix" correct code.
+* ~~`replay.py` imports six names it never uses~~ — **STALE**, already cleaned up.
+* `_call_openai` does not capture its cached-token usage field. **Still open**,
+  and deliberately: no `OPENAI_API_KEY` is set, so the fix cannot be verified
+  against the real response shape — and this session's evidence is that a guess
+  at a response format is exactly what produces a confident wrong reading (O24,
+  O34). Left for whoever has a key.
+
+**Two mutations survived the first pass**, both my own tests' fault:
+the `check_lint` test asserted `"F401" in feedback`, which the `output[-4000:]`
+fallback also satisfies on a short fixture — so reverting to the MSBuild digest
+stayed green. It now uses 800 lines of chatter and asserts the noise is ABSENT.
+And a mock returned `{"tickets": 0}` where `run_report` is annotated `-> int`,
+which made `main()` return a dict and the test blame the code for it.
+
+Original text follows.
+
+#### O8 (original). Small, unticketed — LOW
 
 * `--mode report` and `--mode replay` both require `--profile` and print the
   single-reviewer panel warning; report needs neither.
@@ -1242,7 +1290,17 @@ recommendation with no evidentiary basis is indistinguishable, in the output,
 from one with a good basis. Give it the graph slice plan mode already builds, or
 document it as a rubber duck.
 
-#### O35. `python` in a PROFILE is resolved by PATH, same as O29 — LOW, OPEN
+#### O35. `python` in a PROFILE is resolved by PATH, same as O29 — CLOSED for this repo
+
+`profiles/self.py` uses `sys.executable` now, quoted, with `{files}` escaped
+through the f-string. The consumer's `python-tvdownloadohlc` profile still uses
+bare `python` and is **left alone deliberately** — it lives in the tvDownloadOHLC
+repo, where another session has been committing, and it is verified working today
+(3.14 and the 3.12 venv agree on the baseline). Fix it there, not from here.
+
+Original text follows.
+
+#### O35 (original). `python` in a PROFILE is resolved by PATH, same as O29 — LOW
 
 O29 fixed the tests. The class extends past them: `profiles/self.py` uses
 `build_cmd="python -m py_compile {files}"` and `test_cmd="python -m pytest ..."`,

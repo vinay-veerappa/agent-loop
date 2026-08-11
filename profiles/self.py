@@ -10,6 +10,8 @@ Usage:
 """
 from __future__ import annotations
 
+import sys
+
 from agent_loop.profiles import Profile, register
 
 SELF = Profile(
@@ -25,9 +27,14 @@ SELF = Profile(
     # fixed list omitted report.py, replay.py, memory.py, context.py,
     # compaction.py, test_mode.py and developer/*, so a patch to any of those
     # was never compile-checked at all.
-    build_cmd="python -m py_compile {files}",
+    # `sys.executable`, not bare `python`: these run in the worktree via
+    # shell=True, so PATH would decide which interpreter establishes the
+    # frozen baseline. On this machine PATH happens to resolve to a 3.14
+    # with the deps installed; the day it does not, the baseline changes
+    # under the loop and nothing says so (O35, same class as O29).
+    build_cmd=f'"{sys.executable}" -m py_compile {{files}}',
     lint_cmd="",  # no linter configured for this repo yet
-    test_cmd="python -m pytest tests/ -q --tb=short",
+    test_cmd=f'"{sys.executable}" -m pytest tests/ -q --tb=short',
     # No lock primitive in Python — lock-scope gate is skipped
     lock_name="",
     risk_calls=(),
