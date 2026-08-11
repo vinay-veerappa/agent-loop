@@ -2001,4 +2001,31 @@ fallback also satisfies.
 
 ---
 
+#### O49. The fence language tag became the first line of the generated file — CLOSED
+
+Immediately after O48, with the path and language finally right, the written C#
+file began:
+
+    csharp
+    #if TESTING
+
+`_parse_tests` matched ```` ```(?:python)? ````. That did not merely fail to strip
+other languages -- **it turned them into code**: with ```` ```csharp ```` the
+optional group matched empty, `\s*` matched nothing because `c` is not
+whitespace, and the capture began at `csharp`. So the build failed on line 1 and
+NO test in the project could run, which is how it surfaced -- as
+`the runner produced no parseable result summary at baseline`, a message about the
+runner for a defect in the parser.
+
+Now the info string is treated as markdown treats it: everything after the
+backticks up to the newline is metadata. Parametrised over python, csharp, `c#`,
+cs, go, rust, `javascript title=x`, and empty, plus an unfenced block and one with
+backticks inside the code.
+
+**Third Python assumption in one code path**, after O48's path and prompt. The
+package describes itself as language-agnostic; test mode was written for one
+language and every layer of it had to be found separately, by running it.
+
+---
+
 *End of backlog. Update as items are completed.*

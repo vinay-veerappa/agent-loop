@@ -232,3 +232,37 @@ def test_tests_green_at_baseline_is_an_error_not_a_warning(monkeypatch, repo):
     assert result["tests_pass_baseline"] is True
     assert result.get("error"), "a vacuous gate was reported as success"
     assert "gate nothing" in result["error"]
+
+
+# --- the fence info string is metadata, not code (O49) ----------------------
+
+
+@pytest.mark.parametrize("fence", ["python", "csharp", "c#", "cs", "go", "rust",
+                                   "javascript title=x", ""])
+def test_any_fence_language_is_stripped(fence):
+    r"""`(?:python)?` did not just fail to strip other languages -- it made them code.
+
+    With ```csharp the optional group matched empty, `\s*` matched nothing
+    because `c` is not whitespace, and the capture started at `csharp`. The
+    generated file's first line was the word `csharp`, so the C# build failed on
+    line 1 and no test in the project could run.
+    """
+    raw = f"<<<TESTS>>>\n```{fence}\nTHE_REAL_CODE = 1\n```\n<<<END TESTS>>>"
+    got = test_mode._parse_tests(raw)
+    assert got == "THE_REAL_CODE = 1", got
+    assert fence not in got or fence == ""
+
+
+def test_an_unfenced_block_is_still_accepted():
+    raw = "<<<TESTS>>>\nTHE_REAL_CODE = 1\n<<<END TESTS>>>"
+    assert test_mode._parse_tests(raw) == "THE_REAL_CODE = 1"
+
+
+def test_backticks_inside_the_code_survive():
+    raw = "<<<TESTS>>>\n```csharp\nvar s = \"a ``` b\";\n```\n<<<END TESTS>>>"
+    got = test_mode._parse_tests(raw)
+    assert "a ``` b" in got
+
+
+def test_a_missing_block_is_none():
+    assert test_mode._parse_tests("no block here") is None

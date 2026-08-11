@@ -267,12 +267,26 @@ def run_test(
     return result
 
 
+# A fence's info string is whatever follows the backticks up to the newline --
+# `python`, `csharp`, `c#`, `js title=x`, or nothing. It is metadata, never code.
+_FENCE = re.compile(r"\A```[^\n`]*\r?\n(.*?)\r?\n?```\Z", re.DOTALL)
+
+
 def _parse_tests(raw: str) -> Optional[str]:
-    """Parse a <<<TESTS>>> block from the raw response."""
-    m = re.search(r"<<<TESTS>>>\s*```(?:python)?\s*(.*?)```\s*<<<END\s*TESTS>>>", raw, re.DOTALL)
+    """Parse a <<<TESTS>>> block from the raw response.
+
+    The fence language was hardcoded as `(?:python)?`, which did not merely fail
+    to strip other languages -- it made them part of the CODE. With
+    ```csharp, the optional group matched empty, `\\s*` matched nothing because
+    `c` is not whitespace, and the capture began at `csharp`. The written file's
+    first line was literally `csharp`, so the C# build failed on line 1 and the
+    whole suite could not run.
+    """
+    m = re.search(r"<<<TESTS>>>(.*?)<<<END\s*TESTS>>>", raw, re.DOTALL)
     if not m:
-        # Try without code fence
-        m = re.search(r"<<<TESTS>>>\s*(.*?)<<<END\s*TESTS>>>", raw, re.DOTALL)
-        if not m:
-            return None
-    return m.group(1).strip()
+        return None
+    body = m.group(1).strip()
+    fence = _FENCE.match(body)
+    if fence:
+        body = fence.group(1)
+    return body.strip()
