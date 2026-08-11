@@ -127,6 +127,7 @@ def check_lint(
     cmd: str,
     repo: Path,
     timeout: int = 300,
+    files: Sequence[str] = (),
 ) -> GateResult:
     """Run the profile's linter command if configured.
 
@@ -136,9 +137,17 @@ def check_lint(
     and before tests (faster feedback).
 
     If the profile has no ``lint_cmd``, this gate is skipped (returns ok).
+
+    If ``cmd`` contains the literal ``{files}`` placeholder, it is replaced
+    with the quoted paths in ``files``; if ``files`` is empty the gate
+    passes without running the linter.
     """
     if not cmd:
         return GateResult("lint", True, "no linter configured")
+    if "{files}" in cmd:
+        if not files:
+            return GateResult("lint", True, "no files to lint")
+        cmd = cmd.replace("{files}", " ".join(f'"{f}"' for f in files))
     t0 = time.time()
     try:
         code, out = _run(cmd, repo, timeout)

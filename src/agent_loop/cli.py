@@ -353,6 +353,9 @@ def main(argv=None) -> int:
         import glob as _glob
         # Find all ticket dirs under logs/agent_loop/
         log_root = Path(".") / "logs" / "agent_loop"
+        if not log_root.is_dir():
+            print("No recorded tickets found in logs/agent_loop/")
+            return 1
         corpus_dirs = sorted(
             d for d in log_root.iterdir()
             if d.is_dir() and (d / "result.json").exists()

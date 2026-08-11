@@ -427,6 +427,39 @@ def test_promote_refuses_over_uncommitted_changes(tmp_path):
         assert "return 43" in (repo / "src" / "target.py").read_text()
 
 
+@pytest.mark.parametrize("newline,label", [(b"\n", "LF"), (b"\r\n", "CRLF")])
+def test_exported_patch_applies_to_its_own_source(tmp_path, newline, label):
+    """The exported patch is the human-review and promotion artifact. It was
+    written through platform newline translation while `git diff` was read with
+    universal newlines, so it came out CRLF regardless of the source: it applied
+    to CRLF files by luck and `git apply` rejected it on every LF file."""
+    repo = tmp_path / f"repo{label}"
+    (repo / "src").mkdir(parents=True)
+    body = b"def f():" + newline + b"    return 1" + newline
+    (repo / "src" / "m.py").write_bytes(body)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        cwd=repo, check=True,
+    )
+
+    with workspace.open_workspace(repo, f"PATCH{label}") as ws:
+        target = ws.root / "src" / "m.py"
+        target.write_bytes(body.replace(b"return 1", b"return 2"))
+        patch = ws.export_patch(tmp_path / f"out{label}.patch")
+        assert patch is not None
+
+    check = subprocess.run(
+        ["git", "apply", "--check", str(patch)],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert check.returncode == 0, (
+        f"{label} patch must apply to its own source; git said: {check.stderr}"
+    )
+
+
 def test_promote_succeeds_on_a_clean_target(tmp_path):
     repo = _git_repo(tmp_path)
     with workspace.open_workspace(repo, "PROMOTE2") as ws:

@@ -64,6 +64,7 @@ class Completion:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0  # billed at 1.25x input; reported separately from input_tokens
     stop_reason: str = ""
     secs: float = 0.0
     # Reasoning models bill their chain of thought as output tokens. Tracked so
@@ -80,6 +81,7 @@ class Completion:
         # Cache reads bill at ~0.1x input; treat uncached input at full rate.
         return (
             self.input_tokens * rate[0] + self.cache_read_tokens * rate[0] * 0.1
+            + self.cache_creation_tokens * rate[0] * 1.25
         ) / 1e6 + self.output_tokens * rate[1] / 1e6
 
     def usage_line(self) -> str:
@@ -287,6 +289,7 @@ def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, 
         input_tokens=usage.get("input_tokens", 0) or 0,
         output_tokens=usage.get("output_tokens", 0) or 0,
         cache_read_tokens=usage.get("cache_read_input_tokens", 0) or 0,
+        cache_creation_tokens=usage.get("cache_creation_input_tokens", 0) or 0,
         stop_reason=stop,
         raw=data,
     )

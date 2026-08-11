@@ -72,11 +72,19 @@ class Finding:
     def signature(self) -> str:
         """Stable identity for cross-round comparison.
 
-        The first 200 characters of the finding text, lowercased and
-        stripped of whitespace, are a more stable identity than the
-        old word-list signature, which broke when a reviewer reworded
-        the same finding."""
-        return re.sub(r"\s+", " ", self.text[:200].strip().lower())
+        Normalised to ignore incidental differences: lowercased, stripped
+        of digits and punctuation, with whitespace collapsed to a single
+        space. The full normalised text is kept so genuinely different
+        findings remain distinguishable."""
+        lowered = self.text.lower()
+        letters_and_space = re.sub(r"[^a-z\s]+", "", lowered)
+        normalised = re.sub(r"\s+", " ", letters_and_space).strip()
+        if not normalised:
+            # If the finding contains no letters, fall back to the lowercased,
+            # whitespace-collapsed original so a non-empty finding never has
+            # an empty signature.
+            normalised = re.sub(r"\s+", " ", lowered).strip() or lowered
+        return normalised
 
     @property
     def blocking(self) -> bool:
@@ -591,7 +599,12 @@ def run_ticket(
             if gate_results[-1].ok:
                 touched = regions.apply(regs, blocks)
                 if profile.lint_cmd:
-                    gl = gates.check_lint(profile.lint_cmd, ws.root)
+                    # files=touched, or a lint_cmd containing {files} silently
+                    # short-circuits to "no files to lint" on every round -- a
+                    # gate that cannot fail, which is what F2 replaced a gate
+                    # that could not pass with. The ticket's region covered only
+                    # check_lint, so the loop could not fix this half itself.
+                    gl = gates.check_lint(profile.lint_cmd, ws.root, files=touched)
                     (art / f"r{rnd}_lint.txt").write_text(gl.detail, encoding="utf-8")
                     gate_results.append(gl)
                 if gate_results[-1].ok and profile.build_cmd:

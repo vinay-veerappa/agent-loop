@@ -132,7 +132,24 @@ class Workspace:
         return [ln[3:].strip() for ln in out.splitlines() if ln.strip()]
 
     def diff(self) -> str:
-        return _git(self.root, "diff")
+        """The worktree diff, with content line endings intact.
+
+        Deliberately NOT via _git(): that decodes with text=True, whose
+        universal-newline handling eats the CR of a CRLF source line, because
+        git's own line separator follows it. Combined with export_patch writing
+        through platform newline translation, the exported patch ended up CRLF
+        no matter what the file was -- so it applied to CRLF sources by luck and
+        was rejected on every LF source, with `git apply` reporting only
+        "patch does not apply".
+        """
+        proc = subprocess.run(
+            ["git", "diff"], cwd=str(self.root), capture_output=True, timeout=300
+        )
+        if proc.returncode != 0:
+            raise WorkspaceError(
+                f"git diff failed: {proc.stderr.decode('utf-8', 'replace').strip()}"
+            )
+        return proc.stdout.decode("utf-8", errors="replace")
 
     def export_patch(self, dest: Path) -> Optional[Path]:
         """Write the worktree's diff so a human arbiter can read the change in
@@ -142,7 +159,10 @@ class Workspace:
         if not d.strip():
             return None
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(d, encoding="utf-8")
+        # newline="" writes the diff bytes verbatim. Without it, every line
+        # terminator becomes the platform's, which on Windows rewrites an
+        # LF-source patch into CRLF and makes `git apply` reject it.
+        dest.write_text(d, encoding="utf-8", newline="")
         return dest
 
     def promote(self, files: Sequence[str], force: bool = False) -> List[str]:

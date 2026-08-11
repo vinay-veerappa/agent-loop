@@ -22,7 +22,7 @@ import json
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 def _ledger_path(repo: Path) -> Path:
@@ -153,6 +153,34 @@ def _print_gate_failures(ledger: List[Dict[str, Any]]) -> None:
                 print(f"  {kw:<15} {gate_counts[kw]} ticket(s)")
 
 
+def _same_finding(a: str, b: str) -> bool:
+    """Return True if two finding texts describe the same finding.
+
+    Normalises each text by lowercasing, dropping non-letters/non-spaces,
+    collapsing whitespace, and comparing the overlap of the resulting
+    word sets.  The findings are considered the same when they share at
+    least two words and the shared words are a strict majority of the
+    smaller word set.
+    """
+
+    def _words(text: str) -> set[str]:
+        cleaned = "".join(
+            ch if ch.isalpha() or ch == " " else "" for ch in text.lower()
+        )
+        return set(cleaned.split())
+
+    a_words = _words(a)
+    b_words = _words(b)
+    if not a_words or not b_words:
+        return False
+
+    shared = a_words & b_words
+    if len(shared) < 2:
+        return False
+
+    return len(shared) / min(len(a_words), len(b_words)) > 0.5
+
+
 def _print_reviewer_marginal_value(feedback: List[Dict[str, Any]]) -> None:
     if not feedback:
         return
@@ -189,8 +217,9 @@ def _print_reviewer_marginal_value(feedback: List[Dict[str, Any]]) -> None:
             for finding in upheld_by_reviewer[r]:
                 # Did any other reviewer raise the same finding?
                 raised_by_other = any(
-                    finding in all_findings_by_reviewer[other]
+                    _same_finding(finding, other_finding)
                     for other in other_reviewers
+                    for other_finding in all_findings_by_reviewer[other]
                 )
                 if not raised_by_other:
                     reviewer_upheld[r] += 1
@@ -203,6 +232,26 @@ def _print_reviewer_marginal_value(feedback: List[Dict[str, Any]]) -> None:
             total = reviewer_total[r]
             pct = 100 * upheld / total if total else 0
             print(f"  {r:<25} {upheld}/{total} ({pct:.0f}% unique-upheld)")
+
+
+def _pearson(xs: Sequence[float], ys: Sequence[float]) -> float:
+    """Return the Pearson correlation coefficient using population statistics.
+
+    Returns 0.0 when there are fewer than two points, mismatched lengths, or
+    zero variance on either side.
+    """
+    n = len(xs)
+    if n < 2 or len(ys) != n:
+        return 0.0
+
+    mean_x = statistics.mean(xs)
+    mean_y = statistics.mean(ys)
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / n
+    std_x = statistics.pstdev(xs)
+    std_y = statistics.pstdev(ys)
+    denom = std_x * std_y
+
+    return cov / denom if denom else 0.0
 
 
 def _print_arbiter_calibration(
@@ -238,16 +287,10 @@ def _print_arbiter_calibration(
         print(f"  (need >= 3 tickets with upheld findings; have {len(pairs)})")
         return
 
-    # Pearson correlation
     xs = [p[0] for p in pairs]
     ys = [p[1] for p in pairs]
     n = len(pairs)
-    mean_x = statistics.mean(xs)
-    mean_y = statistics.mean(ys)
-    cov = sum((x - mean_x) * (y - mean_y) for x, y in pairs) / n
-    std_x = statistics.stdev(xs) if n > 1 else 0
-    std_y = statistics.stdev(ys) if n > 1 else 0
-    corr = cov / (std_x * std_y) if std_x and std_y else 0
+    corr = _pearson(xs, ys)
 
     print(f"\n--- Arbiter calibration ---")
     print(f"  Correlation (upheld_count vs rounds_to_converge): {corr:.2f}")
