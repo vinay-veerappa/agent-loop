@@ -100,173 +100,90 @@ and tickets take *more* rounds, the arbiter is worse.
 
 ---
 
-## What we are building (agreed sequence)
+## What we built (all 8 items done)
 
-### 1. `report` command over existing JSONL — HALF DAY
+### 1. `report` command — DONE
 
-**What**: a `agent-loop report` command that reads `ledger.jsonl` and
-`learning_feedback.jsonl` and prints:
-- Cost per ticket (input, output, cache-read, total USD)
-- Rounds per ticket (distribution: 1-round, 2-round, 3-round, 4-round)
-- Gate-failure distribution (which rung catches the most, which never fires)
-- Per-reviewer upheld/rejected/out-of-scope rates
-- Per-ticket verdict distribution (APPROVE, ARBITER_SHIP, ESCALATE, etc.)
+`agent-loop --mode report` reads `ledger.jsonl` and `learning_feedback.jsonl`
+and prints: cost per ticket, rounds distribution, gate-failure distribution,
+per-reviewer marginal value, arbiter calibration, verdict distribution.
 
-**Why now**: the data is already on disk. The JSONL format is structured.
-Nothing reads it back except `build_learning_context`, which uses 5 entries
-for prompting. A report command makes the loop's behavior measurable.
+**Files**: `src/agent_loop/report.py`, `cli.py` (`--mode report --report-last N`)
 
-**What this enables**: "is the second reviewer worth its cost?" becomes
-answerable. A reviewer that only ever restates what the first one found is
-pure cost, and right now you'd never know.
+### 2. Replay corpus — DONE
 
-**Key metric**: per-reviewer upheld findings the *other* reviewer missed.
-This is the marginal value of the second reviewer. A reviewer that always
-says APPROVE has a perfect cost-to-finding ratio — but zero marginal value.
-The metric must reward finding things the other reviewer missed and the
-arbiter upheld.
+`agent-loop --mode replay` re-runs the panel and arbiter against recorded
+implementer outputs. Compares recorded vs replayed verdict. Reports flips.
 
-**Caveat**: the arbiter's rulings are not ground truth. The arbiter is a
-model, not an oracle. An UPHELD finding means "the arbiter thinks this is
-real," not "this is actually real." The only ground truth is: does the
-patch lose money? You can't measure that in a loop. So the calibration
-metric is: *do arbiter-upheld findings correlate with tickets that converge
-faster?* That's a correlation measurable from the ledger.
+**Files**: `src/agent_loop/replay.py`, `cli.py` (`--mode replay`)
 
-**Files touched**: new `src/agent_loop/report.py`, `cli.py` (add `--mode
-report`).
+### 3. Prompt caching — DONE
 
----
+`_add_cache_control()` marks the last user message as cacheable. On cache
+hit (round 2+), Anthropic bills input tokens at 10%.
 
-### 2. Replay corpus from existing artifacts — DAY
+**Files**: `src/agent_loop/providers.py` (`_add_cache_control`, `_call_anthropic`)
 
-**What**: a `--replay <dir>` flag that re-runs the panel and arbiter against
-recorded implementer outputs. The loop already writes `r{N}_review_*.txt`,
-`r{N}_arbiter.txt`, `r{N}_impl_raw.txt` to disk. A replay command would:
-1. Load the recorded implementer output from `r{N}_impl_raw.txt`
-2. Run the current panel (with current prompts) against it
-3. Run the current arbiter against the panel's findings
-4. Compare the new verdict to the recorded verdict
+### 4. Linter rung — DONE
 
-**Why now**: the 129 tests pin mechanics. They say nothing about whether a
-prompt change makes the arbiter better. A replay corpus turns prompt changes
-from vibes into measurements. Freeze a dozen real tickets with known
-outcomes. Now "I changed the arbiter prompt" has an answer that isn't
-guesswork.
+`check_lint()` runs the profile's `lint_cmd` between static and compile gates.
+Every finding a linter can make is a finding not paid to a model.
 
-**What this enables**: regression-testing the loop's *judgment*. Change the
-arbiter prompt, run the replay corpus, see which tickets flip verdict.
+**Files**: `src/agent_loop/gates.py` (`check_lint`), `profiles.py` (`lint_cmd`), `loop.py`
 
-**Files touched**: `loop.py` (add replay path), `cli.py` (add `--replay`
-flag).
+### 5. `Finding.signature` fix — DONE
 
----
+Replaced the crude 8-word signature with a 200-char prefix of the finding
+text, lowercased and whitespace-collapsed. Thrashing detector no longer
+fires on reworded findings.
 
-### 3. Prompt caching in `_call_anthropic` — ~20 LINES
+**Files**: `src/agent_loop/loop.py` (`Finding.signature`)
 
-**What**: add `"cache_control": {"type": "ephemeral"}` to the system message
-and the last user message in the Anthropic request. On cache hit, input
-tokens bill at 10% (cache_read vs cache_creation).
+### 6. Bounded region escalation — DONE
 
-**Why now**: the system prompt + implement prompt + region source are stable
-across all rounds of a ticket. That's a textbook cacheable prefix. On Opus
-that's a 90% cut on the largest part of every round-2+ call. ~20 lines.
+Implementer can emit `<<<NEED-REGION file=... anchor=... why=...>>>`. The
+loop resolves it, re-checks against protected paths, and re-prompts.
 
-**How it works per provider**:
-- **Anthropic**: explicit `cache_control` blocks in the request. Mark which
-  message parts are cacheable. On cache hit, input tokens bill at 10%.
-  This is the big one — ~20 lines in `_call_anthropic`.
-- **Ollama (cloud models)**: no explicit cache control needed. The Ollama
-  server auto-caches the prompt prefix. `num_ctx` and the prompt prefix are
-  already stable across rounds (same system + same history structure). No
-  code change needed — it's already happening server-side.
-- **OpenAI-compatible**: `prompt_cache` is automatic on the server side for
-  requests with the same prefix. No explicit cache control needed. Already
-  happening.
+**Files**: `src/agent_loop/loop.py` (NEED-REGION parsing), `regions.py` (dynamic addition)
 
-**Files touched**: `providers.py` (`_call_anthropic`).
+### 7. Mutation gate — DONE
 
----
+`check_mutation()` runs a mutation tool scoped to the patched region after
+tests pass. Directly answers: do the acceptance tests constrain the new code?
 
-### 4. Linter rung between static and compile — SMALL
+**Files**: `src/agent_loop/gates.py` (`check_mutation`), `profiles.py` (`mutation_cmd`), `loop.py`
 
-**What**: a new gate rung that runs the profile's linter command (if
-configured) between the static gate and the compile gate. The linter catches
-style violations, unused imports, and simple type errors that the model
-produces — before they reach the compiler or the panel.
+### 8. Docs mode — 4 sub-modes — DONE
 
-**Why now**: every finding a linter can make is a finding you're paying a
-model to make and an arbiter to adjudicate. Cheap, deterministic, and it
-shrinks the panel's surface. The linter runs before compile (cheaper) and
-before tests (faster feedback).
+**Goal**: generate documentation from the codebase, not just from a diff.
 
-**Profile field**: `lint_cmd` (optional). If not set, the rung is skipped
-(same pattern as `build_cmd` and `test_cmd`).
+The original docs mode was a single-pass diff-to-markdown generator. The
+new docs mode supports four documentation types, each with a different
+input and output:
 
-**Files touched**: `gates.py` (add `check_lint`), `profiles.py` (add
-`lint_cmd`), `loop.py` (add rung to gate ladder).
+| Sub-mode | Input | Output | Use case |
+|---|---|---|---|
+| `changelog` | git diff | changelog entry (Added/Fixed/Changed/Removed) | "What changed in this commit?" |
+| `handover` | session ledger + git state | handover document (done/remaining/traps/next steps) | "What did I do, what's left?" |
+| `design` | feature idea + graph context | design document (problem/approach/alternatives/impact/open questions) | "How should we build this?" |
+| `prd` | defect/feature + graph context | product requirements document (background/requirements/acceptance criteria/out-of-scope/risks) | "What are we building and why?" |
 
----
+All sub-modes use the graph context (callers, callees, types) when the
+profile has `graph_project` set. The `design` and `prd` sub-modes use the
+graph to answer "what existing code does this touch?" — the same graph the
+loop uses for passive context injection.
 
-### 5. `Finding.signature` fix — SMALL
+**Reference**: the documentation architect skill
+(`.agents/skills/doc-architect` or equivalent) defines the conventions for
+documentation structure — section headers, ADR format, handover format. The
+docs mode follows these conventions in its system prompts. When the skill
+is available, its conventions should be injected into the docs mode's
+system prompt to ensure generated docs match the project's established
+format.
 
-**What**: replace the crude "first eight alphabetic words, lowercased"
-signature with an arbiter-based same-finding check. The thrashing detector
-currently uses `Finding.signature` to detect overlap between rounds. If a
-reviewer rewords the same finding, the signature changes, overlap drops to
-zero, and the thrashing detector fires — escalating a ticket that's
-actually converging.
-
-**The fix**: ask the arbiter "is finding #3 the same as last round's #7?"
-instead of comparing word signatures. The arbiter already sees every
-finding; asking it for same-finding rulings makes convergence detection
-meaningful.
-
-**Why now**: this is a real bug in thrashing detection. A reviewer that
-rephrases its findings (which models do) defeats the convergence check.
-
-**Files touched**: `arbiter.py` (add same-finding ruling to
-`ARBITER_SYSTEM`), `loop.py` (use arbiter same-finding rulings in
-`_history_note`).
-
----
-
-### 6. Bounded region escalation — MEDIUM
-
-**What**: let the implementer emit a `<<<NEED-REGION file=... anchor=...
-why=...>>>` request. The loop resolves it, re-checks it against protected
-paths, and re-prompts. This lets the implementer say "I discovered I also
-need to edit this function" without aborting the ticket.
-
-**Why now**: a region is a unique-anchor text span. The implementer cannot
-add a method, touch an import, or edit a second place it discovers it
-needs. This is the design's hard dead end. Bounded escalation removes it
-while keeping the region contract and the gate-0 guarantee.
-
-**Files touched**: `loop.py` (add NEED-REGION parsing and re-extraction),
-`regions.py` (add dynamic region addition).
-
----
-
-### 7. Mutation gate on the patched region — MEDIUM
-
-**What**: after the test gate passes, run a mutation testing tool scoped to
-the patched region only. The mutation gate directly answers the question the
-test gate can't: do the acceptance tests actually constrain the new code?
-
-**Why now**: mutation testing beat review on the NT8 addons — it found a
-real defect, two unreachable guards, and a lying harness. That's the
-established evidence standard, and it's currently outside the loop.
-
-**Caveat**: even scoped to one region, running a mutation tool adds 30-60
-seconds per round. On a 4-round ticket, that's 2-4 minutes of added latency.
-The payoff is real but the cost is not trivial.
-
-**Profile field**: `mutation_cmd` (optional). If not set, the rung is
-skipped.
-
-**Files touched**: `gates.py` (add `check_mutation`), `profiles.py` (add
-`mutation_cmd`), `loop.py` (add rung after tests).
+**Files**: `src/agent_loop/docs_mode.py` (4 sub-modes: `_run_changelog`,
+`_run_handover`, `_run_design`, `_run_prd`), `cli.py` (`--mode docs
+--docs-type changelog|handover|design|prd`)
 
 ---
 

@@ -52,11 +52,49 @@ generated a fix, passed all gates, and both reviewers unanimously approved.
 | `test` | defect + ticket → failing acceptance tests | `--mode test --defect "..." --tickets plan.json` |
 | `developer` | defect → patched code (autonomous localize+edit) | `--mode developer --defect "..."` |
 | `brainstorm` | defect → candidate approaches + trade-offs | `--mode brainstorm --defect "..."` |
-| `docs` | git diff → documentation updates | `--mode docs --review-base HEAD~1` |
+| `docs` | codebase → documentation (4 sub-modes) | `--mode docs --docs-type changelog\|handover\|design\|prd` |
 
 See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan,
 [IMPLEMENTATION_DECISIONS.md](docs/architecture/IMPLEMENTATION_DECISIONS.md) for the decision log,
 and [BACKLOG.md](docs/architecture/BACKLOG.md) for the status of all items.
+
+## Docs mode
+
+The docs mode generates documentation from the codebase, not just from a diff.
+Four sub-modes, each with a different input and output:
+
+| Sub-mode | Input | Output | Use case |
+|---|---|---|---|
+| `changelog` | git diff | changelog entry (Added/Fixed/Changed/Removed) | "What changed in this commit?" |
+| `handover` | session ledger + git state | handover document (done/remaining/traps/next steps) | "What did I do, what's left?" |
+| `design` | feature idea + graph context | design document (problem/approach/alternatives/impact/open questions) | "How should we build this?" |
+| `prd` | defect/feature + graph context | product requirements document (background/requirements/acceptance criteria/out-of-scope/risks) | "What are we building and why?" |
+
+All sub-modes use the graph context (callers, callees, types) when the
+profile has `graph_project` set. The `design` and `prd` sub-modes use the
+graph to answer "what existing code does this touch?" — the same graph the
+loop uses for passive context injection.
+
+**Reference**: the documentation architect skill (`.agents/skills/doc-architect`
+or equivalent) defines the conventions for documentation structure — section
+headers, ADR format, handover format. The docs mode follows these conventions
+in its system prompts. When the skill is available, its conventions should be
+injected into the docs mode's system prompt to ensure generated docs match
+the project's established format.
+
+```bash
+# Generate a changelog from the last commit
+agent-loop --mode docs --docs-type changelog --review-base HEAD~1
+
+# Generate a handover document from the session state
+agent-loop --mode docs --docs-type handover
+
+# Generate a design document for a feature
+agent-loop --mode docs --docs-type design --defect "Add a trailing stop to the copier"
+
+# Generate a PRD for a defect
+agent-loop --mode docs --docs-type prd --defect "Fix the copier not copying exits"
+```
 
 ## Install
 
