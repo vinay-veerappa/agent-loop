@@ -64,6 +64,134 @@ Deliberately NOT changed (needs a decision):
 - `guard_unsupported_syntax` still refuses any C# file containing `/*`. Correct but coarse; a real parser (tree-sitter) is the fix.
 - The `v0.1.0` tag predates Phase 9 and these fixes, and `requirements.txt` in tvDownloadOHLC pins it. Needs a new tag + push.
 
+### 2026-08-10 — open issues after the F1-F6 self-hosted run
+
+The loop ran six tickets against its own source (`tickets/review_followups.json`,
+commit `41e5fd0`): unanimous panel APPROVE in round 1 on all six, all gates
+green, nine red acceptance tests turned green. Three loop defects the run
+exposed were fixed in that commit. What follows is what is still open, with the
+mechanism, so none of it has to be re-derived.
+
+#### O1. `promote()` cannot handle two tickets that touch one file — HIGH
+
+`Workspace.promote` is a `shutil.copy2` per file, not a patch application. F4
+and F5 both edit `src/agent_loop/report.py`; each patch was produced in its own
+worktree from the same base. Promoting both in either order copies a whole file
+that contains only one of the two changes, so **the second promote silently
+reverts the first** — and the ledger records `applied` for both.
+
+The dirty-target guard added earlier turns this from silent loss into a
+`WorkspaceError`, which `cli.main` catches and records as `ERROR`. That is the
+right failure, but the capability is still missing. Two candidate fixes:
+
+* apply `final.patch` with `git apply` instead of copying files — composes
+  correctly, and the patch is already the review artifact; or
+* detect the collision up front (two selected tickets sharing a region file) and
+  refuse the run with a message, documenting one-file-per-run.
+
+The F1-F6 patches were landed with `git apply` by hand for exactly this reason.
+
+#### O2. `replay` mode does not hold the prompt constant — HIGH
+
+`replay.run_replay` cannot reconstruct the regions, so it builds its own review
+prompt (`replay.py:84-90`): the implement prompt truncated to 2000 chars plus
+the raw implementer output truncated to 8000. The recorded verdict came from the
+real prompt — BEFORE/AFTER blocks, gate summary, settled decisions, acceptance
+tests, graph context, learning feedback. A "flip" therefore compares two
+different prompts and says nothing about the change under test, while
+`run_replay_corpus` returns exit 1 on any flip, so wiring it into CI produces a
+gate that fails on noise. Live model calls make flips partly sampling variance
+on top of that.
+
+Fix: record the rendered review prompt (and the rendered arbiter prompt)
+alongside `r{N}_impl_raw.txt` in `run_ticket`, and have replay re-send *that*
+byte-for-byte. Until then replay is decorative.
+
+Second defect on the same path: `art = ticket_dir` (`replay.py:93`) passes the
+recorded ticket directory to `review_panel`, which writes
+`r{N}_review_{model}.txt` into it — **a replay overwrites the corpus it is
+replaying**. Write to a `replay/` subdirectory.
+
+#### O3. `report` gate-failure distribution reads a field the ledger never writes — MEDIUM
+
+`_print_gate_failures` keyword-scans `e.get("detail")`. `append_ledger` writes
+`detail` only on the protected-paths rejection; static, lint, compile, test and
+lock-scope failures never reach the ledger at all. The counts it does print are
+also wrong: `--mode report` on this repo shows `test 8 / protected 8`, which is
+the same 8 selftest rejections counted twice because their detail text mentions
+`*Tests.cs`.
+
+`run_ticket` already knows `failed.name`. Record it in the ledger and read that
+instead of scanning prose.
+
+#### O4. `report` arbiter calibration correlates coupled variables — MEDIUM
+
+`_pearson` is now arithmetically correct (F5), but its inputs are not
+independent: `upheld_per_ticket` sums upheld findings **across rounds** while the
+y-variable *is* the round count, so more rounds mechanically means more recorded
+findings. The metric will report "arbiter is upholding noise" almost regardless
+of arbiter quality. Normalise to upheld-per-round, or compare upheld count
+against a convergence outcome rather than against the round count.
+
+#### O5. `Finding.signature` still breaks on suffix changes — MEDIUM
+
+F1 removed the digit/punctuation fragility, and the property now keeps the
+**full** normalised text. So a reviewer that adds a trailing clause in round 2
+("X is wrong" → "X is wrong because Y") still produces a non-overlapping
+signature, and `thrashing()` can still fire on a converging ticket. Signature
+normalisation is a band-aid in either direction; the durable fix is to ask the
+arbiter — which already sees every finding from every reviewer — whether finding
+#3 is the same as last round's #7, and use that for convergence detection.
+
+#### O6. The panel did not earn its cost on this run — OBSERVATION
+
+Two adversarial reviewers from different families, six patches, **zero
+findings**. Two of those patches had defects visible in what the reviewers were
+shown: F5 emitted a module-level `import` mid-file (plainly in the AFTER block),
+and F2 added a parameter no caller passed (their own priority list includes
+"does it break callers?"). Every correctness outcome on this run came from the
+gates — static, compile, test against a frozen baseline with `expect_green`, and
+lock-scope.
+
+One run is not a verdict on the panel. It is a reason to answer the question
+with data now that O3/O4 and the reviewer-overlap metric (F4) are fixed: run
+enough tickets to populate the feedback store, then read unique-upheld per
+reviewer. If it stays near zero, the panel is latency and tokens for nothing on
+this class of ticket, and the interesting configuration is gates + arbiter.
+
+#### O7. Whole rungs are still unexercised end to end — TEST GAP
+
+Because all six tickets converged in round 1 with a unanimous panel:
+
+* the **arbiter** never ran — adjudication, `upheld_indices` feedback, ESCALATE,
+  and `ARBITER_DEADLOCK` are covered only by fakes in `selftest.py`;
+* **compaction** never triggered (it starts at round 2);
+* nothing was written to the **settled-decisions** store, and the **learning
+  feedback** store only ever received selftest stub data;
+* `APPROVE_PARTIAL`, `PANEL_UNREACHABLE` and `NOT_CONVERGING` were not reached.
+
+A deliberately hard or under-specified ticket is the cheapest way to exercise
+these. Modes never run at all: `plan`, `test`, `developer`, `brainstorm`,
+`docs`, `review`. Developer mode is the priority — it received the largest
+changes (worktree, frozen baseline, protected-path gate in `_edit_file`) and has
+the least coverage.
+
+#### O8. Small, unticketed — LOW
+
+* `--mode report` and `--mode replay` both require `--profile` and print the
+  single-reviewer panel warning; report needs neither.
+* `replay.py`'s docstring documents a `--replay-dir` flag that the CLI does not
+  implement.
+* `replay.py` imports `Completion`, `ProviderError`, `chat`, `Finding`,
+  `PanelResult`, `RoundRecord` and uses none of them.
+* `replay`'s `adjudicate` call omits `rules=profile.arbiter_rules` and uses
+  `profile.settled` rather than `inject_settled(...)`, so it diverges from the
+  real pipeline in two more ways.
+* `check_lint` reuses `_digest`, whose regex is the MSBuild `error CS1234`
+  format; ruff-style output matches nothing and falls through to the raw tail.
+* `_call_openai` does not capture its cached-token usage field, so the OpenAI
+  backend cannot report cache hits at all.
+
 ### Note on graph re-index for tvDownloadOHLC
 
 The `codebase-memory-mcp` graph for tvDownloadOHLC (`C-Users-vinay-tvDownloadOHLC`)
