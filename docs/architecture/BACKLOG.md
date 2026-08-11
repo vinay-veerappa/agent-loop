@@ -2132,3 +2132,49 @@ bad judgement can do is bounded. O28 — a third labelled case — is still the
 measurement, and still blocked on human labelling.
 
 ---
+#### O51. Developer mode ships a dissent whose findings did not parse — OPEN
+
+Found while checking what the blocker rule above actually protects, not by a
+test. **Not fixed here**: it is a distinct behavioural decision, and widening a
+change past what it was licensed to do is how the arbiter's own scope problems
+started.
+
+`developer/driver.py`:
+
+```python
+elif arbiter_model and panel.votes:
+    all_findings = [f for v in panel.votes if v.counted for f in v.finding_list]
+    if all_findings:
+        adj = arbiter.adjudicate(...)
+        ...
+    else:
+        result["verdict"] = "ARBITER_SHIP"   # <-- no arbiter was consulted
+```
+
+The panel did **not** unanimously approve — that branch is above — so at least
+one counted reviewer voted REVISE or REJECT. If none of its findings match
+`_FINDING_RE` (`- [BLOCKER|MAJOR|MINOR] ...`), `all_findings` is empty, and
+developer mode records `ARBITER_SHIP` **without calling the arbiter at all**.
+`ARBITER_SHIP` is in `DEVELOPER_PROMOTABLE`, so under `--apply` that patch lands
+in the working tree.
+
+**A reviewer whose findings do not parse is not a reviewer who found nothing.**
+This project has already paid for that conflation twice: `parse_review` treats an
+empty body as UNPARSEABLE "never a silent REVISE" for exactly this reason, and
+glm-5.2 dropping the brackets from its ruling lines once left all eight findings
+unruled (see `arbiter.py`'s `_RULING_RE` comment). The same formatting drift on
+the reviewer side reaches this branch instead.
+
+A vote is only UNPARSEABLE when the body is empty or carries no verdict marker,
+so a REVISE with unparseable findings is a perfectly ordinary counted vote.
+
+The patch loop does **not** have this hole: with `all_findings` empty it leaves
+`adj = None` and falls through to another round, ending at
+`MAX_ROUNDS_EXHAUSTED`, which is not promotable.
+
+Candidate answers, in order of preference: treat a counted non-APPROVE vote with
+zero parsed findings as `NEEDS_REVISION`; or surface it as its own verdict so the
+formatting failure is visible rather than being read as approval. Either wants a
+test that a REVISE body with prose-formatted findings does not promote.
+
+---

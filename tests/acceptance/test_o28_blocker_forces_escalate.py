@@ -144,6 +144,19 @@ def test_unruled_findings_still_escalate_first():
     assert "did not rule" in adj.rationale
 
 
+def test_escalated_is_not_promotable_which_is_where_the_rule_gets_its_teeth():
+    """Without this the change would only be a label.
+
+    `--apply` writes the patch to the working tree on any PROMOTABLE verdict, and
+    ARBITER_SHIP is one. An unattended run whose arbiter dismissed a blocker used
+    to land that patch; ESCALATED cannot."""
+    from agent_loop import loop
+
+    assert "ARBITER_SHIP" in loop.PROMOTABLE
+    assert "ESCALATED" not in loop.PROMOTABLE
+    assert "ESCALATED" not in loop.DEVELOPER_PROMOTABLE
+
+
 def test_the_contract_tells_the_arbiter_the_rule_it_will_be_held_to():
     """A mechanical downgrade the model cannot see produces a verdict that
     contradicts its own rationale. State it in the prompt as well.

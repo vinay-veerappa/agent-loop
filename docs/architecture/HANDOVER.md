@@ -1159,6 +1159,16 @@ different branches.
 Six mutations: five killed, one deleted as inert. 551 pass on 3.12 and 3.14,
 selftest 13/13.
 
+### One adjacent hole found and NOT fixed: O51
+
+Checking what the rule actually protects turned up developer mode recording
+`ARBITER_SHIP` **without calling the arbiter** when a counted REVISE vote's
+findings do not match `_FINDING_RE` — and `ARBITER_SHIP` is promotable, so under
+`--apply` that patch lands. A reviewer whose findings did not parse is not a
+reviewer who found nothing; `parse_review` already refuses that conflation for an
+empty body. Recorded in BACKLOG with candidate answers rather than fixed, because
+it is a separate behavioural decision. The patch loop does not have the hole.
+
 **What this does NOT do.** The arbiter is no better at adjudicating. O20 stays
 open, O28 still needs a third labelled case, and `ARBITER_SHIP` on the NT8
 profile is still not a review — it is now merely a claim that no reviewer thought
