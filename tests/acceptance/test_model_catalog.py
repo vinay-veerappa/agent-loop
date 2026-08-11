@@ -63,6 +63,10 @@ def test_catalogue_costs_are_stated_not_implied():
     Anthropic entries must carry real prices so a switch to them is visibly a
     cost change rather than a silent one."""
     for name, p in config.MODEL_CATALOG.items():
+        # Keyed by how the model is REACHED, not by family. `claude-sonnet-4-6`
+        # over the Anthropic API is metered per token; `agy:claude-sonnet-4-6`
+        # is the same family through the Antigravity subscription and is not.
+        # This guard fired the moment those were catalogued under bare names.
         if name.startswith("claude-"):
             assert p.cost_per_1m_in > 0 and p.cost_per_1m_out > 0, name
         else:

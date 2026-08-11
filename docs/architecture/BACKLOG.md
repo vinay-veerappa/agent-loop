@@ -797,6 +797,39 @@ Note also that this benchmark grades free prose, which makes it inherently
 softer evidence than the arbiter one (O20), which grades structured `UPHELD #N`
 rulings the model is required to emit. Two benchmarks, two levels of trust.
 
+#### O28. The arbiter search is exhausted; the MEASUREMENT is now the bottleneck
+
+Eighteen configurations, fourteen distinct models, four services. **Mistral-large-3
+still wins at 3/5, and 3/5 is not good.**
+
+| | best score |
+|---|---|
+| ollama (8 models, 13 configs) | **mistral-large-3, 3/5 on all 4 runs** |
+| Gemini direct API (3 models) | 0/5 |
+| agy CLI (5 models) | gemini-3.1-pro-high, 2/5 then 1/5 |
+| GitHub Models | service retired (HTTP 410) |
+
+Results that should stop further model shopping:
+
+* **`claude-opus-4-6-thinking` ruled SHIP twice**, upholding none of five real
+  defects — worse than a 32B gemma4. Adjudication ability is not a function of
+  capability, and this is now the third independent demonstration.
+* **Reasoning effort did not matter.** `gemini-3.6-flash-high` via agy scored
+  0/5, identical to the same model at Google's default effort via the direct
+  API. That retires the caveat that the direct-API arms measured the wrong
+  setting — they did not.
+* **`gemini-3.1-pro-high` was the best non-mistral arm and still lost**, at 2/5
+  then 1/5 — and unstable across reps.
+
+**The bottleneck is the corpus, not the pool.** The whole ranking rests on ONE
+patch and ONE finding set. Mistral's 3/5 may be a property of that case rather
+than a capability, and nothing in eighteen runs can distinguish those. A second
+labelled corpus is worth more than a fifteenth model, and developer mode now
+produces suitable material every time it runs: a patch, reviewer findings, and
+a verifiable answer about which findings were correct.
+
+Until that exists, `ARBITER_SHIP` remains what O20 says it is — not a review.
+
 #### O25. No catalogue of what each model IS — CLOSED (`89c7c22`)
 
 `MODEL_CATALOG` in config.py: parameters, context window, modalities, thinking

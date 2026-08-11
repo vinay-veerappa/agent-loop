@@ -1,0 +1,18 @@
+  rep1 agy:claude-opus-4-6-thinking   think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep1 agy:claude-sonnet-4-6          think=False -> REVISE   upheld=[5] correct-caught=1/5
+  rep2 agy:gemini-3.1-pro-high        think=False -> REVISE   upheld=[2] correct-caught=1/5
+  rep2 agy:gemini-3.6-flash-high      think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 agy:claude-opus-4-6-thinking   think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 agy:claude-sonnet-4-6          think=False -> REVISE   upheld=[5] correct-caught=1/5
+
+=== SUMMARY (correct findings upheld, out of 5) ===
+  2/5  REVISE       agy:gemini-3.1-pro-high        think=False budget=24000  upheld=[1, 2]
+  0/5  SHIP         agy:gemini-3.6-flash-high      think=False budget=24000  upheld=[]
+  0/5  SHIP         agy:claude-opus-4-6-thinking   think=False budget=24000  upheld=[]
+  1/5  REVISE       agy:claude-sonnet-4-6          think=False budget=24000  upheld=[5]
+  0/5  UNREACHABLE  agy:gpt-oss-120b-medium        think=False budget=24000  agy: gpt-oss-120b-medium returned nothing (exit 0). stderr: 
+  1/5  REVISE       agy:gemini-3.1-pro-high        think=False budget=24000  upheld=[2]
+  0/5  SHIP         agy:gemini-3.6-flash-high      think=False budget=24000  upheld=[]
+  0/5  SHIP         agy:claude-opus-4-6-thinking   think=False budget=24000  upheld=[]
+  1/5  REVISE       agy:claude-sonnet-4-6          think=False budget=24000  upheld=[5]
+  0/5  UNREACHABLE  agy:gpt-oss-120b-medium        think=False budget=24000  agy: gpt-oss-120b-medium returned nothing (exit 0). stderr: 

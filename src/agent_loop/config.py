@@ -284,6 +284,44 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         "(generate_content_free_tier_input_token_count) -- the arbiter prompt "
         "is large. Needs a billing-enabled key. Do not read this as a result.",
     ),
+    # Reached through the `agy:` CLI backend (Antigravity subscription auth, no
+    # AI Studio key or quota). `agy models` lists them. Sizes and context
+    # windows are not published by that CLI, so they are recorded as unknown
+    # rather than guessed.
+    "agy:gemini-3.1-pro-high": ModelProfile(
+        "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "Best of the agy arms and still below mistral: 2/5 then 1/5, REVISE "
+        "both. Unstable across reps. Reached only via agy: the direct API 429s "
+        "on the free tier and the SDK 404s on this id.",
+    ),
+    "agy:gemini-3.6-flash-high": ModelProfile(
+        "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "0/5, SHIP, twice -- IDENTICAL to the same model at Google's default "
+        "effort via the direct API. Reasoning effort did not change the verdict, "
+        "which retires the caveat that the direct-API arms were measuring the "
+        "wrong setting.",
+    ),
+    "agy:claude-opus-4-6-thinking": ModelProfile(
+        "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "0/5, ruled SHIP twice on a patch with five real defects. A frontier "
+        "reasoning model scoring worse than a 32B one; adjudication ability is "
+        "idiosyncratic, not a function of capability.",
+    ),
+    "agy:claude-sonnet-4-6": ModelProfile(
+        "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "1/5 twice, REVISE both. Stable but low.",
+    ),
+    "agy:gpt-oss-120b-medium": ModelProfile(
+        "unpublished", 0, ("text",), True, True, 0.0, 0.0,
+        (),
+        "UNTESTED: returned empty output through agy with exit 0, twice. The "
+        "backend refused to treat silence as an answer, which is correct -- do "
+        "not read this as a score.",
+    ),
     # Anthropic models are priced per token; see providers.PRICING. They are
     # listed for completeness but no key is configured in this environment.
     "claude-opus-5": ModelProfile(
