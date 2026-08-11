@@ -10,14 +10,22 @@ not current state. When two sections disagree, the higher-numbered one wins.
 
 ---
 
-## START HERE — checkpoint, 2026-08-11 (session 4)
+## START HERE — checkpoint, 2026-08-11 (session 5)
 
 | | |
 |---|---|
-| `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
-| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 470 now |
-| Tests | **470 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
-| Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`**. Do not trust a number written here — it went stale three times in one session. Run `git log --oneline v0.3.0..HEAD \| wc -l` for how far behind the consumer is, and `git log --oneline v0.4.0..HEAD` for how stale the latest TAG is (non-empty means cut `v0.5.0` rather than pinning `v0.4.0`) |
+| `main` | see `git log --oneline -1`; clean at last commit, **nothing unpushed** |
+| Tag | **`v0.6.2`**, on origin. Verified green on 3.12 *and* 3.14 |
+| Tests | **542 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Consumer | tvDownloadOHLC **pins and has installed `v0.6.2`**. Do not trust a number written here — it went stale three times in session 4 and moved eight times in session 5. Run `git log --oneline v0.6.2..HEAD` for how stale the TAG is (non-empty means cut a new one rather than pinning this) |
+
+**Session 5 was one long exercise of `--feature` → `--mode test` → the loop against a
+real feature in the consumer repo (the NT8 trade copier), which is what §12i asked
+for. It found THIRTEEN defects, O37-O50, none of them findable by reading.** The
+feature landed; every failure was in the harness, not in the plan content.
+
+**Closed in session 5:** O35 (in the consumer), O37, O38, O39, O40, O41, O42, O43,
+O44, O45, O46, O47, O48, O49, O50. **O28 gained its second labelled case.**
 
 **Closed in session 4:** O4, O7 (modes), O8, O14, O22, O23, O29-O36.
 
@@ -985,3 +993,106 @@ path that had "never been run" turned out to be broken somewhere. Five for five.
 
 **Do this run BEFORE cutting `v0.5.0`.** If the flow has a defect, the tag should
 contain the fix, and this is the last untried path of any size.
+
+## §13 Session 5 (2026-08-11) — the real feature run §12i asked for
+
+§12i said: run a real feature the user wants, end to end, because *every path that
+had never been run turned out to be broken somewhere — five for five*. That held.
+**It went thirteen for thirteen.**
+
+The feature: a ratio converter for the NT8 trade copier, so one leader fill can be
+sized per follower account (1 MES leader -> 3 MES on one account, 5 on another) and
+later across instruments (1 MNQ -> 3 MES). Slice 1 is **shipped and green in the
+consumer**: 806 passed, 0 failed, 17 acceptance criteria red -> green.
+
+### What broke, in the order it broke
+
+| | Defect | Only findable by |
+|---|---|---|
+| O37 | Ambiguous-anchor previews truncated every hit to the same 60 chars, so two C# overloads rendered IDENTICALLY | running it on a real file with overloads |
+| O38 | A rejected plan was discarded entirely; a 4-part plan one anchor from valid, after a 377s call, was unrecoverable | exhausting the rounds |
+| O39 | `anchor not found` gave a verdict and no candidates, so the model anchored from memory — five rounds hunting `LoadCopierConfig` in a file whose method is `LoadFromDisk` | a file the model had never seen |
+| O40 | A multi-line anchor can never match, and was reported as a plain miss; one plan held it for three rounds | watching rounds not converge |
+| O41 | Progress never reached a piped log, so a live 26-minute run looked hung | backgrounding a long run |
+| O42 | plan/test shipped `max_tokens=48000, think=True` — **the exact number the example config warned about**, six lines above the defaults | a brief long enough to exhaust it |
+| O43 | Arbiter SHIP truncated a feature plan to its FIRST PART. Every arbiter-shipped feature plan since `--feature` existed | a feature plan actually reaching the arbiter |
+| O44 | A rejection from an earlier round survived into a success verdict | reading result.json on a win |
+| O45 | The panel only ever saw part 1 of an N-part plan, with an EMPTY resolved-regions block | reading what the reviewers were sent |
+| O46 | Transport failures hid the HTTP body and lied about the attempt count ("3 attempts" for one call) | a 400 with a useful body |
+| O47 | Two regions covering the same lines passed extract, `--list`, both reviewers and the arbiter | reading the line ranges by hand |
+| O48 | Test mode was Python-only in FOUR places and its gate was vacuous | the first non-Python `--mode test` |
+| O49 | The fence language tag became the first line of the generated file | O48 being fixed first |
+| O50 | **The promote command the loop PRINTS deleted its own input**, taking every other round artifact with it | following the instruction verbatim |
+
+### The three that should change how the next session works
+
+1. **O48 is the one to internalise.** `--mode test` wrote
+   `tests/acceptance/test_generated.py` containing `import pytest` and
+   `from TradeCopierEngine import ...` — Python importing a `.cs` file — for a C#
+   profile, then printed `WARNING: tests pass at baseline` and **exited 0**. Four
+   independent Python assumptions: the path default in two places, the system
+   prompt's output example, the head-of-file "code under test", and `expect_green`
+   labelled "test names" when it is matched against failure LINES. Any one of them
+   alone produces a green gate that verifies nothing.
+
+2. **O47 and O50 were both found by hand, not by any gate.** O47 by reading four
+   line ranges and noticing two pairs nested; O50 by typing the command the loop
+   printed. Neither is subtle once seen. Budget time for reading the artifacts.
+
+3. **The arbiter is the weakest link, and O28 now has the evidence.** Across four
+   SHIP rulings it upheld **0 of 66 findings**, and the panel was right about a
+   money-losing defect at least once — a signed exit quantity that INCREASES a
+   follower position sitting opposite the leader (P1-56's class), stated with the
+   exact losing sequence this profile's `arbiter_rules` demand. On the shipped
+   patch, glm's BLOCKER was wrong and its MINOR was right; the arbiter dropped
+   both. **It discriminates poorly in both directions.** BACKLOG's O28 entry
+   records case 2 finding-by-finding with human rulings, and proposes the cheapest
+   consistent change: **an unaddressed BLOCKER forces ESCALATE rather than
+   permitting SHIP.** Not implemented. Do that before anyone runs this unattended.
+
+### Two structural findings that are NOT defects
+
+* **A compiled language changes what "red at baseline" can mean.** In Python a
+  missing name is one test's ImportError; in C# it breaks the build, so nothing
+  runs. A red C# acceptance test must compile and fail an ASSERTION — it cannot
+  reference an API that does not exist yet. Slice 1 worked because the API already
+  existed and only the behaviour was missing.
+* **`--mode test` cannot serve a harness with explicit registration.** The NT8
+  suite's `Program` is not partial, `Assert` is private to it, and
+  `TestHarness_AllDeclaredTestsAreInvoked` reflects only over `typeof(Program)` —
+  so a generated standalone file compiles and **runs nothing**. Tests must be
+  inserted into the existing runner, which the profile deliberately PROTECTS so the
+  implementer cannot edit its own tests. Those two constraints conflict; on that
+  profile, write the tests by hand. The O48/O49 fixes were necessary and not
+  sufficient.
+
+### Two things about writing tickets for this profile, learned the hard way
+
+* **`expect_green` entries are matched against the runner's FAILURE LINES.** On a
+  harness printing `[FAIL] <message>` they are assertion messages. The plan emitted
+  method names; not one could ever have matched, and the test-first check — the one
+  gate between the loop and a vacuous run — would have passed while verifying
+  nothing.
+* **`expect_green` means red-now-green-after, not "must pass".** Two regression
+  guards in the CM1 ticket passed at baseline and the loop correctly refused them.
+  A guard belongs in the suite, where the no-new-failures gate protects it.
+
+### Where the feature stands
+
+`harden/riskguard-p0-51` in tvDownloadOHLC, two commits, **unpushed**:
+
+* `36bd59f6` — CM1 acceptance tests, red at baseline (789 passed, 17 failed)
+* `37cb5193` — the fix (806 passed, 0 failed)
+
+Slice 1 (same-instrument ratio) is done. **Slice 2** is cross-instrument
+(`1 MNQ -> 3 MES`), which needs a rule carrying the follower root and must replace
+slice 1's deliberate refusal of a cross-instrument `CustomSymbolMappings` entry.
+**Slice 3** is reachability: `LoadFromDisk` parsing and the bridge endpoint, neither
+of which reads `PerTickerRatios` today, so the table can still only be set from
+code. The ticket, with its five recorded human corrections, is
+`scripts/agent_loop/tickets_copier_matrix.json`.
+
+**The consumer needs `agent_loop.config.json`** capping the implementer ROLE and the
+plan/test MODES at 64000. Those are separate knobs; capping only the modes left the
+role at 96000 and the first loop run died on qwen3.5's 65536 ceiling. 64000 fits
+qwen3.5 and is ample for kimi, so a substituted implementer does not break the run.
