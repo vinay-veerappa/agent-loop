@@ -29,16 +29,27 @@ from .tools import execute_tool, render_tool_docs
 
 DEVELOPER_SYSTEM = """You are an autonomous software engineer fixing a defect in a codebase.
 
-WORK IN TWO PHASES:
-1. EXPLORE: Use read_file, search_code, and trace_call_path to understand the defect.
-   Find the files and functions that need to change. Do NOT edit yet.
-2. EDIT: Use edit_file to make changes. Use run_build and run_tests to verify.
-   If the build or tests fail, fix the issue and try again.
+WORK IN THREE PHASES, IN ORDER:
+1. RED: Use read_file, search_code and trace_call_path to understand the defect,
+   then use write_test to write a test that FAILS against the current code.
+   The test is run immediately. If it passes, it does not test the defect --
+   you will be told so, and you must write a better one. You CANNOT edit source
+   until a test fails. Assert on the defect's observable effect, not on the
+   implementation you are about to write.
+2. EXPLORE: Once your test is red, use read_file, search_code and
+   trace_call_path to find what must change. Do NOT edit yet.
+3. EDIT: Use edit_file to make changes. Use run_build and run_tests to verify.
    Calling edit_file moves you into the EDIT phase; search_code and
    trace_call_path are no longer available after that, so finish exploring first.
 
-You may not edit the tests or the build files that grade your change. If you
-believe a test is wrong, say so in your summary rather than editing it.
+Your test becomes read-only the moment it goes red. You may not edit it, any
+other test, or the build files that grade your change. If you believe a test is
+wrong, say so in your summary rather than editing it. Your change is accepted
+only if your failing test passes AND nothing that passed before now fails.
+
+run_build and run_tests take NO arguments -- they run the commands this project
+is configured with. If you want to check something the suite does not cover,
+that is a test, not a command.
 
 When you are done, emit:
 <<<DONE>>>
@@ -51,6 +62,9 @@ why you could not fix it
 <<<END ESCALATE>>>
 """
 
+# The red phase can look around, so the test is written against real code rather
+# than a guess, but it cannot edit: that is the whole point of the phase.
+RED_TOOLS = ["read_file", "search_code", "trace_call_path", "write_test"]
 EXPLORE_TOOLS = ["read_file", "search_code", "trace_call_path"]
 # read_file stays available while editing: verifying the text you just wrote is
 # not exploration, and withdrawing it forces the model to edit blind.
@@ -130,20 +144,35 @@ def _run_turns(
     repo = ws.root
     edited: List[str] = []
 
-    # The tool-calling loop
-    phase = "explore"  # "explore" or "edit"
-    available_tools = list(EXPLORE_TOOLS)
+    # TDD is the default. Without a test that fails FIRST, the gate ladder has
+    # nothing to refuse with: it can only check that the patch compiles and
+    # breaks nothing, which a patch that fixes nothing also satisfies.
+    tdd = config.get().mode("developer").require_failing_test and bool(profile.test_cmd)
+    # "red" -> "explore" -> "edit". Without TDD the run starts where it always
+    # did, so an unconfigured profile behaves as before.
+    phase = "red" if tdd else "explore"
+    available_tools = list(RED_TOOLS if tdd else EXPLORE_TOOLS)
+    # Test names that were red at the end of the red phase. They are added to
+    # the frozen baseline (so they are not counted as regressions) and required
+    # green at the end (so the patch cannot pass without closing the defect).
+    acceptance: List[str] = []
+    locked_tests: set = set()
+    result["tdd"] = tdd
 
+    offerable = sorted(set(RED_TOOLS + EXPLORE_TOOLS + EDIT_TOOLS)) if tdd else \
+        sorted(set(EXPLORE_TOOLS + ["edit_file"]))
     history = [
-        {"role": "system", "content": DEVELOPER_SYSTEM + "\n" + render_tool_docs(
-            sorted(set(EXPLORE_TOOLS + ["edit_file"]))
-        )},
+        {"role": "system", "content": DEVELOPER_SYSTEM + "\n" + render_tool_docs(offerable)},
         {"role": "user", "content": f"# Defect to fix\n\n{defect_description}\n\n"
          f"Language: {profile.language}\n"
          f"File scope: {', '.join(profile.file_scope_whitelist) or '(all)'}\n"
+         f"Test location: {', '.join(profile.test_sources) or '(none declared)'}\n"
          f"Build: {profile.build_cmd or '(none)'}\n"
          f"Test: {profile.test_cmd or '(none)'}\n\n"
-         f"Start by exploring the codebase to find the code that needs to change."},
+         + ("Start by finding the defect, then write a test that fails because of "
+            "it. You cannot edit source until a test fails."
+            if tdd else
+            "Start by exploring the codebase to find the code that needs to change.")},
     ]
 
     for turn in range(1, max_turns + 1):
@@ -179,6 +208,20 @@ def _run_turns(
 
         # Check for completion
         if "<<<DONE>>>" in raw:
+            # Done in the red phase means the model decided it was finished
+            # without ever proving the defect exists. Accepting that would make
+            # TDD advisory, which is the state this phase was added to end.
+            if phase == "red":
+                print("           [red] DONE refused: no failing test yet")
+                history += [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content":
+                        "You cannot finish in the RED phase. Nothing has been proven "
+                        "yet: no test fails because of this defect, so there is no "
+                        "way to tell a real fix from a no-op. Use write_test to write "
+                        "a test that FAILS against the current code, then continue."},
+                ]
+                continue
             result["verdict"] = "DONE"
             # Extract the summary
             m = re.search(r"<<<DONE>>>\s*(.*?)<<<END\s*DONE>>>", raw, re.DOTALL)
@@ -193,9 +236,11 @@ def _run_turns(
                 result["summary"] = m.group(1).strip()
             break
 
-        # edit_file is offered in both phases: calling it is what moves the
-        # model from explore to edit.
-        offered = sorted(set(available_tools + ["edit_file"]))
+        # edit_file is offered in both the explore and edit phases: calling it
+        # is what moves the model from one to the other. It is NOT offered in
+        # the red phase -- offering it there would make the whole phase
+        # advisory, since the model could simply skip to editing.
+        offered = sorted(set(available_tools + ([] if phase == "red" else ["edit_file"])))
         # Text-protocol calls come from the model's own text; native calls come
         # from out.tool_calls. Parsing `raw` here instead would double-count
         # every native call, because `raw` already contains their rendering.
@@ -238,6 +283,18 @@ def _run_turns(
             # irreversible once applied; the scope check must prevent it).
             if tc["name"] == "edit_file":
                 path = tc.get("args", {}).get("path", "")
+                # The acceptance test is read-only once it is red. `protected`
+                # already covers the profile's declared test globs, but a test
+                # written to a path those globs do not cover would otherwise be
+                # editable by the model that has to pass it.
+                if path.replace("\\", "/") in locked_tests:
+                    print(f"           [locked] REJECTED: {path}")
+                    tool_results.append(
+                        f"[edit_file result]: ERROR: {path} is the failing test that "
+                        f"defines this change's acceptance criteria. It is read-only. "
+                        f"Fix the source instead."
+                    )
+                    continue
                 if not _check_file_scope(path, profile):
                     tc_result = f"ERROR: file {path} is outside the allowed scope ({', '.join(profile.file_scope_whitelist) or 'all'})"
                     print(f"           [scope] REJECTED: {path}")
@@ -249,6 +306,62 @@ def _run_turns(
                         print(f"           [phase] explore -> edit")
                     continue
             tc_result = execute_tool(tc["name"], tc.get("args", {}), repo, profile, edited)
+
+            # A written test is only worth something if it is RED. Run the
+            # suite now and check that this file actually produced a NEW
+            # failure: a test that passes against unfixed code tests something
+            # other than the defect, and a gate that cannot fail is worse than
+            # no gate at all.
+            if tc["name"] == "write_test" and tc_result.startswith("OK"):
+                test_path = tc.get("args", {}).get("path", "").replace("\\", "/")
+                gt, outcome = gates.check_tests(profile.test_cmd, repo, ws.baseline)
+                new_red = sorted(outcome.failures - ws.baseline)
+                if not outcome.counted:
+                    tc_result += (
+                        "\n\nERROR: the suite did not finish, so the test could not be "
+                        "confirmed red. Check the file for a syntax or import error -- "
+                        "an import of a name that does not exist yet is a COLLECTION "
+                        "error, not a failure, and proves nothing. Import inside the "
+                        "test body instead."
+                    )
+                elif not new_red:
+                    tc_result += (
+                        f"\n\nERROR: this test PASSES against the unfixed code "
+                        f"({outcome.passed} passed, {outcome.failed} failed, no new "
+                        f"failures). It therefore does not test the defect. Assert on "
+                        f"the wrong behaviour the defect actually produces, then call "
+                        f"write_test again."
+                    )
+                else:
+                    acceptance = new_red
+                    locked_tests.add(test_path)
+                    if test_path not in edited:
+                        edited.append(test_path)  # ships with the fix; build it too
+                    # A new file is untracked, and `git diff` does not show
+                    # untracked files -- so the exported patch carried the fix
+                    # WITHOUT the test that proves it. Promoting that would land
+                    # a change whose evidence had been silently dropped, and the
+                    # next run's baseline would not contain the test at all.
+                    # Intent-to-add puts it in the diff without committing it.
+                    rc, out = ws.run(f'git add -N "{test_path}"')
+                    if rc != 0:
+                        print(f"           [red] WARNING: could not stage {test_path}: {out.strip()[:200]}")
+                    # Fold the new failures into the frozen baseline so they are
+                    # not later counted as regressions this patch caused, and
+                    # require them green at the end.
+                    ws.baseline |= set(new_red)
+                    result["acceptance"] = list(acceptance)
+                    phase = "explore"
+                    available_tools = list(EXPLORE_TOOLS)
+                    print(f"           [red] {len(new_red)} test(s) failing as required")
+                    for t in new_red:
+                        print(f"                 - {t}")
+                    print(f"           [phase] red -> explore")
+                    tc_result += (
+                        "\n\nCONFIRMED RED: " + ", ".join(new_red) +
+                        "\nThis file is now read-only. Fix the source so these pass."
+                    )
+
             tool_results.append(f"[{tc['name']} result]: {tc_result[:2000]}")
 
             if tc["name"] == "edit_file":
@@ -280,6 +393,16 @@ def _run_turns(
                 f"is 5x it) or narrow the defect."
             )
 
+    # TDD is not advisory. Reaching DONE without a red test means the phase
+    # machine let something through, and shipping it would be shipping a patch
+    # nothing can refuse.
+    if tdd and result["verdict"] == "DONE" and not acceptance:
+        result["verdict"] = "NO_FAILING_TEST"
+        result["error"] = (
+            "finished without a test that failed first, so there is no evidence "
+            "the defect existed or that it is now fixed."
+        )
+
     # After the loop: run gate ladder on the diff
     if result["verdict"] == "DONE":
         diff = ws.diff()
@@ -300,10 +423,17 @@ def _run_turns(
                 # Against the FROZEN baseline captured before any edit, not an
                 # empty set: with set() every test that was already red counted
                 # as a regression this patch caused.
+                # expect_green is what makes the gate able to REFUSE rather than
+                # merely observe. Without it this branch only asks "does the
+                # suite still pass?", which a patch that changes nothing also
+                # satisfies -- O3's first developer-mode patch was green here
+                # and fixed nothing.
                 gt, outcome = gates.check_tests(
-                    profile.test_cmd, repo, ws.baseline,
+                    profile.test_cmd, repo, ws.baseline, expect_green=acceptance,
                 )
                 print(f"  [test] {'ok' if gt.ok else 'FAIL'} - {gt.summary}")
+                if acceptance:
+                    print(f"  [test-first] {len(acceptance)} acceptance test(s) required green")
                 if not gt.ok:
                     result["verdict"] = "TEST_FAILED"
 

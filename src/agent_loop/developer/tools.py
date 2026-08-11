@@ -79,13 +79,31 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "write_test",
+        "description": (
+            "Write a test that FAILS against the current code, proving the defect "
+            "exists. Available only in the red phase, before any source edit. The "
+            "test is run immediately: if it passes, it does not test the defect and "
+            "is rejected. Once it fails you may edit source, and the test becomes "
+            "read-only for the rest of the run."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative path of the test file to create or overwrite"},
+                "content": {"type": "string", "description": "The complete contents of the test file"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
         "name": "run_build",
-        "description": "Run the profile's build command. Returns success/failure and output.",
+        "description": "Run the profile's build command. Takes no arguments. Returns success/failure and output.",
         "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "run_tests",
-        "description": "Run the profile's test command. Returns pass/fail counts and failures.",
+        "description": "Run the profile's test command. Takes no arguments. Returns pass/fail counts and failures.",
         "parameters": {"type": "object", "properties": {}},
     },
 ]
@@ -153,12 +171,34 @@ def execute_tool(
         return _trace_call_path(args, profile)
     elif tool_name == "edit_file":
         return _edit_file(repo, args, profile)
+    elif tool_name == "write_test":
+        return _write_test(repo, args, profile)
     elif tool_name == "run_build":
-        return _run_build(repo, profile, edited)
+        return _reject_args(tool_name, args) or _run_build(repo, profile, edited)
     elif tool_name == "run_tests":
-        return _run_tests(repo, profile)
+        return _reject_args(tool_name, args) or _run_tests(repo, profile)
     else:
         return f"ERROR: unknown tool {tool_name}"
+
+
+def _reject_args(tool_name: str, args: Dict[str, Any]) -> str:
+    """run_build and run_tests take no arguments and run the PROFILE's command.
+
+    They used to accept and silently discard whatever they were given. A model
+    passed `command` with an ad-hoc verification script, got back the output of
+    the ordinary build, and reported in its summary that it had verified the
+    new behaviour -- it had not, and nothing told it so. Refusing out loud is
+    the same principle the driver already applies to a tool call it cannot
+    offer: answer it, never drop it.
+    """
+    if not args:
+        return ""
+    return (
+        f"ERROR: {tool_name} takes no arguments and runs the profile's configured "
+        f"command; it cannot run an arbitrary one. You passed {sorted(args)}, which "
+        f"was NOT executed. To check behaviour the suite does not cover, write it as "
+        f"a test."
+    )
 
 
 def _read_file(repo: Path, args: Dict[str, Any]) -> str:
@@ -238,6 +278,43 @@ def _trace_call_path(args: Dict[str, Any], profile: Profile) -> str:
         return result
     except Exception as exc:
         return f"[graph] trace_call_path failed: {exc}"
+
+
+def _write_test(repo: Path, args: Dict[str, Any], profile: Profile) -> str:
+    """Create the failing test that licenses an edit.
+
+    The inverse of `_edit_file`'s protected check: this may write ONLY where the
+    profile says tests live, so the red phase cannot be used to reach source.
+    Whether the test is actually red is not decided here -- the driver runs it
+    and refuses to leave the red phase until it fails.
+    """
+    from fnmatch import fnmatch
+
+    rel = args["path"].replace("\\", "/")
+    path = _resolve_in_repo(repo, args["path"])
+    if path is None:
+        return f"ERROR: path {args['path']} escapes the repo root"
+
+    patterns = profile.test_sources or ()
+    if not patterns:
+        return (
+            "ERROR: this profile declares no test_sources, so there is nowhere a "
+            "generated test may legally be written."
+        )
+    if not any(fnmatch(rel, p) or fnmatch(Path(rel).name, p) for p in patterns):
+        return (
+            f"ERROR: {args['path']} is not a test location for this profile. "
+            f"Tests must match one of: {', '.join(patterns)}."
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existed = path.exists()
+    path.write_text(args["content"], encoding="utf-8")
+    return (
+        f"OK: {'overwrote' if existed else 'wrote'} {args['path']} "
+        f"({len(args['content'].splitlines())} lines). Running the suite to confirm "
+        f"it fails."
+    )
 
 
 def _edit_file(repo: Path, args: Dict[str, Any], profile: Profile) -> str:

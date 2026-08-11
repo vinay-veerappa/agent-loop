@@ -47,7 +47,7 @@ def _make_repo(tmpdir):
 # === Phase 7: Tool tests ===
 
 def test_phase7_tool_schemas_exist():
-    """All 6 tools are defined in TOOL_SCHEMAS."""
+    """All 7 tools are defined in TOOL_SCHEMAS."""
     names = [t["name"] for t in TOOL_SCHEMAS]
     assert "read_file" in names
     assert "search_code" in names
@@ -55,7 +55,8 @@ def test_phase7_tool_schemas_exist():
     assert "edit_file" in names
     assert "run_build" in names
     assert "run_tests" in names
-    assert len(TOOL_SCHEMAS) == 6
+    assert "write_test" in names  # the red phase
+    assert len(TOOL_SCHEMAS) == 7
 
 
 def test_phase7_read_file(tmp_path):

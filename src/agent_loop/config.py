@@ -78,6 +78,14 @@ class ModeSettings:
     """A non-patch mode's single generation call."""
     max_tokens: int
     think: bool
+    # Developer mode only. TDD is the default, and it is a correctness
+    # requirement rather than a style preference: without a test that fails
+    # first, the gate ladder cannot refuse a fix for a defect the suite does
+    # not already cover. O3's first developer-mode patch compiled, passed all
+    # 232 tests, and did not fix the defect -- it read a dict key that does not
+    # exist, so it was a no-op for every gate except one. Every gate was green
+    # because nothing tested the thing being fixed.
+    require_failing_test: bool = True
 
 
 @dataclass(frozen=True)
@@ -172,7 +180,7 @@ _DEFAULT_MODES: Dict[str, ModeSettings] = {
     "test": ModeSettings(max_tokens=48000, think=True),
     # Multi-turn tool-calling loop; each turn is small, but it is choosing what
     # to do next, so thinking stays on and the per-turn budget covers it.
-    "developer": ModeSettings(max_tokens=48000, think=True),
+    "developer": ModeSettings(max_tokens=48000, think=True, require_failing_test=True),
 }
 
 _DEFAULT_LOOP = LoopSettings(
