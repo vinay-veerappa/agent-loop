@@ -235,6 +235,21 @@ def build_prompt(
     return "\n".join(parts)
 
 
+def _arbiter_think() -> bool:
+    """Whether the arbiter reasons before answering, per config.
+
+    Falls back to False if the role is missing rather than raising: an
+    unconfigured arbiter should still adjudicate, and False is the measured
+    default.
+    """
+    from . import config
+
+    try:
+        return config.get().roles["arbiter"].think
+    except (KeyError, AttributeError):
+        return False
+
+
 def adjudicate(
     model: str,
     ticket: Dict[str, Any],
@@ -274,7 +289,13 @@ def adjudicate(
             ],
             max_tokens=max_tokens,
             timeout=timeout,
-            think=False,
+            # From config, not hardcoded. This was a literal `think=False` while
+            # config.py ALSO declared think=False for the arbiter role -- the two
+            # agreed only by coincidence, which is the exact failure config.py
+            # was created to end, and it meant changing the config flag did
+            # nothing at all. The measured answer is still False; see the
+            # arbiter role in config.py for the numbers.
+            think=_arbiter_think(),
         )
     except ProviderError as exc:
         return Adjudication(False, error=str(exc), prompt=prompt)

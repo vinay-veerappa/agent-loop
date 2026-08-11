@@ -149,10 +149,29 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     "reviewer": RoleSettings(
         model="glm-5.2:cloud", max_tokens=24000, think=False, capability="fast",
     ),
-    # Same measurement as the reviewer. The arbiter rules on findings it is
-    # handed; it is not re-deriving the patch.
+    # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
+    # glm-5.2 raised six findings on the O3 patch, five of them verified correct
+    # by hand. Of the five, each arbiter upheld (n=2 runs each):
+    #
+    #   deepseek-v4-pro think=False   0/5  SHIP    <- the previous default
+    #   deepseek-v4-pro think=True    0/5  SHIP
+    #   glm-5.2         think=False   0/5, 1/5  REVISE
+    #   glm-5.2         think=True    0/5  SHIP
+    #   mistral-large-3 think=False   3/5, 3/5  REVISE
+    #
+    # deepseek reproduced its live failure exactly and deterministically: it
+    # ruled SHIP on a patch with five real defects, twice. mistral-large-3 was
+    # the only arm to refuse it, and did so identically on both runs.
+    #
+    # think=True did NOT help and is not a budget artifact -- both arms returned
+    # complete, parseable recommendations at 64000. On glm it was strictly
+    # WORSE, flipping REVISE to SHIP on both runs. Adjudication is not a task
+    # that improves with more deliberation here; leave it off.
+    #
+    # 3/5 is an improvement, not a solution. mistral misses both findings about
+    # TEST quality. Do not read a REVISE from it as a thorough review.
     "arbiter": RoleSettings(
-        model="deepseek-v4-pro:cloud", max_tokens=24000, think=False,
+        model="mistral-large-3:675b-cloud", max_tokens=24000, think=False,
         capability="strong-reasoner",
     ),
     # Summarisation only, and its output is bounded by construction.

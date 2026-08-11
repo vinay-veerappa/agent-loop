@@ -24,7 +24,7 @@
       "think": false
     },
     "arbiter": {
-      "model": "deepseek-v4-pro:cloud",
+      "model": "mistral-large-3:675b-cloud",
       "max_tokens": 24000,
       "think": false
     },

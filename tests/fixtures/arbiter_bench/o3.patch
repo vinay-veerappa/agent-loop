@@ -1,0 +1,192 @@
+diff --git a/src/agent_loop/loop.py b/src/agent_loop/loop.py
+index e8b7aa9..2cd1fb9 100644
+--- a/src/agent_loop/loop.py
++++ b/src/agent_loop/loop.py
+@@ -452,7 +452,7 @@ def run_ticket(
+         result["final_verdict"] = "TICKET_REJECTED"
+         result["detail"] = g0.detail
+         print(f"  REFUSED: {g0.detail}")
+-        append_ledger(repo, {"ticket": tid, "verdict": "TICKET_REJECTED", "detail": g0.detail})
++        append_ledger(repo, {"ticket": tid, "verdict": "TICKET_REJECTED", "detail": g0.detail, "gate": "protected"})
+         return result
+ 
+     # ---- graph freshness check (Phase 2)
+@@ -950,14 +950,18 @@ def run_ticket(
+                     print(f"  NOT APPLIED: verdict={final}. Patch for review: {patch}")
+ 
+     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+-    append_ledger(
+-        repo,
+-        {
+-            "ticket": tid,
+-            "verdict": result["final_verdict"],
+-            "applied": result["applied"],
+-            "rounds": len(result["rounds"]),
+-            "cost_usd": result["cost_usd"],
+-        },
+-    )
++    # Record the failing gate name(s) structurally. A ticket may fail in
++    # multiple rounds, but the final ledger entry represents the ticket outcome,
++    # so we record the set of distinct gate names that blocked any round.
++    failed_gates = sorted({r["stage"] for r in result["rounds"] if not r.get("ok", True)})
++    ledger_record: Dict[str, Any] = {
++        "ticket": tid,
++        "verdict": result["final_verdict"],
++        "applied": result["applied"],
++        "rounds": len(result["rounds"]),
++        "cost_usd": result["cost_usd"],
++    }
++    if failed_gates:
++        ledger_record["gate"] = failed_gates[0] if len(failed_gates) == 1 else failed_gates
++    append_ledger(repo, ledger_record)
+     return result
+diff --git a/src/agent_loop/report.py b/src/agent_loop/report.py
+index 3d18c6c..fb31d68 100644
+--- a/src/agent_loop/report.py
++++ b/src/agent_loop/report.py
+@@ -135,22 +135,30 @@ def _print_rounds_distribution(ledger: List[Dict[str, Any]]) -> None:
+ 
+ 
+ def _print_gate_failures(ledger: List[Dict[str, Any]]) -> None:
+-    # Gate failures are in the detail field of ledger entries
+-    # The detail often contains gate names like "static", "compile", "test", "lock-scope"
+-    gate_keywords = ["static", "compile", "test", "lock-scope", "protected", "expect_green"]
+-    gate_counts: Dict[str, int] = {k: 0 for k in gate_keywords}
++    # Gate failures are recorded structurally in the "gate" field of ledger
++    # entries. Legacy entries without this field are unmeasurable and are excluded
++    # from the distribution; that exclusion is reported explicitly.
++    gate_counts: Counter[str] = Counter()
++    unmeasurable = 0
+     for e in ledger:
+-        detail = e.get("detail", "")
+-        if not detail:
++        gate = e.get("gate")
++        if gate is None:
++            unmeasurable += 1
+             continue
+-        for kw in gate_keywords:
+-            if kw in detail.lower():
+-                gate_counts[kw] += 1
+-    if any(gate_counts.values()):
++        if isinstance(gate, list):
++            # A ticket may have been blocked by multiple distinct gates across
++            # rounds. Count each distinct gate once per ticket.
++            for g in gate:
++                gate_counts[g] += 1
++        else:
++            gate_counts[str(gate)] += 1
++    if gate_counts:
+         print(f"\n--- Gate-failure distribution ---")
+-        for kw in gate_keywords:
+-            if gate_counts[kw] > 0:
+-                print(f"  {kw:<15} {gate_counts[kw]} ticket(s)")
++        for kw, count in gate_counts.most_common():
++            print(f"  {kw:<15} {count} ticket(s)")
++    if unmeasurable:
++        print(f"\n--- Unmeasurable legacy entries (no gate field) ---")
++        print(f"  excluded from gate-failure distribution: {unmeasurable} ticket(s)")
+ 
+ 
+ def _same_finding(a: str, b: str) -> bool:
+diff --git a/tests/acceptance/test_o3_gate_failure_distribution.py b/tests/acceptance/test_o3_gate_failure_distribution.py
+new file mode 100644
+index 0000000..3906882
+--- /dev/null
++++ b/tests/acceptance/test_o3_gate_failure_distribution.py
+@@ -0,0 +1,96 @@
++"""
++BACKLOG O3: `--mode report`'s gate-failure distribution is fabricated from prose
++and double-counts.
++
++The report must count structurally-recorded failing gate names, not keyword-scan
++the `detail` field. Old ledger entries without the new field must be excluded
++from the distribution visibly, not silently reported as zero.
++"""
++import json
++from pathlib import Path
++
++import pytest
++
++from agent_loop.report import run_report
++
++
++def _write_ledger(tmp_path: Path, entries):
++    ledger = tmp_path / "logs" / "agent_loop" / "ledger.jsonl"
++    ledger.parent.mkdir(parents=True, exist_ok=True)
++    with ledger.open("w", encoding="utf-8") as fh:
++        for e in entries:
++            fh.write(json.dumps(e) + "\n")
++
++
++def test_gate_failure_distribution_counts_structural_gate_field(capsys, tmp_path):
++    """A protected-path rejection whose detail mentions a *Tests.cs file must
++    not be counted as both 'protected' and 'test'. Only the structural gate
++    field should be counted, and only once."""
++    _write_ledger(
++        tmp_path,
++        [
++            {
++                "ticket": "T1",
++                "verdict": "TICKET_REJECTED",
++                "detail": "touches src/FooTests.cs",
++                "gate": "protected",
++            },
++            {
++                "ticket": "T2",
++                "verdict": "TICKET_REJECTED",
++                "detail": "touches src/BarTests.cs",
++                "gate": "protected",
++            },
++        ],
++    )
++    code = run_report(tmp_path)
++    assert code == 0
++    out = capsys.readouterr().out
++    assert "Gate-failure distribution" in out
++    assert "protected" in out
++    assert out.count("test") == 0 or "Gate-failure distribution" not in out.split("test")[0]
++
++
++def test_gate_failure_distribution_excludes_legacy_entries(capsys, tmp_path):
++    """Ledger entries written before the gate field existed must not be
++    silently counted as zero; they must be excluded from the distribution and
++    that exclusion must be visible."""
++    _write_ledger(
++        tmp_path,
++        [
++            {"ticket": "T1", "verdict": "TICKET_REJECTED", "detail": "touches X"},
++            {"ticket": "T2", "verdict": "TICKET_REJECTED", "detail": "touches Y"},
++        ],
++    )
++    code = run_report(tmp_path)
++    assert code == 0
++    out = capsys.readouterr().out
++    # No gate distribution should be printed when every entry is unmeasurable.
++    assert "Gate-failure distribution" not in out
++    # The exclusion must be visible.
++    assert "unmeasurable" in out.lower() or "legacy" in out.lower() or "excluded" in out.lower()
++
++
++def test_gate_failure_distribution_counts_each_gate_once(capsys, tmp_path):
++    """One ledger entry contributes at most one count, even if its detail
++    contains multiple gate keywords."""
++    _write_ledger(
++        tmp_path,
++        [
++            {
++                "ticket": "T1",
++                "verdict": "TICKET_REJECTED",
++                "detail": "static compile test lock-scope protected expect_green all here",
++                "gate": "static",
++            },
++        ],
++    )
++    code = run_report(tmp_path)
++    assert code == 0
++    out = capsys.readouterr().out
++    assert "Gate-failure distribution" in out
++    # Only 'static' should appear; the others must not be counted from detail.
++    assert "static" in out
++    assert "compile" not in out
++    assert "lock-scope" not in out
++    assert "expect_green" not in out

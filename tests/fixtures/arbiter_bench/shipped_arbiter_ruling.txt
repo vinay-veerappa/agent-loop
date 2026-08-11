@@ -1,0 +1,18 @@
+<<<RULINGS>>>
+- REJECTED #1: The code `r.get("ok", True)` defaults to `True` (meaning "ok") when the key is absent, so a round dict missing `"ok"` is treated as passing and never enters the set comprehension. A round dict missing `"stage"` would raise `KeyError` on `r["stage"]`, not silently produce `None`; this is a loud crash, not a silent exclusion. The finding's mechanism is incorrect.
+- REJECTED #2: The finding speculates about hypothetical "other early-return or exception path[s]" that do not exist in the patch. The patch modifies the two ledger write sites that exist in `run_ticket`: the protected-paths early return and the terminal append. No third site is introduced or left unmodified. A finding based on a non-existent code path is not a reachable failure.
+- REJECTED #3: The ticket specifies "Record the failing gate name(s) structurally in the ledger entry, and have `_print_gate_failures` count that field instead of scanning prose. One ledger entry must contribute at most one count per gate." The patch records the set of distinct gate names that blocked any round and counts each distinct gate once per ticket. This matches the specification. The finding proposes a different semantic ("which gates blocked tickets" meaning only the final blocking gate), which contradicts the ticket's explicit instruction to record the set of distinct failing gates.
+- REJECTED #4: The old code used a fixed, documented order only in the sense that it iterated a hardcoded list. The ticket does not specify output ordering as a constraint, and the patch's `Counter.most_common()` ordering is deterministic (by frequency, then insertion order). No downstream consumer contract is cited, and the mechanical gates show no test failure for ordering. This is a style/preference finding, not a defect.
+- REJECTED #5: The assertion `out.count("test") == 0 or "Gate-failure distribution" not in out.split("test")[0]` is not tautological. If "test" appears in the output (making the first clause False), the second clause checks whether "test" appears *before* the "Gate-failure distribution" header. If "test" appears only after the header (e.g., in the distribution itself), `out.split("test")[0]` contains the header, so the second clause is False, and the assertion fails. The test correctly fails when "test" is counted in the distribution.
+- REJECTED #6: The test `test_gate_failure_distribution_counts_each_gate_once` asserts `"compile" not in out` and `"lock-scope" not in out` on the full output. The finding claims these words "could appear in other sections," but the test constructs a ledger with a single entry whose detail contains all keywords and whose gate is "static." The report's other sections (rounds distribution, verdict distribution) do not print gate names from the detail field. The assertion is scoped to the actual output produced, and the test is not fragile in the context of the report's actual behavior.
+
+<<<END RULINGS>>>
+<<<RECOMMENDATION>>>
+SHIP
+<<<END RECOMMENDATION>>>
+<<<RATIONALE>>>
+All six findings are REJECTED. #1 and #2 misread the code: missing keys produce a KeyError crash or are excluded by the default `True`, not silent None propagation, and no third ledger write site exists. #3 contradicts the ticket's own specification that distinct failing gates should be recorded. #4 raises an ordering concern the ticket never required. #5 and #6 mischaracterize the test logic; the assertions correctly detect the old keyword-scanning behavior. The patch closes the defect as specified, and no upheld finding blocks it.
+<<<END RATIONALE>>>
+<<<SETTLED>>
+- NONE
+<<<END SETTLED>>

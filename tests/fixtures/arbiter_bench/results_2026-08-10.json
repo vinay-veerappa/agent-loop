@@ -1,0 +1,98 @@
+[
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "think": false,
+    "budget": 24000,
+    "rec": "SHIP",
+    "note": "upheld=[]",
+    "hits": 0
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "think": true,
+    "budget": 64000,
+    "rec": "SHIP",
+    "note": "upheld=[]",
+    "hits": 0
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "think": false,
+    "budget": 24000,
+    "rec": "REVISE",
+    "note": "upheld=[3]",
+    "hits": 0
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "think": true,
+    "budget": 64000,
+    "rec": "SHIP",
+    "note": "upheld=[]",
+    "hits": 0
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "think": true,
+    "budget": 64000,
+    "rec": "UNREACHABLE",
+    "note": "kimi-k3:cloud failed after 3 attempts: HTTPError: HTTP Error",
+    "hits": 0
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "think": false,
+    "budget": 24000,
+    "rec": "REVISE",
+    "note": "upheld=[1, 2, 3, 4]",
+    "hits": 3
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "think": false,
+    "budget": 24000,
+    "rec": "SHIP",
+    "note": "upheld=[]",
+    "hits": 0
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "think": true,
+    "budget": 64000,
+    "rec": "SHIP",
+    "note": "upheld=[]",
+    "hits": 0
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "think": false,
+    "budget": 24000,
+    "rec": "REVISE",
+    "note": "upheld=[3, 5]",
+    "hits": 1
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "think": true,
+    "budget": 64000,
+    "rec": "SHIP",
+    "note": "upheld=[]",
+    "hits": 0
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "think": true,
+    "budget": 64000,
+    "rec": "UNREACHABLE",
+    "note": "kimi-k3:cloud failed after 3 attempts: HTTPError: HTTP Error",
+    "hits": 0
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "think": false,
+    "budget": 24000,
+    "rec": "REVISE",
+    "note": "upheld=[1, 2, 3, 4]",
+    "hits": 3
+  }
+]

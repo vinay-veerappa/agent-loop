@@ -1,0 +1,31 @@
+BACKLOG O3: `--mode report`'s gate-failure distribution is fabricated from prose and double-counts.
+
+MECHANISM:
+1. `report._print_gate_failures` keyword-scans `e.get("detail")` on each ledger
+   entry for the words "static", "compile", "test", "lock-scope", "protected",
+   "expect_green". This is inference from prose, not data.
+2. The ledger almost never carries gate information. `append_ledger` receives a
+   `detail` field from exactly ONE call site in `loop.py` -- the protected-paths
+   TICKET_REJECTED rejection. The terminal `append_ledger` at the end of
+   `run_ticket` records ticket/verdict/applied/rounds/cost_usd and NO gate name.
+   Static, lint, compile, test and lock-scope failures never reach the ledger at
+   all, so the distribution structurally cannot report them.
+3. The counts it does print are wrong. `--mode report` on this repo prints
+   "test 8 / protected 8", which is the same 8 protected-path rejections counted
+   twice: their detail text names a `*Tests.cs` file, which matches both the
+   "test" and the "protected" keyword. One entry increments many buckets.
+
+THE FIX (as specified in BACKLOG O3):
+`run_ticket` already knows the failing gate's name -- it builds
+`RoundRecord(rnd, failed.name, ...)` per round, but that goes to result.json,
+not the ledger. Record the failing gate name(s) structurally in the ledger
+entry, and have `_print_gate_failures` count that field instead of scanning
+prose. One ledger entry must contribute at most one count per gate.
+
+CONSTRAINTS:
+- Ledger entries written before this change do NOT have the new field. Reading
+  them must not crash and must not silently report zero as though it were a
+  measured result -- an unmeasurable old entry should be excluded from the
+  distribution, and that exclusion should be visible rather than hidden.
+- Do not remove the protected-path `detail` field; other readers may use it.
+- Do not change the meaning of any existing ledger key.
