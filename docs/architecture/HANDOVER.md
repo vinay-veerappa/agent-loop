@@ -20,8 +20,26 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`**. Do not trust a number written here — it went stale three times in one session. Run `git log --oneline v0.3.0..HEAD \| wc -l` for how far behind the consumer is, and `git log --oneline v0.4.0..HEAD` for how stale the latest TAG is (non-empty means cut `v0.5.0` rather than pinning `v0.4.0`) |
 
 **Closed in session 4:** O4, O7 (modes), O8, O14, O22, O23, O29-O36.
-**Open:** O21, O28, plus one deliberate remainder — the OpenAI cached-token
-field in O8, which cannot be verified without a key. O20 mitigated, not closed.
+
+**Open — the complete list**, because two summaries in this session under-reported
+it by quoting a short version:
+
+| | |
+|---|---|
+| **O28** | Second labelled arbiter corpus. **The bottleneck is the LABELLING, not the running** — someone must judge which findings were actually correct. The corpus today is literally one case: `o3.patch` + one finding set + one shipped ruling. The 12-entry results JSON is 12 model CONFIGS against that one case, not 12 cases. |
+| **O20** | *Mitigated, not closed.* Arbiter 3/5. **Cannot close before O28**, because O28 is the measurement it would need. |
+| **O5** | `Finding.signature` breaks on suffix changes, so `thrashing()` can fire on a converging ticket. Its planned fix delegates dedup to the arbiter — **revisit that premise first**, given O20. |
+| **O21** | Self-authored tests covering half a fix. **Six mutations survived a green suite this session**, all found by mutating and none by reading. Wants a design answer, not a patch. |
+| **O10** | Closed for wiring, **open for conventions** — docs mode does not inject the house format, so generated docs need editing. |
+| **O8 remainder** | The OpenAI cached-token field. Left deliberately: no key, so it cannot be checked against a real response shape, and guessing a response format is what produced O24's and O34's confident wrong readings. |
+
+**O5, O20 and O28 are one cluster**, and the dependency runs one way: O5's fix
+needs arbiter trust, O20 needs O28's measurement to close, and O28 needs human
+labelling. So it is O28 first or none of the three.
+
+**O13 is not a defect** — it is the observation that round budgets must scale with
+ticket size, re-confirmed when the four-part feature plan exhausted
+`--max-rounds 2`.
 
 **Next, in the order argued for:**
 
@@ -924,3 +942,46 @@ read as one family, which warns rather than staying silent.
 shadowed `model` — so overriding `roles.reviewer.model` in a config file became a
 silent no-op, the exact failure `config.py`'s docstring warns about. An existing
 test caught it. `extra_members` keeps `model` as the single primary truth.
+
+### §12i NEXT: run a real feature through the whole flow
+
+Agreed with the user: the next piece of work is a **real feature they want built**,
+used as the end-to-end exercise of `--feature` → `--mode test` → the loop. This is
+the highest-value remaining item, and the reason is the session's own record: every
+path that had "never been run" turned out to be broken somewhere. Five for five.
+
+**What is already verified, so do not re-verify it:**
+
+* `--feature` produces an ordered, decomposed plan with `op` per region and
+  `expect_green` per part, validated in order against the tree plus what earlier
+  parts create. Run live twice.
+* The region ops apply: `create` writes a new file and reaches the patch via
+  `stage_new_files()`; `insert` adds without replacing; one ticket mixes all three.
+* O34's exception lets a feature's red test fail on a missing NAME.
+
+**What has NEVER run, and is therefore the actual test:**
+
+1. `--mode test` generating an acceptance test for a part whose code does not exist.
+   The O34 exception says it should be accepted as red-for-the-right-reason; that
+   path has not executed once.
+2. The LOOP implementing a `create` part — the implementer emitting a whole file
+   into a `create` region, through the gate ladder, with the compile gate seeing a
+   file that did not exist at baseline.
+3. `promote()` landing a part that adds files, then the NEXT part resolving anchors
+   inside a file the previous part created. This is where a decomposed plan either
+   composes or does not, and nothing has exercised it.
+
+**Set up to avoid the two traps that will otherwise cost the run:**
+
+* **Budget rounds by parts, not by habit.** `--max-rounds 2` exhausted itself on a
+  four-part plan (O13). For a real feature start at `--max-rounds 6` or more.
+* **Acceptance tests must be COMMITTED before the loop runs** — the worktree is
+  made from `HEAD` (§6 trap 1). For a feature this bites harder, because the tests
+  are generated per part.
+* Read the `[red]` block before letting a long run proceed (§6 trap 9), and now
+  also read the `[test-first] ... failing at baseline: <kinds>` line — it names the
+  exception types, so a feature's `ImportError` is distinguishable from a broken
+  stub at a glance.
+
+**Do this run BEFORE cutting `v0.5.0`.** If the flow has a defect, the tag should
+contain the fix, and this is the last untried path of any size.
