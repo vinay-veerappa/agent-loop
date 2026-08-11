@@ -576,7 +576,13 @@ def run_ticket(
                     # Implementer keeps thinking (it is planning a patch, not
                     # filling a template) but needs headroom: kimi spent 104k
                     # chars reasoning and still emitted 27.9k output tokens.
-                    out = chat(implementer, history, max_tokens=48000)
+                    # cache=True: the implementer is the loop's only genuine
+                    # multi-turn conversation, so it is the only caller where a
+                    # cache write can be read back. Break-even is two requests,
+                    # so a ticket that converges in round 1 loses 0.25x of one
+                    # prompt and a ticket that reaches round 2 saves 0.9x of the
+                    # pinned head on every round after. No-op on ollama/openai.
+                    out = chat(implementer, history, max_tokens=48000, cache=True)
                 except ProviderError as exc:
                     print(f"  round {rnd}: implementer unreachable -- {exc}")
                     result["rounds"].append(RoundRecord(rnd, "implement", False, str(exc)).__dict__)

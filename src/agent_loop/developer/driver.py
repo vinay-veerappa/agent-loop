@@ -148,7 +148,9 @@ def _run_turns(
 
     for turn in range(1, max_turns + 1):
         try:
-            out = chat(implementer, history, max_tokens=16000)
+            # Multi-turn tool loop: the defect prompt at turns[0] never changes,
+            # so it is worth a cache breakpoint across turns. See providers.
+            out = chat(implementer, history, max_tokens=16000, cache=True)
         except ProviderError as exc:
             result["verdict"] = "IMPLEMENTER_UNREACHABLE"
             result["error"] = str(exc)

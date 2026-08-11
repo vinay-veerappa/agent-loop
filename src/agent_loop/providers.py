@@ -106,38 +106,51 @@ def split_model(spec: str) -> Tuple[str, str]:
 
 
 def _add_cache_control(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Mark the last user message as cacheable for Anthropic prompt caching.
+    """Place Anthropic cache breakpoints on a MULTI-TURN conversation.
 
-    On cache hit (round 2+), Anthropic bills input tokens at 10%.
-    The system prompt + implement prompt + region source are stable across
-    all rounds of a ticket — textbook cacheable prefix.
+    Caching is a prefix match: a breakpoint caches everything from the start of
+    the request up to and including that block, and a later request reads the
+    longest cached prefix it still matches byte-for-byte.
 
-    Only the last user message gets `cache_control` because Anthropic
-    caches from the start up to the cache_control breakpoint. The last
-    user message is the newest content; everything before it is the
-    stable prefix from prior rounds.
+    Two breakpoints, for two different reasons:
+
+    * `turns[0]` -- the implement prompt, carrying the ticket, the spec and the
+      verbatim region source. `compaction.pin_count()` guarantees this message
+      is byte-identical on every round of a ticket, so it is the ONLY span that
+      survives Phase 4a rewriting the middle of the history. Marking only the
+      newest turn (what this function did originally) produced an entry that
+      was invalidated the first time 4a truncated a prior round, from which
+      point every round paid a write premium and read nothing.
+
+    * the newest user turn -- incremental reuse while the history is still
+      append-only, which is the documented multi-turn pattern.
+
+    Anthropic allows at most four breakpoints per request; with the system block
+    marked by the caller that is three.
     """
     if not turns:
         return turns
-    result = []
-    last_user_idx = None
+
+    marks = set()
+    if turns[0].get("role") == "user":
+        marks.add(0)
     for i in range(len(turns) - 1, -1, -1):
-        if turns[i]["role"] == "user":
-            last_user_idx = i
+        if turns[i].get("role") == "user":
+            marks.add(i)
             break
+
+    result: List[Dict[str, Any]] = []
     for i, turn in enumerate(turns):
-        if i == last_user_idx:
-            # Wrap content in cache_control structure
-            if isinstance(turn.get("content"), str):
-                result.append({
-                    **turn,
-                    "content": [
-                        {"type": "text", "text": turn["content"],
-                         "cache_control": {"type": "ephemeral"}}
-                    ],
-                })
-            else:
-                result.append(turn)
+        # Only str content is wrapped; a caller that already passed structured
+        # blocks owns its own cache_control placement.
+        if i in marks and isinstance(turn.get("content"), str):
+            result.append({
+                **turn,
+                "content": [
+                    {"type": "text", "text": turn["content"],
+                     "cache_control": {"type": "ephemeral"}}
+                ],
+            })
         else:
             result.append(turn)
     return result
@@ -187,7 +200,7 @@ def _fit_num_ctx(messages, max_tokens: int, num_ctx: int) -> int:
     return ((needed + 8191) // 8192) * 8192
 
 
-def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, think=None):
+def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
     payload = {
         "model": model,
         "messages": messages,
@@ -238,7 +251,7 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     )
 
 
-def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, think=None):
+def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
     key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
         raise ProviderError(
@@ -249,19 +262,28 @@ def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, 
     system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
     turns = [m for m in messages if m["role"] != "system"]
 
-    # Prompt caching: mark the system message and the last user message as
-    # cacheable. On cache hit (round 2+), Anthropic bills input tokens at 10%.
-    # The system prompt + implement prompt + region source are stable across
-    # all rounds of a ticket — textbook cacheable prefix.
+    # Prompt caching is OPT-IN per call, because a breakpoint is not free: a
+    # cache write bills at 1.25x input, so marking a prompt that will never be
+    # re-sent is a pure 25% surcharge. Every single-shot caller here -- the
+    # review panel, the arbiter, plan/test/docs/brainstorm, the compactor --
+    # builds a fresh prompt every time and can never read what it wrote, so
+    # they leave `cache` False. Only a genuine multi-turn conversation (the
+    # implementer across rounds) opts in, where break-even is two requests.
     payload: Dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": _add_cache_control(turns),
+        "messages": _add_cache_control(turns) if cache else turns,
     }
     if system:
-        payload["system"] = [
-            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-        ]
+        # A system breakpoint is also readable by the NEXT ticket on the same
+        # profile: implementer_rules plus the output contract are byte-identical
+        # across tickets. It silently does nothing when the system prompt is
+        # under the model's minimum cacheable prefix, which is model-dependent
+        # (512 tokens on Opus 5, 1024 on Opus 4.8/Sonnet 5, 4096 on Opus 4.6).
+        payload["system"] = (
+            [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            if cache else system
+        )
     if not _SAMPLING_REJECTED.match(model):
         payload["temperature"] = temperature
 
@@ -295,7 +317,7 @@ def _call_anthropic(model, messages, temperature, max_tokens, timeout, num_ctx, 
     )
 
 
-def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, think=None):
+def _call_openai(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
     base = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     key = os.getenv("OPENAI_API_KEY", "")
     payload = {
@@ -332,6 +354,7 @@ def chat(
     num_ctx: int = 32768,
     max_retries: int = 3,
     think: Optional[bool] = None,
+    cache: bool = False,
 ) -> Completion:
     """Single completion, retried on transport failure with jittered backoff.
 
@@ -345,7 +368,7 @@ def chat(
     t0 = time.time()
     for attempt in range(max_retries):
         try:
-            out = fn(model, messages, temperature, max_tokens, timeout, num_ctx, think)
+            out = fn(model, messages, temperature, max_tokens, timeout, num_ctx, think, cache)
             out.secs = round(time.time() - t0, 1)
             return out
         except ProviderError:

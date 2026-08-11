@@ -309,6 +309,105 @@ def test_num_ctx_fits_prompt_plus_completion():
 
 
 # ---------------------------------------------------------------------------
+# providers -- prompt caching must be opt-in and must mark the stable head
+# ---------------------------------------------------------------------------
+def _anthropic_payload(messages, **kw):
+    """Call _call_anthropic with the transport stubbed; return the sent payload."""
+    captured = {}
+
+    def fake_post(url, payload, headers, timeout):
+        captured.update(payload)
+        return {
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    with patch.object(providers, "_post", side_effect=fake_post):
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "k"}):
+            providers._call_anthropic(
+                "claude-opus-5", messages, 0.1, 1024, 900, 32768, None, kw.get("cache", False)
+            )
+    return captured
+
+
+def _breakpoints(payload):
+    """Count cache_control markers across system and messages."""
+    n = 0
+    system = payload.get("system")
+    if isinstance(system, list):
+        n += sum(1 for b in system if "cache_control" in b)
+    for m in payload.get("messages", []):
+        content = m.get("content")
+        if isinstance(content, list):
+            n += sum(1 for b in content if isinstance(b, dict) and "cache_control" in b)
+    return n
+
+
+def test_single_shot_calls_place_no_cache_breakpoints():
+    """A cache write bills at 1.25x input. The panel, the arbiter, plan/test/
+    docs/brainstorm and the compactor each build a fresh prompt every time and
+    can never read what they wrote, so marking their prompts was a pure 25%
+    surcharge on every one of them."""
+    payload = _anthropic_payload(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "review this"}]
+    )
+    assert _breakpoints(payload) == 0
+    assert isinstance(payload["system"], str), "system must stay a plain string"
+    assert payload["messages"][0]["content"] == "review this"
+
+
+def test_multi_turn_marks_the_pinned_head_and_the_newest_turn():
+    """Marking only the newest turn produced an entry that Phase 4a invalidated
+    the moment it rewrote a prior round -- from then on every round paid a write
+    premium and read nothing. turns[0] is the one span pin_count() guarantees is
+    byte-identical across rounds."""
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "IMPLEMENT PROMPT with region source"},  # pinned
+        {"role": "assistant", "content": "round 1 candidate"},
+        {"role": "user", "content": "round 1 feedback"},                      # newest
+    ]
+    payload = _anthropic_payload(history, cache=True)
+
+    marked = [
+        i for i, m in enumerate(payload["messages"])
+        if isinstance(m.get("content"), list)
+        and any("cache_control" in b for b in m["content"])
+    ]
+    assert marked == [0, 2], f"expected the pinned head and the newest turn, got {marked}"
+    assert payload["messages"][0]["content"][0]["text"].startswith("IMPLEMENT PROMPT")
+    assert payload["messages"][2]["content"][0]["text"] == "round 1 feedback"
+    # The assistant turn in between is left alone.
+    assert payload["messages"][1]["content"] == "round 1 candidate"
+
+
+def test_breakpoints_stay_within_the_anthropic_limit():
+    """Anthropic allows at most four cache_control breakpoints per request."""
+    history = [{"role": "system", "content": "sys"}]
+    for i in range(6):
+        history.append({"role": "assistant", "content": f"a{i}"})
+        history.append({"role": "user", "content": f"u{i}"})
+    payload = _anthropic_payload(history, cache=True)
+    assert _breakpoints(payload) <= 4
+
+
+def test_cache_is_a_noop_on_non_anthropic_backends():
+    """ollama and openai have no cache_control API; the flag must not leak into
+    their payloads or raise."""
+    for backend in ("_call_ollama", "_call_openai"):
+        fn = getattr(providers, backend)
+        with patch.object(providers, "_post", return_value={
+            "message": {"content": "ok"},
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {},
+        }) as post:
+            fn("m", [{"role": "user", "content": "hi"}], 0.1, 100, 900, 32768, None, True)
+        sent = post.call_args[0][1]
+        assert "cache_control" not in json.dumps(sent)
+
+
+# ---------------------------------------------------------------------------
 # regions -- named blocks in any language; line endings preserved
 # ---------------------------------------------------------------------------
 def test_extract_named_block_python():
