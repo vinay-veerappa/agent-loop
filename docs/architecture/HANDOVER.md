@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | 20+ commits past `v0.3.0`, **unpushed and untagged** (`dad3301` at session 3; session 4 added more — check `git log origin/main..HEAD`). O3, O6, O14-O19, O24-O27, O29-O30 closed; O20 mitigated; O21-O23, O28 open |
-| Pushed? | **NO.** `v0.3.0` and earlier are pushed; nothing since is |
-| Tests | **302 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
+| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30 closed; O20 mitigated; O21-O23, O28 open |
+| Pushed? | **YES** (session 4). `main` and `v0.4.0` are on origin. The 23-commit unpushed backlog described below is cleared |
+| Tests | **303 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -544,3 +544,21 @@ there: `test_defect_regressions.py` has a module-level `PY` that is a `Profile`,
 and the first version of the O29 fix shadowed it —
 `TypeError: unsupported operand type(s) for +: 'Profile' and 'str'`. The full
 suite caught it; a single-file run would not have.
+
+### §11a Tagged and pushed — `v0.4.0`
+
+`main` and `v0.4.0` are on origin (`e780e29`). The 23-commit unpushed backlog
+that §0 and §9 describe is cleared; read those two sections as history now, not
+as state.
+
+**The consumer has not been re-pinned.** `tvDownloadOHLC/requirements.txt` still
+says `@v0.3.0` and its venv still has v0.3.0 installed, so until someone re-pins:
+
+* O30 still throws its bare `FileNotFoundError` there rather than the new message;
+* O29's `PY_EXE` fix is test-only, so it changes nothing for the consumer either way;
+* every other v0.4.0 fix (developer mode's tool calls, the compactor, the report's
+  gate distribution, the measured arbiter default) is absent from the consumer.
+
+Re-pin with `@v0.4.0` and reinstall, then re-run `pytest tests/ -q` from the
+agent-loop checkout with the consumer interpreter — that is the pair of checks
+that caught O9 and O29.

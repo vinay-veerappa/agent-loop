@@ -9,12 +9,13 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**302/302 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
-Latest tag: **`v0.3.0`**, which is what tvDownloadOHLC pins and has installed —
-but `main` is 20+ commits past it and **unpushed**.
+**303/303 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
+has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
 
 Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
-the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.2.3` or later.
+the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.3.0` or later;
+`v0.4.0` is the first tag verified green on 3.12 *and* 3.14.
 
 ### 2026-08-10 review — 22 defects found and fixed
 
@@ -924,7 +925,7 @@ work against an install.
 **Not yet in a released tag.** The consumer venv holds v0.3.0, so the traceback
 above is still what it does there until the next tag is cut and pinned.
 
-**State after this session:** 302 passed on **both** 3.12 and 3.14; selftest
+**State after this session:** 303 passed on **both** 3.12 and 3.14; selftest
 12/12 on 3.12 from the checkout. The new guard was mutation-checked
 (`return 2` → `return 0` kills the test).
 
