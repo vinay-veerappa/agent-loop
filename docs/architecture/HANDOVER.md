@@ -37,22 +37,35 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | `c4c411d feat: docs mode 4 sub-modes (changelog, handover, design, prd)` |
+| `agent-loop` HEAD | `afff8e0 fix: docs mode has never been able to run (v0.2.2)` — tags `v0.2.0`, `v0.2.1`, `v0.2.2` all pushed |
 | Pushed? | **Yes** — `origin/main..HEAD` is empty, nothing outstanding |
-| Tests | **148 passed**, 0 failed |
+| Tests | **173 passed**, 0 failed — on Python 3.12 **and** 3.14 |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
-| `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `6f8c4e88` |
+| `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `9be1b779` (unpushed) — pins + installs agent-loop `v0.2.2` |
 | Consumer profiles | present in tvDownloadOHLC HEAD and clean; `git log -S` attributes them to `fb682a93`, which was already in the log when this session began — the other session has been committing and possibly amending there, so **trust file contents over commit attribution in that repo** |
 
-### Two things that are broken right now and will waste your time
+### ~~Two things that are broken right now~~ — RESOLVED 2026-08-10 (later session)
 
-- **`agent_loop` is not installed in the tvDownloadOHLC venv.**
-  `.venv/Scripts/python.exe -c "import agent_loop"` → `ModuleNotFoundError`. So
-  every `python -m agent_loop ...` command in tvDownloadOHLC's CLAUDE.md fails.
-- **`requirements.txt` in tvDownloadOHLC pins `@v0.1.0`.** That tag predates
-  Phase 9, all 22 review fixes, F1-F6, and the caching work. Installing from the
-  pin gets code that is many known defects behind. Needs a new tag, or a switch
-  to `@main`, before that consumer can use any of this.
+Both consumer blockers are closed. `agent_loop` **is** installed in the
+tvDownloadOHLC venv, and `requirements.txt` pins **`v0.2.2`**. Fixing them
+exposed two defects in the package; see BACKLOG **O9-O11**. Two things to carry
+forward:
+
+- **`v0.2.0` is a poisoned tag.** It carries O9 (`Path.read_text(newline=)`,
+  Python 3.13+ only) and therefore cannot run *at all* on Python < 3.13. The
+  consumer venv is 3.12. Pin `v0.2.2` or later; never `v0.2.0` or `v0.1.0`.
+- **Run the suite on 3.12, not just the dev 3.14.** O9 was invisible on the dev
+  interpreter and bricked every ticket on the consumer's:
+  `C:/Users/vinay/tvDownloadOHLC/.venv/Scripts/python.exe -m pytest tests/ -q`.
+  173/173 pass on both today.
+
+And one structural lesson, because it produced *both* new defects: **the test
+suite calls library functions directly with correct arguments, so nothing
+exercised the CLI wiring users actually invoke.** Docs mode had never run once —
+`cli._docs()` passed `run_docs()` positional args against a mismatched
+signature — while the docs tests passed the whole time. New CLI tests drive
+`main(argv)` so argparse is in the loop. Prefer that shape for anything
+user-facing.
 
 ---
 
@@ -119,8 +132,13 @@ single-function tickets.
 **Did not prove:** the arbiter never ran (nothing was contested), compaction
 never triggered (everything converged in round 1), nothing reached the
 settled-decisions store, and `APPROVE_PARTIAL` / `PANEL_UNREACHABLE` /
-`NOT_CONVERGING` were never reached. Six modes have never been run at all:
-`plan`, `test`, `developer`, `brainstorm`, `docs`, `review`.
+`NOT_CONVERGING` were never reached. Six modes had never been run at all:
+`plan`, `test`, `developer`, `brainstorm`, ~~`docs`~~, `review`.
+
+`docs` has since been run (changelog + handover sub-modes, live model, end to
+end) — and running it is how O10 was found: **it could never have worked**, so
+"never been run" was hiding a total failure, not a risk of one. Assume the same
+of the five that remain.
 
 **And a result worth taking seriously:** two adversarial reviewers from
 different families produced **zero findings across six patches**, two of which
@@ -218,7 +236,9 @@ Models confirmed available in the local ollama at handover time:
    frozen baseline, protected-path gate in `_edit_file` — and has the least
    coverage. A deliberately hard ticket also exercises the arbiter, compaction
    and `NOT_CONVERGING`, none of which the F1-F6 run reached.
-3. **Install + retag** so tvDownloadOHLC can actually consume this (see §0).
+3. ~~**Install + retag**~~ — DONE, see §0. Each remaining untested mode should
+   be smoke-run through `main(argv)` the way docs mode now is; that is what
+   caught O10.
 4. **O2 `replay`** — record the rendered review prompt in `run_ticket` so a flip
    means something. Prerequisite for measuring any prompt change.
 5. **Answer the panel question with data** (O6) once O3/O4 are fixed.
