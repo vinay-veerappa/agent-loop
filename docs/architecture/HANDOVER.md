@@ -39,6 +39,8 @@ it by quoting a short version:
 | **O5** | `Finding.signature` breaks on suffix changes, so `thrashing()` can fire on a converging ticket. Its planned fix delegates dedup to the arbiter — **revisit that premise first**, given O20. |
 | **O21** | Self-authored tests covering half a fix. **Six mutations survived a green suite this session**, all found by mutating and none by reading. Wants a design answer, not a patch. |
 | **O10** | Closed for wiring, **open for conventions** — docs mode does not inject the house format, so generated docs need editing. |
+| **O51** | Developer mode records `ARBITER_SHIP` **without calling the arbiter** when a counted REVISE vote's findings do not match `_FINDING_RE`, and that verdict is promotable. Found 2026-08-11 while checking what the blocker rule protects; recorded, not fixed. The patch loop does not have the hole. |
+| **O52** | `import agent_loop.models` as the FIRST import of the package raises ImportError — `config.py`'s module-scope `check_panel_policy` imports back into a half-initialised `models`. Pre-existing at `v0.6.2`; the 552-test suite passes because something always imports `config` first. Any test of it must run in a FRESH interpreter. |
 | **O8 remainder** | The OpenAI cached-token field. Left deliberately: no key, so it cannot be checked against a real response shape, and guessing a response format is what produced O24's and O34's confident wrong readings. |
 
 **O5, O20 and O28 are one cluster**, and the dependency runs one way: O5's fix

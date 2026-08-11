@@ -2178,3 +2178,41 @@ formatting failure is visible rather than being read as approval. Either wants a
 test that a REVISE body with prose-formatted findings does not promote.
 
 ---
+#### O52. `agent_loop.models` cannot be the first import of the package — OPEN
+
+Pre-existing at `v0.6.2`; surfaced by running `pytest tests/test_package.py`
+**alone** while cutting `v0.6.3`, and confirmed against the stashed tree so it is
+not a regression from that session.
+
+```
+python -c "import agent_loop.models"
+ImportError: cannot import name 'model_family' from partially initialized
+             module 'agent_loop.models' (most likely due to a circular import)
+```
+
+The cycle: `models.py` does `from . import config` at module scope; `config.py`
+ends with `check_panel_policy(_DEFAULT_ROLES)` at module scope — deliberately, so
+a drifting default fails at import — and that function does
+`from .models import model_family`. Reached via `models`, the module is executing
+its own line 18, so `model_family` does not exist yet.
+
+**Import ORDER is what decides it, which is why nothing caught it.** Import
+`config` (or anything that reaches it first — `cli`, `__main__`, every other test
+module) and both modules initialise fine. The whole 552-test suite passes for
+that reason: by the time `test_package.py` runs, `agent_loop.config` is already
+in `sys.modules`. Collected on its own it fails, and so would any consumer script
+whose first line is `from agent_loop.models import ModelRegistry`.
+
+**This is the "a check that has only ever run one way is not a check" lesson in a
+new place** — not a stale assumption about a machine or a double this time, but
+about the order modules happen to load in.
+
+Candidate fixes, cheapest first: move `model_family` to a module with no
+dependency on either (or into `config.py`, re-exported from `models` for
+compatibility); or make `models.py` import `config` lazily inside the two
+functions that use it, if `reload_default_registry(config.DEFAULTS)` at
+module scope can be deferred with it. A test must import `agent_loop.models` in a
+FRESH interpreter — inside the suite the import is already cached, so an
+in-process test proves nothing.
+
+---
