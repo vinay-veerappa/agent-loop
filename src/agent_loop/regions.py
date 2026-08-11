@@ -496,7 +496,51 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
                 op=op,
             )
         )
+    _reject_overlaps(out)
     return out
+
+
+def _reject_overlaps(out: List[Region]) -> None:
+    """Two regions in one file may not cover the same line.
+
+    `apply()` splices per file bottom-up so that earlier spans stay valid, which
+    is correct for DISJOINT spans and silently wrong for nested ones: the outer
+    replacement rewrites the very lines the inner one also rewrites, so what
+    lands depends on the order they happen to be applied in, and one edit is
+    lost or duplicated.
+
+    A real plan produced exactly this and every gate passed it: region 1 anchored
+    the whole of `CalculateFollowerQuantity` (lines 429-534) while region 2
+    anchored a branch INSIDE it (441-462), and region 3 (382-427) contained
+    region 4 (404-424). Nobody -- validator, panel, or arbiter -- noticed. It is
+    also an easy mistake for a model to make, because both anchors are individually
+    correct.
+
+    Rejected at extraction, so it fails the same way a bad anchor does, before a
+    model is asked to fill regions that cannot both be applied.
+    """
+    # No `op == CREATE` skip here on purpose. A create carries start=0/end=-1, so
+    # `b.start_line <= a.end_line` is unsatisfiable against it -- an explicit skip
+    # survived mutation because it could not change any outcome, and an inert
+    # branch reads like a rule the arithmetic is not actually relying on.
+    by_file: Dict[str, List[Region]] = {}
+    for r in out:
+        by_file.setdefault(r.file, []).append(r)
+
+    for f, regs in by_file.items():
+        ordered = sorted(regs, key=lambda r: (r.start_line, r.end_line))
+        for a, b in zip(ordered, ordered[1:]):
+            if b.start_line <= a.end_line:
+                relation = (
+                    "is nested inside" if b.end_line <= a.end_line else "overlaps"
+                )
+                raise RegionError(
+                    f"{b.id} {relation} {a.id} in {f}: lines "
+                    f"{b.start_line + 1}-{b.end_line + 1} vs "
+                    f"{a.start_line + 1}-{a.end_line + 1}. Two regions may not "
+                    f"cover the same line -- the wider one already includes the "
+                    f"narrower, so edit ONE of them, not both."
+                )
 
 
 def apply(regions: List[Region], blocks: Dict[str, str]) -> List[str]:

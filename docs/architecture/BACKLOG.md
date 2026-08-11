@@ -1919,4 +1919,38 @@ but never the invariants of the code it was rewriting.
 
 ---
 
+#### O47. Overlapping regions in one ticket passed every gate — CLOSED
+
+Found by reading a shipped plan's line ranges by hand, which is the only reason it
+was found at all.
+
+The plan named four regions in one file. Region 1 anchored the whole of
+`CalculateFollowerQuantity` (**429-534**) and region 2 a branch INSIDE it
+(**441-462**); region 3 (**382-427**) contained region 4 (**404-424**). Two nested
+pairs.
+
+`apply()` splices per file bottom-up so earlier spans stay valid -- correct for
+disjoint spans, and silently wrong for nested ones: the outer replacement rewrites
+the same lines the inner one rewrites, so what lands depends on application order
+and one edit is lost or duplicated.
+
+**Everything passed it.** `regions.extract` resolved all four. `--list` printed
+them. Both reviewers filed fifteen findings without mentioning it. The arbiter
+shipped. It is an easy mistake for a model to make and a hard one to see, because
+**each anchor is individually correct** -- there is nothing wrong with either
+anchor, only with holding both at once.
+
+`extract()` now rejects it, naming both spans and which one contains which, so it
+fails like a bad anchor does -- before a model is asked to fill regions that cannot
+both be applied. Same span in different FILES is still fine; adjacent spans are
+still fine.
+
+**One mutation survived and removed code rather than adding a test**: an explicit
+`op == CREATE` skip could not change any outcome, because a create carries
+`start=0/end=-1` and `b.start_line <= a.end_line` is unsatisfiable against it. The
+skip is gone and the arithmetic is documented. That is the fourth inert guard this
+stretch of work has deleted rather than tested.
+
+---
+
 *End of backlog. Update as items are completed.*
