@@ -630,6 +630,10 @@ def run_ticket(
         # candidate. Reading the loop variable after the loop breaks when the
         # loop never ran (--max-rounds 0), so track it explicitly.
         last_round = 0
+        # The last candidate that cleared EVERY mechanical gate, and its round.
+        # Not the same thing as the last candidate (O55).
+        last_green_blocks: Dict[str, str] = {}
+        last_green_round = 0
 
         # Purge ALL stale per-round artifacts from prior runs before the loop
         # starts. A prior run may have left r{N}_* files on disk; a resume with
@@ -783,6 +787,13 @@ def run_ticket(
                     {"role": "user", "content": failed.feedback or failed.summary},
                 ]
                 continue
+
+            # Every mechanical gate passed. Keep this candidate: a later round
+            # can be WORSE, and the run used to export only its last one. On the
+            # consumer's CM2 ticket round 2 was green on every gate and round 3
+            # failed to compile, so the operator was handed the broken patch to
+            # review while the working one was discarded (O55).
+            last_green_blocks, last_green_round = dict(blocks), rnd
 
             # ---- panel
             gate_summary = "; ".join(f"{x.name}: {x.summary}" for x in gate_results)
@@ -1017,15 +1028,68 @@ def run_ticket(
         # ---- arbitration
         if blocks and not gates.check_static(regs, blocks, lambda ln: regions.strip_code(ln, profile), profile).ok:
             blocks = {}
-        if blocks:
+
+        # WHICH candidate gets exported, and whether it may be applied.
+        #
+        # Two rules, and the second is the one with teeth:
+        #   1. A promotable verdict exports its OWN candidate. Substituting an
+        #      older one there would ship code the panel never saw.
+        #   2. A candidate that failed a mechanical gate is never promoted. Gates
+        #      are facts -- the arbiter itself may not overturn one -- so
+        #      `--allow-unapproved --apply`, which is the command this loop
+        #      PRINTS after an ARBITER_SHIP, must not land a patch that does not
+        #      compile just because the operator waived the review.
+        #
+        # Otherwise export the last candidate that passed every gate: the last
+        # ROUND is frequently not the best one. On the consumer's CM2 ticket
+        # round 2 was green on every gate and round 3 failed to compile, and the
+        # operator was handed round 3 and told it was "for review" (O55).
+        last_round_was_green = bool(last_green_blocks) and last_green_round == last_round
+        promotable = (final == "APPROVE" or allow_unapproved) and last_round_was_green
+        exported_round: Optional[int] = None
+        if promotable:
+            export_blocks, exported_round = blocks, (last_round or None)
+        elif last_green_blocks:
+            export_blocks, exported_round = last_green_blocks, last_green_round
+        else:
+            # Nothing ever cleared the gates. The candidate is still written --
+            # a human has to see what happened -- but it is not attributed as
+            # gate-passing, because it is not.
+            export_blocks = blocks
+
+        if export_blocks:
             (art / "final_blocks.json").write_text(
-                json.dumps({r.id: blocks.get(r.id, "") for r in regs}, indent=2), encoding="utf-8"
+                json.dumps({r.id: export_blocks.get(r.id, "") for r in regs}, indent=2),
+                encoding="utf-8",
             )
-            if final == "APPROVE" or allow_unapproved:
-                # On an arbiter override the candidate was reverted when its
-                # round ended, so put it back before exporting.
-                if not ws.dirty_files():
-                    _apply_regions(ws, regs, blocks)
+            result["exported_round"] = exported_round
+            if exported_round and exported_round != last_round:
+                print(
+                    f"  exporting round {exported_round}, the last candidate that "
+                    f"passed every gate; round {last_round} was worse"
+                )
+                if allow_unapproved and apply:
+                    print(
+                        f"    NOT APPLIED despite --allow-unapproved: round "
+                        f"{last_round} failed a mechanical gate, and a waiver of "
+                        f"the REVIEW is not a waiver of the compiler."
+                    )
+                print(
+                    f"    promote: --resume-raw {art / f'r{exported_round}_impl_raw.txt'} "
+                    "--allow-unapproved --apply"
+                )
+            # Put the chosen candidate in the worktree deterministically.
+            # `if not ws.dirty_files()` asked "is the worktree clean?" as a proxy
+            # for "is the candidate still applied?", and any untracked build
+            # artifact answers it wrongly: a `__pycache__/` left by the compile
+            # gate made this skip the apply, so `git diff` was empty, no
+            # final.patch was written at all, and the run printed
+            # "Patch for review: None" (O56). Reverting first also means apply
+            # always splices into the original line numbers the regions were
+            # resolved against.
+            ws.revert(sorted({r.file for r in regs}))
+            _apply_regions(ws, regs, export_blocks)
+            if promotable:
                 patch = ws.export_patch(art / "final.patch")
                 if apply:
                     moved = ws.promote(sorted({r.file for r in regs}))
@@ -1041,9 +1105,7 @@ def run_ticket(
             else:
                 # Write a readable diff even on failure: final_blocks.json is
                 # JSON-escaped C# and unreadable, and a human has to decide what
-                # happens next.
-                if not ws.dirty_files():
-                    _apply_regions(ws, regs, blocks)
+                # happens next. The candidate is already in place above.
                 patch = ws.export_patch(art / "final.patch")
                 ws.revert(sorted({r.file for r in regs}))
                 if final in ("ARBITER_SHIP", "APPROVE_PARTIAL"):
@@ -1060,7 +1122,8 @@ def run_ticket(
                         )
                     print(f"    review: {patch}")
                     print(
-                        f"    promote: --resume-raw {art / f'r{last_round}_impl_raw.txt'} "
+                        f"    promote: --resume-raw "
+                        f"{art / f'r{exported_round or last_round}_impl_raw.txt'} "
                         "--allow-unapproved --apply"
                     )
                 else:

@@ -2313,3 +2313,70 @@ agreed on the last character. That is the same insensitive-test shape as O53's
 doubled quote, twice in one session.
 
 ---
+#### O55. The loop exports the LAST candidate, not the BEST one — CLOSED
+
+Found by the CM2 run against the consumer, the first real ticket put through the
+loop this session:
+
+```
+round 1: [test] FAIL - 1 regression(s); 827 passed, 1 failed
+round 2: [test] ok - no regressions; 828 passed, 0 failed; all 10 acceptance
+         test(s) green    -> panel REVISE, arbiter REVISE (upheld=3)
+round 3: [compile] FAIL - build FAILED
+NOT APPLIED: verdict=MAX_ROUNDS_EXHAUSTED. Patch for review: final.patch
+```
+
+`final.patch` held **round 3** — the one that does not compile, because round 3
+invented a type `CopierMode` when the real one is `CopierExecutionMode`. Round 2
+passed every mechanical gate and appeared in the export not at all. The operator
+is handed a patch that fails a gate and told to review it, while a working
+candidate is discarded.
+
+Same family as O38 and O50: the run produced something usable and the harness
+threw it away on the way out. Round 2 was technically recoverable from
+`r2_impl_raw.txt`, but nothing in the output says round 2 was the good one —
+finding that out means reading three build logs.
+
+The loop now tracks the last candidate that cleared EVERY gate and exports that
+on a non-promotable exit, printing the round it came from and the `--resume-raw`
+command for it. A promotable verdict still exports its own candidate: an older
+one there would ship code the panel never saw.
+
+**Chasing one surviving mutation found something worse than the defect.** The
+`promotable` test was `final == "APPROVE" or allow_unapproved` — and
+`--allow-unapproved --apply` is the command *this loop prints* after an
+ARBITER_SHIP. On a run whose last round failed a gate, that command applied the
+failing candidate to the live repo. **A waiver of the REVIEW is not a waiver of
+the compiler**, and the arbiter is not permitted to overturn a mechanical gate
+either. `promotable` now also requires that the last round was green, and the
+refusal says so rather than silently applying something else.
+
+Six tests, six mutations killed. Two needed rewriting first: the approve case
+originally used a single round, where "the approved candidate" and "the last
+green candidate" are the same object, so swapping them changed nothing.
+
+#### O56. `dirty_files()` answered "is the candidate applied?" with a `__pycache__` — CLOSED
+
+Found while writing O55's first test, which could not observe the behaviour it
+was testing because no patch was written at all.
+
+The export path guarded re-applying the candidate with `if not ws.dirty_files()`
+— "is the worktree clean?" as a proxy for "is the candidate still applied?".
+`dirty_files()` includes untracked files, and the compile gate had just left a
+`src/__pycache__/` in the worktree. So the apply was skipped, `git diff` was
+empty, `export_patch` returned None, and the run printed:
+
+```
+NOT APPLIED: verdict=ARBITER_NEVER_RAN. Patch for review: None
+```
+
+**On the consumer this never fired**, because the C# build writes to
+`ninjatrader-addon/obj` and `bin`, which are gitignored. Any consumer whose build
+leaves an untracked artifact loses its failure-branch patch entirely, silently.
+
+The proxy is gone. The export now reverts the region files and applies the chosen
+candidate outright, which is also more correct than the conditional it replaces:
+`regions.apply` splices at line numbers resolved against the ORIGINAL file, so
+applying onto an already-modified file was never safe.
+
+---
