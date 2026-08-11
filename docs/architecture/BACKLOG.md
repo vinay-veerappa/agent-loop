@@ -1767,4 +1767,70 @@ fits.**
 
 ---
 
+### 2026-08-11 — the first feature plan to reach the arbiter: O43, O44, O45
+
+These three are one COMPOUNDING chain, and the chain is the finding. Run 5
+printed:
+
+    round 3: plan: 4 part(s), regions check OK
+    [panel] REJECT  [glm-5.2=REVISE(6), minimax-m3=REJECT(7)]
+    [arbiter] SHIP (upheld=0 rejected=18 out-of-scope=0)
+    plan: logs/agent_loop/PLAN/plan.json (1 part(s))
+
+Four parts validated. One part written. Nothing said three were dropped.
+
+#### O43. Arbiter SHIP truncated a feature plan to its first part — CLOSED
+
+The SHIP branch assigned `result["plan"] = ticket` -- the bare FIRST part -- while
+the panel-approve and fast-plan branches both assign `tickets if feature else
+ticket`. **Every arbiter-shipped feature plan since `--feature` existed was
+silently truncated**, and it was never noticed because §12f recorded that the
+full feature chain had never been run.
+
+#### O44. A rejection from an earlier round survived into a success — CLOSED
+
+`result.pop("error", None)` was missing from the SHIP branch, so `result.json`
+reported `verdict: ARBITER_SHIP` beside round 2's anchor error. A reader takes
+that error as the outcome.
+
+#### O45. The panel only ever saw part 1 of an N-part plan — CLOSED
+
+The review prompt rendered `json.dumps(ticket)` -- part 1 -- and, because the
+feature branch set `regs = []`, an EMPTY "Resolved regions" section. So thirteen
+findings were raised against a quarter of the plan, and both reviewers said so:
+minimax's top blocker was *"there is no region that consumes `PerTickerRatios`
+anywhere on the sizing path... a dictionary that nothing reads is dead weight; the
+defect is not closed"*, and glm's was the same shape. **They were right about what
+they were shown and wrong about the plan**, because parts F2-F4 -- the consumer,
+the sizing change, the fail-closed branch -- were never in the prompt. Both also
+blocked on the empty regions block.
+
+**Why this chain is worth remembering.** O45 produced a review of a data model
+with no consumer; the arbiter dismissed all 18 findings and shipped; O43 then
+wrote exactly that data-model-only part to disk. The output on disk was the
+precise failure the brief had named as forbidden ("PerTickerRatios and
+CustomSymbolMappings are today parsed by NOTHING... do not repeat that shape") --
+assembled by three harness defects, none of which is about sizing at all.
+
+The panel now receives every part, is asked explicitly whether the parts COMPOSE,
+and gets a per-part resolved-region list (line ranges for real anchors, `(new
+file)` for creates, and `anchor deferred` where a later part targets a file an
+earlier one creates).
+
+**Ten mutations across these three, and one survivor is the recurring shape
+again**: `"deferred" in prompt` was satisfied by the SENTENCE explaining what
+deferred means, so removing the note stayed green. That is the third instance in
+this stretch of an assertion the fallback also satisfies -- it is now the single
+most reliable way I write a useless test.
+
+**Still open, and not mine to close here: O20/O28.** The arbiter upheld 0 of 18
+findings and shipped against a REVISE and a REJECT. Some of those findings were
+substantive (ratio validation for NaN/negative, deep-copy semantics on
+`ToRelationships`, the missing-key fallback, serialisation of a new dictionary
+property into existing configs). An arbiter that ships against a unanimously
+objecting panel is exactly the measurement O28 is supposed to provide and cannot,
+on a corpus of one.
+
+---
+
 *End of backlog. Update as items are completed.*

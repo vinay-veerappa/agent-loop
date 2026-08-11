@@ -216,7 +216,8 @@ def run_plan(
         # the parts in sequence and carries those files forward -- see
         # _validate_feature_plan.
         if feature:
-            problem = _validate_feature_plan(repo, tickets, profile)
+            resolved_notes: List[str] = []
+            problem = _validate_feature_plan(repo, tickets, profile, resolved_notes)
             if problem:
                 print(f"           plan rejected: {problem}")
                 history += [
@@ -247,13 +248,39 @@ def run_plan(
             print("           [fast-plan] accepted without panel review")
             break
 
-        # Panel review of the plan
+        # Panel review of the plan.
+        #
+        # A FEATURE plan must be reviewed WHOLE. `ticket` is only the first part,
+        # and reviewing part 1 of 4 cannot see the thing most worth reviewing in a
+        # decomposed plan: whether the parts compose -- ordering, a later part
+        # anchoring into a file an earlier one creates, duplicated or contradictory
+        # work across parts. Observed live: a 4-part plan drew 13 findings, all
+        # about part 1, and parts 2-4 were never seen by any reviewer.
         from .loop import review_panel, PanelResult
+        if feature:
+            plan_block = (
+                f"## Proposed plan -- {len(tickets)} ORDERED parts, all of them\n"
+                f"```json\n{json.dumps(tickets, indent=2)}\n```\n\n"
+                "Each part is gated separately and lands in order.\n\n"
+                "## Resolved regions, validated in order\n"
+                + ("\n".join(f"- {n}" for n in resolved_notes) or "- (none)")
+                + "\n\nAn anchor marked `deferred` targets a file an earlier part "
+                "creates, so it cannot be resolved until that part lands -- the "
+                "loop resolves it at the moment it runs that part.\n\n"
+                "Review the plan AS A WHOLE: do the parts compose, is the order "
+                "right, does any part duplicate or contradict another, and does "
+                "each part's acceptance test actually gate that part?\n"
+            )
+        else:
+            plan_block = (
+                f"## Proposed ticket\n```json\n{json.dumps(ticket, indent=2)}\n```\n\n"
+                f"## Resolved regions\n"
+                + "\n".join(f"- {r.id}: {r.file} lines {r.lines_1based}" for r in regs)
+                + "\n\nReview this plan: are the regions correct? Are the acceptance "
+                "tests adequate?\n"
+            )
         review_prompt = (
-            f"# Plan review for defect: {defect_description[:200]}\n\n"
-            f"## Proposed ticket\n```json\n{json.dumps(ticket, indent=2)}\n```\n\n"
-            f"## Resolved regions\n" + "\n".join(f"- {r.id}: {r.file} lines {r.lines_1based}" for r in regs) + "\n\n"
-            "Review this plan: are the regions correct? Are the acceptance tests adequate?\n"
+            f"# Plan review for defect: {defect_description[:200]}\n\n" + plan_block
         )
         panel = review_panel(
             reviewers, review_prompt, profile.reviewer_system, art, rnd,
@@ -286,7 +313,17 @@ def run_plan(
             if adj.ok:
                 print(f"           [arbiter] {adj.summary()}")
                 if adj.recommendation == arbiter_mod.SHIP:
-                    result["plan"] = ticket
+                    # `tickets if feature else ticket`, matching the panel-approve
+                    # and fast-plan paths. This branch shipped the BARE FIRST
+                    # PART: a live 4-part feature plan validated all four, then
+                    # wrote a plan.json containing one, with nothing in the output
+                    # saying three had been dropped. Every arbiter-shipped feature
+                    # plan since --feature existed was truncated this way.
+                    result["plan"] = tickets if feature else ticket
+                    # And drop any rejection from an earlier round. It used to
+                    # survive into result.json beside a success verdict, so the
+                    # file reported ARBITER_SHIP and an anchor error together.
+                    result.pop("error", None)
                     result["verdict"] = "ARBITER_SHIP"
                     final = "ARBITER_SHIP"
                     break
@@ -365,7 +402,8 @@ def _parse_tickets(raw: str) -> List[Dict[str, Any]]:
 
 
 def _validate_feature_plan(
-    repo: Path, tickets: List[Dict[str, Any]], profile: profiles.Profile
+    repo: Path, tickets: List[Dict[str, Any]], profile: profiles.Profile,
+    resolved: Optional[List[str]] = None,
 ) -> str:
     """Check a decomposed feature plan. Returns "" when it is usable.
 
@@ -386,6 +424,17 @@ def _validate_feature_plan(
     """
     if not tickets:
         return "The plan contained no parseable tickets."
+
+    def _note(tid: str, spec: Dict[str, Any], where: str) -> None:
+        """Record WHERE a region landed, for the panel.
+
+        Both reviewers blocked a live feature plan on "the Resolved regions block
+        in this review request is empty" -- true, because the feature branch set
+        `regs = []` and the prompt rendered an empty section. A reviewer asked to
+        judge regions, and shown none, is being asked to rubber-stamp.
+        """
+        if resolved is not None:
+            resolved.append(f"{tid}/{spec.get('id')}: {spec.get('file')} {where}")
 
     will_exist: set = set()
     seen_ids: set = set()
@@ -420,6 +469,7 @@ def _validate_feature_plan(
                         f"Two parts must not create the same file."
                     )
                 will_exist.add(f)
+                _note(tid, spec, "(new file)")
                 continue
             # replace / insert: the file must be there, or be on its way.
             if not exists and f not in will_exist:
@@ -436,7 +486,11 @@ def _validate_feature_plan(
             # which resolves regions per ticket at the moment it runs it.
             if exists and f not in will_exist:
                 try:
-                    regions.extract(repo, [spec], profile)
+                    regs = regions.extract(repo, [spec], profile)
                 except regions.RegionError as exc:
                     return f"Part {tid}: {exc}"
+                for r in regs:
+                    _note(tid, spec, f"lines {r.lines_1based} ({op})")
+            else:
+                _note(tid, spec, f"({op}, anchor deferred: file is created by an earlier part)")
     return ""
