@@ -132,6 +132,20 @@ class LoopSettings:
     context_token_budget: int
     round_input_token_budget: int
     compactor_input_token_budget: int = 48000
+    # Above this many findings from ONE reviewer, the response is degeneration
+    # rather than review, and the vote is UNPARSEABLE.
+    #
+    # MEASURED, CM2 round 2: glm-5.2 ran to 190,129 bytes containing 1,219
+    # findings, 979 of them BLOCKERs, repeating itself until it was cut off. Its
+    # honest reviews on the same profile run 4 to 13. 60 sits far above the
+    # working range and far below the failure, so it cannot silence a reviewer
+    # having a productive day.
+    #
+    # It exists because O61 stopped requiring the closing marker: without a cap,
+    # recovering those 1,219 findings would hand the arbiter a prompt with 1,219
+    # numbered items and blow its budget with certainty -- trading a silent drop
+    # for a guaranteed downstream failure.
+    max_findings_per_reviewer: int = 60
 
 
 @dataclass(frozen=True)

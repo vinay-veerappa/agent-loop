@@ -140,7 +140,27 @@ def parse_review(text: str, model: str) -> Vote:
         return Vote(model, UNPARSEABLE, error="empty response body")
 
     def section(name: str) -> str:
-        m = re.search(rf"<<<{name}>>>\r?\n(.*?)<<<END {name}>>>", text, re.DOTALL)
+        """Everything from the opener to the closer, or to the next marker.
+
+        A strict opener/closer match returns "" for a section whose END tag is
+        missing, and nothing downstream can tell that from "the model said
+        nothing". `arbiter.py` already carries this fix and the reason; the
+        reviewer parser did not get it, and the cost was measured on CM2 round
+        2: glm-5.2 ran to 190,129 bytes containing 1,219 findings, 979 of them
+        BLOCKERs, and was cut off before `<<<END FINDINGS>>>`. All of them were
+        discarded, the panel reported `REVISE(0)`, the arbiter was never
+        consulted, and a round was spent on empty feedback.
+
+        Worse, silently: the rule that makes SHIP unavailable while a BLOCKER
+        stands dismissed reads severities, so 979 of them parsing as zero
+        disarms it. A reviewer running out of room must not be able to do that.
+
+        Stops at the next `<<<...>>>` marker rather than running to end of file,
+        so a REQUIRED block is not swallowed into FINDINGS (O61).
+        """
+        m = re.search(
+            rf"<<<{name}>>>\r?\n(.*?)(?:<<<END {name}>>>|<<<|\Z)", text, re.DOTALL
+        )
         return m.group(1).strip() if m else ""
 
     raw = section("VERDICT").upper()
@@ -153,6 +173,18 @@ def parse_review(text: str, model: str) -> Vote:
         for m in _FINDING_RE.finditer(findings)
         if m.group(2).strip().upper() not in ("NONE", "- NONE")
     ]
+    # Degeneration, not review. See LoopSettings.max_findings_per_reviewer for
+    # the measurement. UNPARSEABLE rather than a trimmed list, because there is
+    # no principled way to choose which 60 of 1,219 repetitions to keep, and an
+    # invalid panel is retried rather than decided on garbage.
+    cap = _loop_settings_value("max_findings_per_reviewer", 60)
+    if len(items) > cap:
+        return Vote(
+            model, UNPARSEABLE,
+            error=f"returned {len(items)} findings (cap {cap}); "
+                  f"that is repetition, not review",
+        )
+
     blockers = sum(1 for f in items if f.blocking)
     return Vote(model, verdict, findings, section("REQUIRED"), blockers, finding_list=items)
 
@@ -326,6 +358,20 @@ class PanelResult:
     @property
     def unreachable(self) -> List[Vote]:
         return [v for v in self.votes if not v.counted]
+
+
+def _loop_settings_value(name: str, fallback):
+    """One `loop` setting from config, or `fallback` if config cannot be read.
+
+    Same shape and same reason as `_role_settings`: an unconfigured loop should
+    still run, and the caller supplies the value the literal used to hardcode.
+    """
+    from . import config as _config
+
+    try:
+        return getattr(_config.get().loop, name)
+    except (KeyError, AttributeError):
+        return fallback
 
 
 def _role_settings(role: str):

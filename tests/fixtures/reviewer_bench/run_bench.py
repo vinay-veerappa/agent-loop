@@ -87,6 +87,31 @@ def load_case(d: Path):
     }
 
 
+# Asked for by the user: "maybe each LLM might need a specific way of prompting
+# to reduce the amount of reasoning output". This is the axis that answers it.
+#
+# `off` is not a switch. MEASURED on kimi-k2.7-code with think=False: 203119
+# chars of reasoning on one round and 53096 on the next -- reduced from the
+# 282935/435641 it produced with think=True, and still very far from none. So
+# the question is not "on or off" but "which lever does THIS model answer to",
+# and the honest way to find out is to send each one and read the counter.
+#
+# A provider that rejects a value is a RESULT, not an error: it means the lever
+# does not exist there and the prompt is the only remaining route.
+REASONING_ARMS = {
+    "default": (None, ""),
+    "off": (False, ""),
+    "low": ("low", ""),
+    "medium": ("medium", ""),
+    "high": ("high", ""),
+    "bounded": (None, (
+        "\n\nBEFORE answering, think in AT MOST 3 short bullet points. Do not "
+        "restate the diff, do not enumerate what you checked and found clean, "
+        "and do not write a plan. Then give the answer in the required format."
+    )),
+}
+
+
 def _matches(text: str, entry: dict) -> bool:
     """Keyword hint. Every term must appear; deliberately crude, see the header."""
     low = text.lower()
@@ -106,6 +131,12 @@ def main() -> int:
     ap.add_argument("--budget", type=int, default=48000)
     ap.add_argument("--think", default=None, choices=["true", "false"])
     ap.add_argument("--case", default=None)
+    ap.add_argument(
+        "--reasoning", nargs="*", default=["default"],
+        help="how to try to bound reasoning: default | off | low | medium | high "
+             "| bounded (a system-prompt instruction). Each is an ARM, so one run "
+             "answers 'does this model respond to this lever at all'.",
+    )
     args = ap.parse_args()
 
     think = None if args.think is None else args.think == "true"
@@ -125,28 +156,36 @@ def main() -> int:
     OUT.mkdir(exist_ok=True)
     print(f"cases: {[c['name'] for c in cases]}   arms: {len(arms)}   "
           f"budget: {args.budget}\n")
-    hdr = (f"{'case':<16} {'model':<30} {'thk':<4} {'status':<12} "
+    hdr = (f"{'case':<16} {'model':<30} {'reason':<8} {'status':<12} "
            f"{'find':>4} {'hits':>5} {'noise':>5} {'out':>7} {'think':>8} {'secs':>6}")
     print(hdr)
     print("-" * len(hdr))
 
     rows = []
     for case in cases:
+      for reasoning in args.reasoning:
+        if reasoning not in REASONING_ARMS:
+            print(f"unknown --reasoning {reasoning!r}; have {sorted(REASONING_ARMS)}")
+            return 1
+        think_value, system_suffix = REASONING_ARMS[reasoning]
         for model, thinking, budget in arms:
+            # The reasoning arm owns `think` when it sets one; otherwise the
+            # model arm's own flag applies.
+            effective = think_value if reasoning != "default" else thinking
             t0 = time.time()
             try:
                 out = chat(
                     model,
-                    [{"role": "system", "content": case["system"]},
+                    [{"role": "system", "content": case["system"] + system_suffix},
                      {"role": "user", "content": case["prompt"]}],
-                    max_tokens=budget, timeout=900, think=thinking,
+                    max_tokens=budget, timeout=900, think=effective,
                 )
                 text, err = out.text or "", ""
             except ProviderError as exc:
                 text, err, out = "", str(exc)[:80], None
             secs = time.time() - t0
 
-            stem = f"{case['name']}__{model.replace(':', '_')}__think{int(thinking)}"
+            stem = (f"{case['name']}__{model.replace(':', '_')}__{reasoning}")
             (OUT / f"{stem}.txt").write_text(text or f"ERROR: {err}", encoding="utf-8")
 
             if err:
@@ -159,7 +198,8 @@ def main() -> int:
 
             usage = getattr(out, "usage", {}) if out else {}
             row = {
-                "case": case["name"], "model": model, "think": thinking,
+                "case": case["name"], "model": model, "reasoning": reasoning,
+                "think": effective,
                 "status": status, "findings": n,
                 "hits": hits, "noise": noise,
                 "out_tokens": (usage or {}).get("eval_count", 0),
@@ -167,7 +207,7 @@ def main() -> int:
                 "secs": round(secs, 1), "error": err,
             }
             rows.append(row)
-            print(f"{row['case']:<16} {model:<30} {str(thinking)[0]:<4} "
+            print(f"{row['case']:<16} {model:<30} {reasoning:<8} "
                   f"{status:<12} {n:>4} {len(hits):>5} {len(noise):>5} "
                   f"{row['out_tokens']:>7} {row['think_chars']:>8} {row['secs']:>6}")
             if err:

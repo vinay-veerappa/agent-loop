@@ -2597,3 +2597,50 @@ Its intent — a genuine truncation still names the budget — is asserted direc
 now instead of through one phrasing, which is what it should have asserted.
 
 ---
+#### O61. A truncated reviewer lost every finding, silently — CLOSED
+
+Found by reading CM2 run 6's artifacts rather than by a gate. The panel line
+looked unremarkable:
+
+    [panel] REVISE  [minimax-m3=APPROVE(0), glm-5.2=REVISE(0)]
+
+`glm-5.2=REVISE(0)`. The artifact behind it is **190,129 bytes containing 1,219
+findings, 979 of them BLOCKERs** — glm degenerated into repetition and was cut
+off before `<<<END FINDINGS>>>`. `parse_review`'s `section()` required both
+markers, so it matched nothing and returned "". The VERDICT block, which closed
+early in the response, parsed fine.
+
+**Three consequences, and the third is why this is not a cosmetic bug:**
+
+1. The arbiter was never consulted — `all_findings` was empty.
+2. A round was spent re-emitting against empty feedback: 14.2s, 2143 tokens, no
+   change.
+3. **The blocker rule was silently disarmed.** SHIP is unavailable while a
+   BLOCKER stands dismissed; 979 of them parsed as zero. A reviewer running out
+   of room could switch off the gate added that morning to stop the arbiter
+   shipping over a blocker.
+
+`arbiter.py` already carries this exact fix, with the reason recorded at it: *"A
+strict opener/closer match silently returns "" for a section whose END tag is
+wrong, and there is no way to tell that from 'the model said nothing'."* The
+reviewer parser never got it. `section()` now runs to the closing marker, the
+next `<<<` marker, or end of input — the middle case is what stops a REQUIRED
+block being swallowed into FINDINGS.
+
+**Recovering the findings created a new failure, and the fix is not complete
+without the second half.** Re-parsed, the real artifact yields all 1,219, and
+handing those to the arbiter builds a prompt with 1,219 numbered items and blows
+its budget with certainty — a silent drop traded for a guaranteed downstream
+failure. `LoopSettings.max_findings_per_reviewer` (60) makes that response
+UNPARSEABLE instead, so the panel is INVALID and the round is retried rather
+than decided on garbage. glm's honest reviews on this profile run 4 to 13, so
+the cap sits far above the working range and far below the failure. UNPARSEABLE
+rather than a trimmed list, because there is no principled way to choose which
+60 of 1,219 repetitions to keep.
+
+Verified against the real artifact both ways: 0 findings before, `UNPARSEABLE —
+returned 1219 findings (cap 60); that is repetition, not review` after. Four
+mutations killed — one of which appeared to survive until I noticed my own
+mutation script had mangled `\Z` and never applied.
+
+---
