@@ -141,6 +141,12 @@ def _print_gate_failures(ledger: List[Dict[str, Any]]) -> None:
     gate_counts: Counter[str] = Counter()
     unmeasurable = 0
     for e in ledger:
+        # Review mode is advisory: it runs no gate ladder, so its ledger entries
+        # have no gate by design. Counting them as "written before the field
+        # existed" conflates a deliberate absence with a legacy one and inflates
+        # the excluded count forever. Reviewer finding, upheld here by hand.
+        if e.get("mode") == "review":
+            continue
         gate = e.get("gate")
         if gate is None:
             unmeasurable += 1
@@ -154,7 +160,11 @@ def _print_gate_failures(ledger: List[Dict[str, Any]]) -> None:
             gate_counts[str(gate)] += 1
     if gate_counts:
         print(f"\n--- Gate-failure distribution ---")
-        for kw, count in gate_counts.most_common():
+        # Sorted by count, then by NAME. `most_common()` alone leaves ties in
+        # insertion order, so the same data printed in a different ledger order
+        # produced a different report -- a reviewer finding, and correct: the
+        # old code had a fixed documented order and this silently dropped it.
+        for kw, count in sorted(gate_counts.items(), key=lambda kv: (-kv[1], kv[0])):
             print(f"  {kw:<15} {count} ticket(s)")
     if unmeasurable:
         print(f"\n--- Unmeasurable legacy entries (no gate field) ---")
