@@ -37,9 +37,10 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`v0.3.0`** — O1, O2, O9-O12 closed; tags `v0.2.0`-`v0.3.0` pushed (`v0.2.0` is poisoned, see below) |
-| Pushed? | **Yes** — `origin/main..HEAD` is empty, nothing outstanding |
-| Tests | **217 passed**, 0 failed — on Python 3.12 **and** 3.14; selftest 12/12 |
+| `agent-loop` HEAD | **`cf88846`** — 5 commits past `v0.3.0`, **unpushed and untagged**. O3, O15-O19 closed; O20-O23 opened |
+| Pushed? | **NO.** `v0.3.0` and earlier are pushed; the five session-3 commits are not |
+| Tests | **255 passed**, 0 failed on Python 3.14; selftest 12/12. **Not re-run on 3.12 this session** — do that before tagging (see the O9 lesson below) |
+| Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
 | `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `88c3a723` (**unpushed**) — pins + installs agent-loop `v0.3.0` |
@@ -136,7 +137,19 @@ single-function tickets.
 never triggered (everything converged in round 1), nothing reached the
 settled-decisions store, and `APPROVE_PARTIAL` / `PANEL_UNREACHABLE` /
 `NOT_CONVERGING` were never reached. Six modes had never been run at all:
-`plan`, `test`, `developer`, `brainstorm`, ~~`docs`~~, `review`.
+`plan`, `test`, ~~`developer`~~, `brainstorm`, ~~`docs`~~, `review`.
+
+**Session 3 update.** `developer` has now been run, and the pattern held for a
+third time: it had never produced a patch, and the reason was a total failure
+(the provider discarded the model's tool calls), not a latent risk. Three modes
+remain unrun — `plan`, `test`, `brainstorm` — plus `review`. Assume the same of
+them, and smoke-run each through `main(argv)` rather than by calling the library
+function, which is what caught O10 and O15.
+
+The arbiter has now run for real, twice, and **got it wrong both times** — once
+by inventing evidence to reject the only correct finding, once by ruling the
+opposite way on the same substantive issue. That is BACKLOG O20 and it upgrades
+§3's warning: `APPROVE` was never "reviewed", and `ARBITER_SHIP` is not either.
 
 `docs` has since been run (changelog + handover sub-modes, live model, end to
 end) — and running it is how O10 was found: **it could never have worked**, so
@@ -160,12 +173,22 @@ In BACKLOG.md, with mechanisms. Summary of the ones that block real use:
 - **O2 (HIGH)** `replay` does not hold the prompt constant, so a verdict flip
   measures nothing, and it writes reviewer artifacts into the corpus it is
   replaying. Decorative until fixed.
-- **O3/O4 (MED)** the report's gate-failure distribution reads a `detail` field
-  the ledger only writes on protected-path rejections (observed double-counting),
-  and its arbiter calibration correlates mechanically coupled variables.
+- ~~**O3**~~ **CLOSED** (`cf88846`) — the gate-failure distribution is measured
+  from a structural field now, not inferred from prose.
+- **O4 (MED)** the report's arbiter calibration correlates mechanically coupled
+  variables. Note it is now measuring an arbiter with two known bad rulings
+  (O20), so fix O20's diagnosis before trusting O4's output.
 - **O5 (MED)** `signature` no longer breaks on line numbers but still breaks on
-  suffix changes; arbiter-assisted dedup is the durable fix.
-- **O7 (GAP)** the untested rungs and modes listed in §3.
+  suffix changes; arbiter-assisted dedup is the durable fix. **Reconsider the
+  premise:** O5's plan is to delegate dedup to the arbiter, and O20 is evidence
+  the arbiter is not yet trustworthy for that.
+- **O7 (GAP)** the untested rungs and modes listed in §3, minus `developer`.
+- **O20 (HIGH)** the arbiter fabricated a warrant to reject the one correct
+  finding, and ruled opposite ways on the same issue across two runs.
+- **O21 (MED)** a self-authored acceptance test can cover half a fix; the O3
+  tests left the writer side entirely unverified.
+- **O22 (MED)** the default panel has one member — the schema cannot express
+  more than one reviewer.
 
 ---
 
@@ -227,7 +250,28 @@ Models confirmed available in the local ollama at handover time:
    nothing. Caching is now opt-in per call (`chat(..., cache=True)`) and only
    the two multi-turn callers use it; single-shot callers must stay off or they
    pay a 1.25× write premium for an entry nothing can read.
-7. **`logs/` accumulates worktrees on a crash.** `--prune` cleans them.
+7. **Worktrees accumulate on a crash.** `--prune` cleans them. **Correction
+   (session 3):** developer mode does not put its worktree under `logs/` — it
+   creates a SIBLING directory of the repo, `../agentloop-DEV-<pid>`, which
+   `--prune` may not find. And `--keep-worktree` is ignored on error paths, so
+   the runs most worth a post-mortem are the ones whose worktree is deleted.
+   BACKLOG O23.
+8. **`--mode developer` is test-first now** (session 3). The model must write a
+   test that FAILS before it may edit source. Consequences worth knowing before
+   you run it:
+   * budget more turns. `max_turns = --max-rounds * 5`, and the red phase spends
+     turns before any fix begins. `--max-rounds 14` (70 turns) was enough for a
+     two-file change; the documented `--max-rounds 3` gives 15 and is not.
+   * the profile must declare `test_sources`, or `write_test` has nowhere legal
+     to write and the run cannot leave the red phase.
+   * `require_failing_test: false` under `modes.developer` turns it off, and a
+     profile with no `test_cmd` skips it automatically.
+9. **A test can be red for the wrong reason, and that costs a whole run.** The
+   first TDD run wrote tests that shelled out to a CLI flag which does not
+   exist; argparse abbreviation-matched `--repo` to `--report-last` (an int
+   flag), so they could never pass. Sixty turns went into chasing them. Read the
+   `[red]` block in the log and satisfy yourself the failure is the DEFECT
+   before letting a long run proceed. BACKLOG O19.
 
 ---
 
@@ -249,10 +293,10 @@ Models confirmed available in the local ollama at handover time:
    literal creeps back. **Read the thinking/budget note before changing any
    max_tokens** — on a reasoning model, reasoning is spent from the answer's
    budget, which is what killed O1's first run.
-2. **Exercise developer mode** (O7). It received the largest changes — worktree,
-   frozen baseline, protected-path gate in `_edit_file` — and has the least
-   coverage. A deliberately hard ticket also exercises the arbiter, compaction
-   and `NOT_CONVERGING`, none of which the F1-F6 run reached.
+2. ~~**Exercise developer mode**~~ — DONE (session 3). It was completely
+   non-functional and is now test-first; see BACKLOG O15-O19. Doing it exercised
+   the arbiter for the first time, which is how O20 was found. Compaction and
+   `NOT_CONVERGING` remain unreached.
 3. ~~**Install + retag**~~ — DONE, see §0. Each remaining untested mode should
    be smoke-run through `main(argv)` the way docs mode now is; that is what
    caught O10.
@@ -285,3 +329,58 @@ Same lesson, stated more sharply: **in this repo, `git log` is not a reliable
 record of who changed what or why.** BACKLOG.md and these handover notes are.
 Stage explicit paths, and re-read `git status` immediately before committing --
 if a file you did not touch is staged, another session is mid-edit in it.
+
+---
+
+## §9 Session 3 (2026-08-10, later) — developer mode, TDD, O3
+
+**What changed.** Five commits on `main`, `f739b7d..cf88846`, all **unpushed**:
+
+| | |
+|---|---|
+| `5c6b091` | providers surface native `tool_calls`; budget guard stops misdiagnosing |
+| `bd3c296` | `MAX_TURNS_EXHAUSTED` instead of a blank verdict; `turns` populated |
+| `08ad362` | **developer mode is test-first** — the red phase |
+| `679962c` | the model can see WHY a test failed |
+| `cf88846` | **O3 closed** |
+
+**Verified green:** 255 tests on 3.14, selftest 12/12, and every load-bearing
+guard mutation-checked. **Not verified:** the suite has not been re-run on
+Python 3.12 this session. O9 was invisible on 3.14 and bricked every ticket on
+the consumer's 3.12 — do that before tagging.
+
+**What I left half-done.** Nothing is half-applied, but four things are recorded
+and not fixed: O20 (arbiter), O21 (half-covered acceptance tests), O22
+(one-member default panel), O23 (four small ones). O22 in particular needs a
+schema decision, not a patch.
+
+**The model/role audit** the last session asked for, since it is short:
+
+| role | model | verdict |
+|---|---|---|
+| implementer | `kimi-k2.7-code:cloud`, 96000, think=True | **right.** Localised correctly across 34 turns unaided; it is the code-specialised model available |
+| reviewer | `glm-5.2:cloud`, 24000, think=False | model fine, **count wrong** — one member, see O22. Add `minimax-m3:cloud` (different family) |
+| arbiter | `deepseek-v4-pro:cloud`, 24000, think=False | family separation correct; **judgement is the problem**, see O20 |
+| compactor | `glm-5.2:cloud`, 8000, think=False | fine; bounded output by construction |
+
+No `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set, so ollama is the only live
+backend and the choice is bounded by what `ollama list` shows. All four assigned
+models exist there.
+
+**Traps not already in §6.**
+
+* **The gates cannot refuse what the suite cannot observe.** This is the whole
+  lesson of the session. A patch that compiled and passed 232 tests fixed
+  nothing, because no test covered the behaviour. If a defect's symptom is "this
+  output is wrong", no gate ladder will catch a bad fix until a test asserts on
+  that output. That is why the red phase exists.
+* **Mutation-test your own tests, not just the model's.** Two of my acceptance
+  tests passed against a deliberately broken implementation. One asserted
+  `acceptance == []`, which is true whether the bad test was rejected or
+  accepted with zero criteria — it looked like evidence and was not. Both were
+  found by mutating the fix, never by reading.
+* **A green suite says nothing about the wiring you did not exercise.** 217
+  tests were green while developer mode was completely dead, because every test
+  built `Completion` objects by hand and none had ever seen a real provider
+  response. Same structural cause as O9 and O10. Prefer tests that drive
+  `main(argv)` or a real response shape.

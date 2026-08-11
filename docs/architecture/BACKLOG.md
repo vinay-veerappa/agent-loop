@@ -473,6 +473,217 @@ The `agent-loop` repo graph (`C-Users-vinay-agent-loop`, 258 nodes) is fresh.
 
 ---
 
+### 2026-08-10 (session 3) — developer mode made to work, O3 closed: O15-O23
+
+Developer mode had **never produced a patch**. Pointing it at O3 found that out,
+which is the same lesson as O10: "never been run" was hiding a total failure,
+not a risk of one. O3 itself is now closed, by developer mode, test-first.
+
+#### O15. Developer mode dropped native tool calls — CLOSED (`5c6b091`)
+
+`kimi-k2.7-code:cloud` — the *configured default implementer for this mode* —
+answers by populating `message.tool_calls` and leaving `content` empty.
+`_call_ollama` read only `content` and `thinking` and discarded the tool calls,
+so every turn looked blank. With `think=True` (developer mode's setting) the
+empty content tripped the reasoning-budget guard and the run died
+`IMPLEMENTER_UNREACHABLE`; with `think=False` the driver said "Continue" to a
+model that had already answered, until it ran out of turns.
+
+`Completion` now carries `tool_calls`, normalised to `[{"name", "args"}]`, for
+ollama and OpenAI. Anthropic never emits `tool_use` without a `tools` array,
+which this shim does not send.
+
+The driver renders native calls into the text protocol for the artifact and the
+history turn, but **dispatches from `out.tool_calls`** — a namespaced name
+(`functions.read_file`) would not survive the text protocol's `\w+` name regex,
+which is this same silent-drop defect one layer down. A test pins that.
+
+#### O16. The provider misdiagnosed empty content as budget exhaustion — CLOSED (`5c6b091`)
+
+The guard fired on "empty content AND any thinking" and blamed the token budget
+unconditionally. It reported a 48000-token exhaustion for a response that
+generated **21 tokens** and stopped voluntarily, and advised raising
+`max_tokens` — which could not have helped. It now checks for a tool call
+first, and only claims truncation on `done_reason=length` or a genuinely spent
+budget. A diagnostic that points at the wrong cause is worse than none: this one
+sent a real debugging session to look at budgets.
+
+#### O17. Turn exhaustion reported no state at all — CLOSED (`bd3c296`)
+
+Spending every turn without `<<<DONE>>>` fell out of the loop with
+`result["verdict"]` still `""`. The first working run did fifteen turns of
+correct exploration and reported `verdict:` blank; every branch after the loop
+keys off `verdict == "DONE"`, so it was indistinguishable from a run that did
+nothing. Now `MAX_TURNS_EXHAUSTED`. `result["turns"]` was also a permanently
+empty list and is now populated.
+
+The loop's own arbiter rules name "a verdict or state that LIES" and "a silent
+zero that hides a broken mechanism from its own logs" as upheld findings. It was
+doing both to itself, in two places.
+
+#### O18. Developer mode was not test-first — CLOSED (`08ad362`)
+
+**The finding that matters most from this session.** Developer mode could edit
+source with no test that fails first, so its gate ladder could only ask "does
+this compile and break nothing?" — a question a patch that fixes nothing also
+answers correctly.
+
+Demonstrated, not theorised: developer mode's first O3 patch **compiled, passed
+all 232 tests, and was a no-op.** It read `r.get("gate")` from a round record
+whose field is named `stage`, so the branch it added could never fire. Every
+gate was green because nothing in the suite tested the thing being fixed —
+which is the same reason the defect existed. A reviewer caught it. The gates
+could not.
+
+There is now a RED phase before explore, default on
+(`modes.developer.require_failing_test`, skipped for a profile with no
+`test_cmd`):
+
+* a `write_test` tool restricted to the profile's `test_sources` — the inverse
+  of `_edit_file`'s protected check, so the red phase cannot reach source;
+* the test is run immediately and must produce a NEW failure; one that passes
+  against unfixed code is rejected with that reason and the phase does not
+  advance;
+* once red it is recorded as `acceptance`, folded into the frozen baseline,
+  locked read-only, and required green by the final gate via `expect_green`;
+* `<<<DONE>>>` in the red phase is refused; DONE without acceptance becomes
+  `NO_FAILING_TEST`.
+
+Two implementation traps, both found by the tests rather than by review:
+
+1. The driver appended `edit_file` to the offered set **unconditionally**
+   ("calling it is what moves the model from explore to edit"). Left alone, the
+   model could skip straight to editing and the phase would have been
+   decorative.
+2. `git diff` omits untracked files, so the exported patch carried the fix
+   **without the test proving it**. Fixed with `git add -N`.
+
+**What this does NOT buy**, stated because it is easy to over-read: TDD makes
+the gate ladder *able* to refuse. It does not make the model write a good test.
+The acceptance criteria are self-chosen, and a test covering one side of a
+two-sided fix still unlocks editing. See O21.
+
+#### O19. The model could not see WHY a test failed — CLOSED (`679962c`)
+
+`_run_tests` returned only the NAMES of failing tests. On the first TDD run the
+model wrote three acceptance tests that shelled out to
+`python -m agent_loop --mode report --repo <path>`. There is no `--repo` flag;
+argparse **abbreviation-matched it to `--report-last`**, which takes an int, so
+every call died with `invalid int value` and the tests were red for a reason no
+fix could ever change. The model then spent sixty turns trying to satisfy them,
+at one point editing `report.py`'s column padding from `{gate:<15}` to
+`{gate:<16}` because a test asserted exact spacing.
+
+It was not being stupid, it was blind: the argparse error explaining the failure
+was never shown to it, and every tool result was truncated to 2000 chars — which
+also silently halved its 100-line `read_file` windows, hence the redundant
+re-reading.
+
+Now: failure output is returned, per-tool result budgets (8000 diagnostic /
+4000 otherwise), and `CONFIRMED RED` shows the failure output and says that a
+test failing for any reason other than the defect can never pass and should draw
+`<<<ESCALATE>>>` rather than edits.
+
+The gate held throughout — `MAX_TURNS_EXHAUSTED`, no patch, nothing applied. The
+system refused to ship a bad fix. It just took seventy turns to say so.
+
+#### O3. Gate-failure distribution — CLOSED (`cf88846`)
+
+Produced by developer mode with the red phase active, then verified and extended
+by hand. `run_ticket` records the failing gate name(s) structurally from
+`RoundRecord.stage`; the report counts that field; legacy entries are excluded
+**visibly**. On this repo it now prints `review 6 / protected 1 / test 1` with
+187 legacy entries excluded, in place of the double-counted `test 8 /
+protected 8`.
+
+Read O21 before trusting the generated tests that came with it.
+
+#### O20. The arbiter is not a reliable adjudicator — HIGH, OPEN
+
+Two failures in one session, on the same defect:
+
+1. **A fabricated warrant.** It rejected the one correct reviewer finding — that
+   the terminal branch was a no-op — on the grounds that *"the test suite
+   passing proves that `RoundRecord` carries a `gate` field."* The suite proves
+   nothing of the sort: there was no test over that path at all, which is
+   precisely why O3 existed. It invented evidence and dismissed the only finding
+   that mattered.
+2. **Contradictory rulings.** On the pre-TDD patch it UPHELD that recording a
+   gate for any failing round is wrong. On the TDD patch, which does the same
+   thing, it REJECTED all six findings and ruled SHIP. Same substantive issue,
+   opposite verdicts.
+
+This is the first real arbiter data ever collected — before this session it had
+never run outside `selftest` fakes (O7) — and it is not encouraging.
+
+A hypothesis, not a conclusion: the arbiter is the only role whose job is
+inference over evidence, and the only role configured `think=False`. The config
+comment justifying that cites a real measurement (thinking ON burned the budget
+before emitting findings), so the fix is not simply flipping the flag — per
+config.py's own note, `think=True` requires raising `max_tokens` in the same
+edit. Measure before changing.
+
+Until then: **do not read `ARBITER_SHIP` as "reviewed".** Same standing advice
+as O6, now with a second kind of evidence behind it.
+
+#### O21. A self-authored acceptance test can cover half a fix — MEDIUM, OPEN
+
+The generated tests for O3 covered only the report READER. They hand-build
+ledger entries and feed them to `run_report`, so **deleting the write site in
+`loop.py` entirely left every one of them green** — two of three writer
+mutations survived. The TDD gate proved the reader worked; nothing proved the
+writer did.
+
+Mitigated for O3 by hand: `failed_gate_names` and `terminal_ledger_record` are
+now named functions specifically so the writer is testable, in place of a
+comprehension buried at the end of a 600-line function, and all five writer
+mutations are now caught.
+
+Not mitigated in general. The red phase guarantees the gate CAN fail; it does
+not guarantee the test covers the change. The durable fix is to review the
+acceptance test against the diff's blast radius before it locks — a design
+change, not a patch, and it wants a deliberate decision.
+
+#### O22. The default panel has one member — MEDIUM, OPEN
+
+`ModelRegistry.register` APPENDS for a role, and its docstring says the panel
+"is deliberately several reviewers from different families" and that overwriting
+"silently reduced the panel to one member". But `Config.roles` is a
+`Mapping[str, RoleSettings]` keyed by role NAME, so exactly one reviewer is
+expressible and `registry_from_config` can only ever register one. The design
+intent and the schema contradict each other.
+
+Consequence: any run that does not pass `--reviewers` gets a one-member panel
+and the loop's own "one reviewer is not a panel" warning. Every command in
+HANDOVER §5 passes `--reviewers` explicitly, so nobody has been running the
+default — which is why this survived.
+
+Verified:
+
+```
+default reviewers : ['glm-5.2:cloud'] <- panel size 1
+default arbiter   : deepseek-v4-pro:cloud
+```
+
+The fix wants a schema decision (a `reviewers` list distinct from single-model
+roles), so it is recorded rather than patched.
+
+#### O23. Small, from this session — LOW, OPEN
+
+* `--keep-worktree` is ignored on error paths, so the runs most worth a
+  post-mortem are exactly the ones whose worktree is deleted.
+* Developer mode creates its worktree in a **sibling directory of the repo**
+  (`../agentloop-DEV-<pid>`), not under `logs/`. HANDOVER §6 trap 7 says
+  otherwise, and `--prune` may not find it.
+* `ARBITER_SHIP` exits non-zero: `cli._developer` returns 0 only for
+  `verdict == "DONE"`, so a successful arbiter-override run reports failure to
+  CI.
+* The implementer ROLE is budgeted `max_tokens=96000`, but developer mode runs
+  it under the MODE budget of 48000. Harmless today — per-turn output is small —
+  but the two numbers are unrelated by accident rather than by decision.
+
+---
+
 ## 3. Missing modes (deferred per the plan)
 
 ### 3.1 `brainstorm` mode
