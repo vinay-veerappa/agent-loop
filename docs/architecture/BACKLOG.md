@@ -4,14 +4,16 @@
 Each item has a priority, an effort estimate, and a reference to the plan
 section or decision log entry that motivates it.
 
-**Last updated**: after the 2026-08-10 full-package review.
+**Last updated**: 2026-08-11, session 4 (O7 modes, O14, O23, O29-O34).
 
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
 **389/389 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
-Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
-has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
+Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` is now 7 commits
+past that tag, so **cut `v0.5.0` before re-pinning anything**.
+**tvDownloadOHLC still pins and has installed `v0.3.0`**, which is 33 commits
+behind: re-pinning is what delivers O15-O19, O23, O24, O29-O34.
 
 Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
 the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.3.0` or later;

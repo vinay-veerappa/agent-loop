@@ -17,7 +17,7 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
 | Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 389 now |
 | Tests | **389 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
-| Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`** — now eight fixes behind |
+| Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`** — **33 commits behind HEAD**, and `v0.4.0` is itself 7 commits behind (5 of them `fix(` commits closing O7/O32, O33, O34, O23, O31). Counts from `git log --oneline v0.3.0..HEAD` |
 
 **Closed in session 4:** O7 (for the modes), O14, O23, O29, O30, O31, O32, O33, O34.
 **Open:** O21, O22, O28, O35, O36. O20 mitigated, not closed.
@@ -39,9 +39,11 @@ not current state. When two sections disagree, the higher-numbered one wins.
    `logs/agent_loop/BRAINSTORM/approaches.md`) and, now that O31 is fixed, did so
    while actually looking at `config.py`.
 
-Also outstanding and cheap: **re-pin the consumer to `v0.4.0`** (or cut `v0.5.0`
-first — there are eight fixes past the tag now) and reinstall. Until then O30
-still throws its bare `FileNotFoundError` there.
+Also outstanding and cheap: **cut `v0.5.0` and re-pin the consumer to it.**
+Pinning `v0.4.0` would already be five fixes stale, so the tag is the cheaper
+half of the job. Until the consumer is re-pinned, O30 still throws its bare
+`FileNotFoundError` in that venv and none of O23/O31/O33/O34 is present there.
+Bump `__version__` and `pyproject.toml` together — a test pins them to each other.
 
 **The one lesson session 4 kept re-learning**, in six separate items: *a check
 that has only ever run on the machine, or against the double, or against the
@@ -130,7 +132,7 @@ C:/Users/vinay/agent-loop/                 the package (this repo)
   src/agent_loop/                          loop, gates, arbiter, regions, providers, ...
   profiles/self.py                          the self-hosting profile (agent-loop-self)
   tickets/review_followups.json             the F1-F6 tickets
-  tests/acceptance/                         365 tests
+  tests/acceptance/                         389 tests
   src/agent_loop/config.py                  EVERY tunable, with the reason for each
   agent_loop.config.example.json            copy to agent_loop.config.json to override
   logs/agent_loop/F1..F6/                   patches + artifacts from the self-hosted run
