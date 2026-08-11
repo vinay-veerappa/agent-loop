@@ -1,0 +1,58 @@
+{
+  "_case": "CM2 round 2 (tvDownloadOHLC): LoadFromDisk rewritten to parse every field SaveToDisk writes, via an alias map + reflective Populate + TryConvertToken.",
+  "_gates": "The candidate passed EVERY mechanical gate: static, compile, 830 tests with all 10 acceptance criteria green, lock-scope. Anything found here is something no gate could catch.",
+
+  "_labelled_by": "human, 2026-08-11, by reading the candidate in r2_impl_raw.txt against each finding rather than by reading the findings alone. That distinction is O28's method note: three of case 2's four findings were only visible if you knew what the existing method returned.",
+
+  "_headline": "glm-5.2 raised 6 findings. TWO are worth acting on and its single BLOCKER is not one of them -- the best finding was labelled MAJOR. Any model that reproduces only the BLOCKER has not done better than one that stays quiet.",
+
+  "correct": [
+    {
+      "id": "null-section-wipes-config",
+      "severity_should_be": "MAJOR",
+      "glm_called_it": "MAJOR",
+      "must_mention": ["null", "Relationships"],
+      "why": "A file containing \"Relationships\": null makes `jRoot[\"Relationships\"] as JObject` null, so hasStructuredSections is false and the FLAT path runs. That path deserialises the whole document as Dictionary<string,JObject> -- yielding a null value for that key -- and calls ParseRelationship(null, ...) with no null check, while the structured path directly above DOES check. Populate(null) throws NullReferenceException, the outer catch swallows it, and _relationships/_groups have already been cleared: the entire copier configuration is silently discarded. The crash predates the patch, but the patch adds a null check to one path and not the other, which is what makes it worth fixing here.",
+      "verdict": "the strongest of the six, and the only one naming a concrete reachable sequence"
+    },
+    {
+      "id": "duplicate-casing-last-writer-wins",
+      "severity_should_be": "MINOR",
+      "glm_called_it": "MAJOR",
+      "must_mention": ["maxPositionSize", "MaxPositionSize"],
+      "why": "The alias map sends \"maxPositionSize\" to \"MaxPositionSize\", and GetProperty is IgnoreCase, so a file containing BOTH casings sets one property twice and the winner is JSON insertion order. Real, silent, and order-dependent -- but the input is pathological and no existing config has it.",
+      "verdict": "real, over-graded"
+    }
+  ],
+
+  "inert": [
+    {
+      "id": "tryconvert-swallows-numbers",
+      "glm_called_it": "BLOCKER",
+      "must_mention": ["TryConvertToken", "initialiser"],
+      "why": "NOT a defect, and the finding says so itself: 'The current code does keep the default.' TryConvertToken returning false leaves the property at its initialiser -- MaxPositionSize 100, QuantityRatio 1.0 -- which is precisely what the ticket asked for ('keeping the intended default is fine'). The blocking claim rests on 'if its initialiser is ever changed', which is speculation about future code. The second half, that the outer catch can wipe everything, is true, pre-existing, and belongs to the finding above.",
+      "verdict": "the only BLOCKER filed, and it is wrong"
+    },
+    {
+      "id": "present-tracks-resolved-not-present",
+      "glm_called_it": "MAJOR",
+      "must_mention": ["present", "null"],
+      "why": "Accurately describes the mechanism and then concedes it: 'This is defensible for the key fallbacks.' An observation about naming, graded MAJOR.",
+      "verdict": "correct reasoning, no defect"
+    },
+    {
+      "id": "flags-enum-speculation",
+      "glm_called_it": "MINOR",
+      "must_mention": ["Flags"],
+      "why": "Asks whether the enums are [Flags]. Neither is. It also names a type CopierMode that does not exist -- the real one is CopierExecutionMode -- which is the same hallucination that broke the build in run 1 round 3.",
+      "verdict": "speculative, and cites a type that is not in the codebase"
+    },
+    {
+      "id": "future-dictionary-comparer",
+      "glm_called_it": "MINOR",
+      "must_mention": ["latent", "comparer"],
+      "why": "Explicitly 'not a current defect but is a latent footgun'. The reviewer contract already rules this out: 'consider also handling' is NOT a finding.",
+      "verdict": "excluded by the contract it was produced under"
+    }
+  ]
+}
