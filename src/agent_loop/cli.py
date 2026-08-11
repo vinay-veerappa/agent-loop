@@ -155,25 +155,39 @@ def _plan(args, profile, implementer, reviewers, arbiter) -> int:
     """Plan mode: defect -> ticket JSON (reviewed by panel+arbiter)."""
     from .plan_mode import run_plan
 
-    if not args.defect:
-        print("--mode plan needs --defect (the defect description)")
+    # They select different system prompts and produce different output shapes
+    # (one ticket vs an ordered list), so silently preferring one would make the
+    # other a no-op the caller cannot see.
+    if args.defect and args.feature:
+        print("--mode plan takes --defect OR --feature, not both")
+        return 2
+    if not args.defect and not args.feature:
+        print("--mode plan needs --defect (a defect to fix) or --feature (something new to build)")
         return 2
 
     result = run_plan(
         Path("."),
-        args.defect,
+        args.feature or args.defect,
         profile,
         implementer,
         reviewers,
         arbiter_model=arbiter,
         max_rounds=args.max_rounds,
         fast_plan=args.fast_plan,
+        feature=bool(args.feature),
     )
     print(f"\n==== PLAN RESULT ====")
     print(f"verdict: {result.get('verdict', '?')}")
-    if result.get("plan"):
-        print(f"plan: logs/agent_loop/PLAN/plan.json")
-    return 0 if result.get("plan") else 1
+    if result.get("error"):
+        print(f"error: {result['error']}")
+    plan = result.get("plan")
+    if plan:
+        n = len(plan) if isinstance(plan, list) else 1
+        print(f"plan: logs/agent_loop/PLAN/plan.json ({n} part(s))")
+        if isinstance(plan, list):
+            for t in plan:
+                print(f"  {t.get('id', '?'):<6} {t.get('title', '')}")
+    return 0 if plan else 1
 
 
 def _test(args, profile, implementer) -> int:
@@ -351,6 +365,12 @@ def main(argv=None) -> int:
     # ---- modes -----------------------------------------------------------
     ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs", "report", "replay"), default="patch")
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
+    ap.add_argument(
+        "--feature", default="",
+        help="plan mode: describe a NEW FEATURE instead of a defect. The plan is "
+             "decomposed into ordered parts, each with its own acceptance tests, "
+             "and regions may carry op=create for files that do not exist yet.",
+    )
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
     ap.add_argument("--test-file", default="tests/acceptance/test_generated.py", help="test mode: where to write tests")
     ap.add_argument(

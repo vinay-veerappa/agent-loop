@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**416/416 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**434/434 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` is now 7 commits
 past that tag, so **cut `v0.5.0` before re-pinning anything**.
 **tvDownloadOHLC still pins and has installed `v0.3.0`**, which is 33 commits
@@ -1252,7 +1252,57 @@ the O29 review, reasoned that production profiles were out of scope, and emitted
 
 ### 2026-08-11 — asked for by the user: plan mode must plan FEATURES: O36
 
-#### O36. Plan mode can only plan a defect fix — CHANGE MODEL DONE, ENTRY POINT OPEN
+#### O36. Plan mode can only plan a defect fix — CLOSED (entry point + change model)
+
+**Questions 3 and 4 are both answered, by the user, not inferred:**
+
+> "I do expect a feature to get broken down into smaller parts."
+> "A feature should also go through the same TDD cycle."
+
+Question 4 therefore needs no new answer: the acceptance criterion for a feature is
+the SAME one. `--feature` emits an ORDERED list of parts, each with its own
+`expect_green`, and `_validate_feature_plan` **refuses a plan whose part has no
+acceptance tests** — otherwise feature mode would be the one path into the loop
+that skips the check the loop exists to apply. The O34 exception is what lets those
+tests be red for the right reason before the code exists.
+
+`--feature` and `--defect` are mutually exclusive: they select different system
+prompts and produce different output shapes (an ordered list vs one ticket), so
+silently preferring one would make the other a no-op the caller cannot see. A
+defect plan still returns a single ticket; a one-part feature still returns a list,
+because a caller that has to branch on "one or many" will get it wrong.
+
+**The ordering consequence, handled:** part 2 legitimately inserts into a file part
+1 creates. Validating the whole plan against the tree as it is now would reject
+every feature that builds on itself, so validation walks the parts in order and
+carries forward the files earlier parts create. Scoped, though — a path no earlier
+part creates must still exist, or a typo sails through — and two parts may not
+create the same file.
+
+**Live, end to end, twice.** The first run is the finding:
+
+* It returned four well-formed ordered parts, ops correct, `expect_green` on each
+  — and created every file under a **`patchgate/` package that does not exist**.
+* Cause: O31's context is keyed on SYMBOLS, and a feature request names none.
+  `extract_intent_symbols` returned `[]` and the context was `""`, so nothing had
+  told the model the code lives in `src/agent_loop/`. **That is structural, not
+  tuning:** for a defect the thing complained about is already there to find; for a
+  feature the question is "where does new code GO", and only the layout answers it.
+* Fixed by `context.build_layout_context()`, injected in feature mode: directories
+  with file counts, a sample of real paths, where tests must live, and the
+  `file_scope_whitelist` when the profile sets one (a profile that may only edit
+  `scripts/` must not be shown the rest of the repo as a home for new files).
+* Re-run: **zero mentions of `patchgate`**; the plan targets `src/agent_loop/cli.py`
+  plus three new modules under the real package. It then failed validation on one
+  wrong anchor (`parser = argparse.ArgumentParser(` where the code says `ap = `) and
+  ran out of rounds at `--max-rounds 2`. The validator working, and O13's lesson
+  again: two rounds is not enough for a four-part plan.
+
+32 tests across the two O36 files.
+
+Original text follows.
+
+#### O36 (original). Plan mode can only plan a defect fix — MEDIUM
 
 **Answered question 3, and the answer was neither of the two options as written.**
 The requirement settled it: *"a new feature can be completely new files or adding

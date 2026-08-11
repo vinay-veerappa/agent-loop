@@ -15,29 +15,19 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | | |
 |---|---|
 | `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
-| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 416 now |
-| Tests | **416 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 434 now |
+| Tests | **434 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
 | Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`** — **33 commits behind HEAD**, and `v0.4.0` is itself 7 commits behind (5 of them `fix(` commits closing O7/O32, O33, O34, O23, O31). Counts from `git log --oneline v0.3.0..HEAD` |
 
-**Closed in session 4:** O7 (for the modes), O14, O23, O29, O30, O31, O32, O33, O34.
-**Open:** O21, O22, O28, O35, and O36's ENTRY POINT (its change model is done).
-O20 mitigated, not closed.
+**Closed in session 4:** O7 (modes), O14, O23, O29-O34, **O36**.
+**Open:** O21, O22, O28, O35. O20 mitigated, not closed.
 
 **Next, in the order argued for:**
 
-1. **O36's entry point.** The change model is done: regions now carry an `op`
-   (`replace`/`create`/`insert`), one ticket can mix all three, created files reach
-   the patch, and O34 no longer refuses a feature's red test. What is missing is the
-   way to ASK: `run_plan` still takes `defect_description`, the CLI flag is
-   `--defect`, and `PLAN_SYSTEM` says "analyze the defect". Wants a `--feature`
-   sibling that emits `op` per region, and a decision on whether one request may
-   emit several ordered tickets (the loader already accepts a list). **Question 4 in
-   BACKLOG O36 is still unanswered** — what the acceptance criterion for a feature
-   is — and the plan→test→loop path has not been run end to end for a feature.
-2. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
-   labelled corpus is worth more than a fifteenth model, and developer mode now
-   produces suitable material every run.
-3. **O22** — the one-member default panel. Needs a schema decision, not a patch;
+1. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
+   labelled corpus is worth more than a fifteenth model, and both developer mode
+   and feature planning now produce suitable material every run.
+2. **O22** — the one-member default panel. Needs a schema decision, not a patch;
    brainstorm mode has already proposed four approaches (see
    `logs/agent_loop/BRAINSTORM/approaches.md`) and, now that O31 is fixed, did so
    while actually looking at `config.py`.
@@ -823,3 +813,36 @@ defect". Question 4 — the acceptance criterion for a feature — is unanswered
 the plan→test→loop path has never been run for a feature end to end. Do not assume
 it works; every mode that had "never been run" this session turned out to be
 broken in some way.
+
+### §12f O36 closed — `--feature`, decomposed, each part test-first
+
+**Questions 3 and 4 answered by the user, not inferred:** a feature is broken into
+smaller parts, and each goes through the same TDD cycle. Q4 therefore needed no new
+answer — the acceptance criterion for a feature is the SAME one. `--feature` emits
+an ordered list of parts, each with its own `expect_green`, and a part without
+acceptance tests is **refused**; otherwise feature mode would be the one path into
+the loop that skips the check the loop exists to apply.
+
+`--feature` and `--defect` are mutually exclusive — different prompts, different
+output shapes, so silently preferring one makes the other an invisible no-op.
+A defect plan still returns one ticket; a one-part feature still returns a list.
+
+**The live run is the lesson, and it is O31's lesson with the sign flipped.** The
+first `--feature` run produced four well-formed ordered parts with correct ops and
+tests — every file under a **`patchgate/` package that does not exist**. O31's
+context is keyed on SYMBOLS, and a feature request names none, so
+`extract_intent_symbols` returned `[]`, the context was `""`, and nothing had told
+the model the code lives in `src/agent_loop/`. Structural, not tuning: for a defect
+the thing complained about is already there to find; for a feature the question is
+*where does new code go*, and only the layout answers that.
+
+`context.build_layout_context()` now supplies it in feature mode — directories with
+counts, real paths, where tests must live, and the `file_scope_whitelist` when set.
+Re-run: zero `patchgate`, plan targets the real `cli.py` plus three new modules in
+the real package. It then failed on one wrong anchor (`parser =` where the code says
+`ap = argparse.ArgumentParser(`) and exhausted `--max-rounds 2` — the validator
+working, and O13 again: **two rounds is not enough for a four-part plan.** Budget
+rounds by parts, not by habit.
+
+**Not yet run:** the full `--feature` → `--mode test` → loop chain. The plan is
+produced and validated; nothing has yet implemented one of these parts end to end.

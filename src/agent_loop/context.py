@@ -634,6 +634,59 @@ def _graph_traces(profile: Profile, names: Sequence[str], limit: int = 3) -> Lis
         return []
 
 
+def build_layout_context(repo: Path, profile: Profile, max_files: int = 40) -> str:
+    """Where code lives, for a request that names nothing that exists yet.
+
+    `build_intent_context` is keyed on SYMBOLS, which is the right key for a
+    defect -- the thing being complained about is already there to be found. For a
+    FEATURE it finds nothing by construction, and the consequence is not a thinner
+    prompt but a wrong one: asked for a `--json` flag, plan mode returned four
+    well-formed parts that created every file under a `patchgate/` package which
+    does not exist, because nothing had told it the code lives in `src/agent_loop/`.
+
+    The question a feature needs answered is "where does new code GO", and only
+    the layout answers it. Restricted to `file_scope_whitelist` when the profile
+    sets one: a profile that may only edit `scripts/` must not be shown the rest
+    of the repo as a candidate home for new files.
+    """
+    repo = Path(repo)
+    if not repo.is_dir():
+        return ""
+
+    scope = tuple(profile.file_scope_whitelist or ())
+    paths: List[str] = []
+    for p in _iter_sources(repo, profile):
+        rel = p.relative_to(repo).as_posix()
+        if scope and not any(rel.startswith(s.rstrip("*")) for s in scope):
+            continue
+        paths.append(rel)
+    if not paths:
+        return ""
+
+    dirs: Dict[str, int] = {}
+    for rel in paths:
+        parent = rel.rsplit("/", 1)[0] if "/" in rel else "."
+        dirs[parent] = dirs.get(parent, 0) + 1
+
+    lines = ["## Where code lives in this repo", ""]
+    lines.append("Directories, with how many source files each holds:")
+    for d, n in sorted(dirs.items(), key=lambda kv: (-kv[1], kv[0]))[:20]:
+        lines.append(f"- {d}/  ({n} file{'s' if n != 1 else ''})")
+    lines += ["", "Existing source files (sample):"]
+    lines += [f"- {rel}" for rel in paths[:max_files]]
+    if len(paths) > max_files:
+        lines.append(f"- ... and {len(paths) - max_files} more")
+    if profile.test_sources:
+        lines += ["", f"Tests must live in: {', '.join(profile.test_sources)}"]
+    if scope:
+        lines.append(f"New code may only be added under: {', '.join(scope)}")
+    lines.append(
+        "\nPut new files alongside the code they belong with. Do NOT invent a new "
+        "top-level package unless the request asks for one."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def build_intent_context(
     repo: Path,
     profile: Profile,
