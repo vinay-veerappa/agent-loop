@@ -423,6 +423,16 @@ _DEFAULT_MODES: Dict[str, ModeSettings] = {
     "test": ModeSettings(max_tokens=48000, think=True),
     # Multi-turn tool-calling loop; each turn is small, but it is choosing what
     # to do next, so thinking stays on and the per-turn budget covers it.
+    #
+    # This 48000 DELIBERATELY overrides the implementer role's 96000, and the
+    # two numbers measure different things (O23 filed them as unrelated by
+    # accident; they are now unrelated by decision). The role budget sizes a
+    # patch-loop turn, which re-emits every region in full and can legitimately
+    # be enormous. A developer turn emits one tool call — an edit, a search, a
+    # file write — so half the budget is already generous, and the smaller
+    # ceiling bounds the cost of a run that goes to fifteen turns. If a
+    # developer turn ever needs more, raise THIS number, not the role's: on a
+    # reasoning model the thinking is spent from the same budget as the answer.
     "developer": ModeSettings(max_tokens=48000, think=True, require_failing_test=True),
 }
 

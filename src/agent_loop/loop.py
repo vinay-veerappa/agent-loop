@@ -50,6 +50,18 @@ BLOCK_RE = re.compile(
 
 APPROVE, REVISE, REJECT = "APPROVE", "REVISE", "REJECT"
 UNREACHABLE, UNPARSEABLE = "UNREACHABLE", "UNPARSEABLE"
+
+# Final verdicts that mean "this run produced a candidate worth landing".
+#
+# Defined here because the predicate was written twice and one copy was wrong:
+# `cli._developer` returned 0 only for `DONE`, so a developer run that applied
+# its patch under a unanimous APPROVE — or under an arbiter override — reported
+# failure to CI in the same breath (O23).
+PROMOTABLE = ("APPROVE", "APPROVE_PARTIAL", "ARBITER_SHIP")
+# Developer mode adds DONE: with no reviewers configured there is no panel to
+# approve, and the gate ladder is the whole moat. It has no partial-approval
+# path, so APPROVE_PARTIAL is not among its outcomes.
+DEVELOPER_PROMOTABLE = ("DONE", "APPROVE", "ARBITER_SHIP")
 _RANK = {APPROVE: 0, REVISE: 1, REJECT: 2}
 
 

@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O32-O34 closed; O20 mitigated; O21-O23, O28, O31, O35 open |
+| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O23, O32-O34 closed; O20 mitigated; O21, O22, O28, O31, O35, O36 open |
 | Pushed? | **YES** (session 4). `main` and `v0.4.0` are on origin. The 23-commit unpushed backlog described below is cleared |
-| Tests | **345 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
+| Tests | **365 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -254,11 +254,18 @@ Models confirmed available in the local ollama at handover time:
    nothing. Caching is now opt-in per call (`chat(..., cache=True)`) and only
    the two multi-turn callers use it; single-shot callers must stay off or they
    pay a 1.25× write premium for an entry nothing can read.
-7. **Worktrees accumulate on a crash.** `--prune` cleans them. **Correction
-   (session 3):** developer mode does not put its worktree under `logs/` — it
-   creates a SIBLING directory of the repo, `../agentloop-DEV-<pid>`, which
-   `--prune` may not find. And `--keep-worktree` is ignored on error paths, so
-   the runs most worth a post-mortem are the ones whose worktree is deleted.
+7. **Worktrees accumulate on a crash.** `--prune` cleans them. **Corrected twice
+   — session 4's version is the accurate one.** Worktrees are **siblings of the
+   repo** (`../agentloop-<TICKET>-<pid>`) for **every** mode, not just developer
+   mode, and never under `logs/`. `--prune` finds them: `list_stale` matches the
+   `agentloop-` name through `git worktree list`, and since session 4 also scans
+   the filesystem for orphans git has forgotten. That scan exists because of a
+   real one: `git worktree remove --force` can delete a worktree's CONTENTS and
+   fail to remove the directory (Windows holds a handle), after which
+   `git worktree prune` drops the registration and the empty directory becomes
+   invisible to git forever — while `open_workspace` still refuses to start on a
+   path that exists. `--keep-worktree` reaches developer mode now; before session
+   4 `run_developer` had no such parameter and dropped it under every outcome.
    BACKLOG O23.
 8. **`--mode developer` is test-first now** (session 3). The model must write a
    test that FAILS before it may edit source. Consequences worth knowing before
@@ -646,3 +653,36 @@ Two things to carry forward:
 * **The classifier is validated against a real runner**, 16 tests across
   `--tb=short/long/line/no`, not against a fixture of what pytest is assumed to
   print. That is O24's lesson applied before the fact rather than after.
+
+### §12c O23 closed, and O36 opened by request
+
+**O23** — all four. Two real (`--keep-worktree` never reached developer mode;
+the developer exit code disagreed with the driver's own `apply` predicate, so a
+run could apply its patch and report failure to CI in the same breath — and a
+unanimous `APPROVE` was affected, not just `ARBITER_SHIP`). One was half wrong in
+a way that mattered: worktrees are siblings of the repo for **every** mode, and
+`--prune` does find registered ones — but the "may not find it" worry was true
+via a mechanism nobody had guessed. See BACKLOG O23; §6 trap 7 is rewritten.
+
+**Two mutations survived here**, in different ways, and both are the same lesson
+at different depths:
+
+* forwarding a flag is half a fix — every test stubbed `run_developer` and proved
+  only that the flag ARRIVED, so deleting `keep=` from the driver's own call
+  stayed green;
+* and `Path.rmdir()` refuses a non-empty directory by itself, so deleting the
+  explicit emptiness guard ALSO stayed green. **rmdir is the safety; the guard
+  only makes the operator's message true.** The test asserts the message now,
+  which is the honest statement of what that code is for.
+
+**O36 (new, requested)** — plan mode can only plan a defect fix. Its signature,
+system prompt, ticket schema and CLI flag all presume a defect that already
+exists, and the region check refuses anything whose anchors do not resolve
+against the current tree — so a feature, whose code does not exist yet, is
+rejected every round until the rounds run out. Four design questions are written
+down in BACKLOG O36; question 3 (how a region-based loop implements a ticket
+whose files do not exist) decides the shape of the rest.
+
+**Do O31 before O36.** Plan mode has never been shown the codebase
+(`build_context_slice` imported, never called), so it is a poor foundation for
+the larger job, and the context injection wants designing once for both.

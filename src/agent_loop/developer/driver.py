@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .. import arbiter, config, gates, profiles, regions, workspace
+from ..loop import DEVELOPER_PROMOTABLE
 from ..providers import Completion, ProviderError, chat
 from .tools import execute_tool, render_tool_docs
 
@@ -99,6 +100,7 @@ def run_developer(
     arbiter_model: str = "",
     max_turns: int = 30,
     apply: bool = False,
+    keep_worktree: bool = False,
 ) -> Dict[str, Any]:
     """Run Developer mode: defect -> patched diff (autonomous localization + edit).
 
@@ -126,7 +128,7 @@ def run_developer(
     # uncommitted work, treated every pre-existing failure as its own
     # regression, and swept the user's unrelated edits into the patch it asked
     # reviewers to approve. It gets the same disposable worktree as patch mode.
-    with workspace.open_workspace(repo, tid) as ws:
+    with workspace.open_workspace(repo, tid, keep=keep_worktree) as ws:
         print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")
         if profile.test_cmd:
             try:
@@ -541,7 +543,7 @@ def _run_turns(
             # --apply was accepted and then ignored, so a caller who asked for
             # promotion silently got none -- while the edits happened to be live
             # anyway, in the tree they had not asked the loop to touch.
-            if apply and result["verdict"] in ("APPROVE", "ARBITER_SHIP", "DONE"):
+            if apply and result["verdict"] in DEVELOPER_PROMOTABLE:
                 moved = ws.promote(edited)
                 result["applied"] = True
                 result["applied_approved"] = result["verdict"] == "APPROVE"

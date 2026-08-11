@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from . import config, models, profiles, regions, workspace
-from .loop import run_ticket
+from .loop import DEVELOPER_PROMOTABLE, PROMOTABLE, run_ticket
 from .models import DEFAULT_REGISTRY
 
 
@@ -234,6 +234,7 @@ def _developer(args, profile, implementer, reviewers, arbiter) -> int:
         arbiter_model=arbiter,
         max_turns=args.max_rounds * 5,  # developer mode needs more turns
         apply=args.apply,
+        keep_worktree=args.keep_worktree,
     )
     print(f"\n==== DEVELOPER RESULT ====")
     print(f"verdict: {result.get('verdict', '?')}")
@@ -241,7 +242,7 @@ def _developer(args, profile, implementer, reviewers, arbiter) -> int:
         print(f"patch: {result['patch']}")
     if result.get("summary"):
         print(f"summary: {result['summary']}")
-    return 0 if result.get("verdict") == "DONE" else 1
+    return 0 if result.get("verdict") in DEVELOPER_PROMOTABLE else 1
 
 
 def _brainstorm(args, profile, implementer) -> int:
@@ -572,8 +573,7 @@ def main(argv=None) -> int:
     # Every requested ticket must have produced a promotable candidate. `any`
     # meant a run of four tickets exited 0 when one passed and three failed,
     # which reads as success to every caller and to CI.
-    ok = ("APPROVE", "APPROVE_PARTIAL", "ARBITER_SHIP")
-    failed = [r for r in results if r.get("final_verdict") not in ok]
+    failed = [r for r in results if r.get("final_verdict") not in PROMOTABLE]
     if failed:
         print(f"{len(failed)} of {len(results)} ticket(s) did not produce a promotable candidate")
     return 1 if failed or not results else 0

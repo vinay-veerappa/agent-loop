@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**345/345 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**365/365 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
 has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
 
@@ -682,7 +682,61 @@ default arbiter   : deepseek-v4-pro:cloud
 The fix wants a schema decision (a `reviewers` list distinct from single-model
 roles), so it is recorded rather than patched.
 
-#### O23. Small, from this session — LOW, OPEN
+#### O23. Small, from this session — CLOSED
+
+All four addressed. Two were real code defects, one was **half wrong in a way
+that mattered**, and one was documentation.
+
+* **`--keep-worktree` was silently dropped.** Not "ignored on error paths" as
+  filed — `run_developer` had no such parameter at all, so the flag never reached
+  developer mode under any outcome. (`open_workspace` honours `keep` in a
+  `finally`, so the patch-loop path was always correct on errors; that is now
+  pinned by a test that raises inside the context manager.) Threaded through.
+* **The exit code disagreed with the driver's own definition of success.**
+  `cli._developer` returned 0 only for `DONE`, while `driver.py:544` already used
+  `("APPROVE", "ARBITER_SHIP", "DONE")` for its `apply` decision — so a run could
+  apply its patch and report failure to CI in the same breath. O23 named only
+  `ARBITER_SHIP`; **a unanimous panel `APPROVE` was affected too**. The predicate
+  is now one constant: `loop.PROMOTABLE` and `loop.DEVELOPER_PROMOTABLE`, used at
+  all three sites.
+* **The worktree claim was half wrong, and the correction found a real defect.**
+  Worktrees are siblings of the repo for **every** mode, not just developer mode
+  (`repo.parent / f"agentloop-{ticket}-{pid}"`) — HANDOVER §6 trap 7 said
+  `logs/`, and that is fixed. But "`--prune` may not find it" turned out to be
+  **true for a reason nobody had guessed**, observed live: after a real test-mode
+  run, `agentloop-<TICKET>-testgen-42184` sat on disk while `--prune` reported
+  "pruned 0 worktree(s)". The directory was **empty and unregistered** —
+  `git worktree remove --force` had deleted the contents but could not remove the
+  directory (Windows held a handle), and the `git worktree prune` that follows
+  then dropped the registration. `list_stale` asks git, so nothing could see it
+  again. That is not just clutter: `open_workspace` **refuses to start when its
+  path exists**, the path carries the pid, and pids get recycled — so a later run
+  of the same ticket fails with "worktree path already exists" and `--prune` will
+  not fix it. `list_stale` now also scans for `agentloop-*` siblings git does not
+  know about, and `prune` removes an orphan **only when empty**; a non-empty one
+  is reported and left, because it may be the post-mortem. Verified by pruning
+  the real orphan.
+* **The two budget numbers are now unrelated by decision, not by accident.**
+  config.py records why developer MODE's 48000 deliberately overrides the
+  implementer ROLE's 96000: the role budget sizes a patch-loop turn that re-emits
+  whole regions, a developer turn emits one tool call, and the smaller ceiling
+  bounds a fifteen-turn run.
+
+**A mutation survived twice here, in different ways**, and both are worth
+recording:
+
+1. Deleting `keep=keep_worktree` from the driver's own `open_workspace` call left
+   every test green, because they all stub `run_developer` and prove only that
+   the flag ARRIVES. Forwarding is half a fix. A test that runs the real
+   `run_developer` and looks on disk closes it.
+2. Deleting the non-empty-orphan check also left everything green — because
+   `Path.rmdir()` refuses a non-empty directory anyway. **rmdir is the safety;
+   the check only makes the message true.** The test now asserts the message, and
+   that is the honest statement of what the code is for.
+
+Original text follows.
+
+#### O23 (original). Small, from this session — LOW
 
 * `--keep-worktree` is ignored on error paths, so the runs most worth a
   post-mortem are exactly the ones whose worktree is deleted.
@@ -1140,6 +1194,54 @@ packages diverge, the frozen baseline silently changes under the loop.
 Interesting provenance — minimax raised exactly this in its `<thinking>` during
 the O29 review, reasoned that production profiles were out of scope, and emitted
 `NONE`. The finding was correct and the self-censorship was not.
+
+### 2026-08-11 — asked for by the user: plan mode must plan FEATURES: O36
+
+#### O36. Plan mode can only plan a defect fix — MEDIUM, OPEN
+
+Requested directly: *"plan mode should also be capable of planning a complete
+development idea, not only a defect fix."* Recorded here because it is a
+capability gap, not a defect, and nothing in the backlog covered it.
+
+Everything about the mode presumes a defect that already exists in the code:
+
+* the signature is `run_plan(repo, defect_description, ...)`;
+* `PLAN_SYSTEM` tells the model to "analyze the defect, localize it in the
+  codebase using the context provided";
+* the ticket schema is defect-shaped — `defect`, `spec`, `regions` — and
+  **`regions` must resolve against the current tree**, which is checked before
+  the panel ever runs (`regions.extract` → retry on `RegionError`);
+* the CLI flag is `--defect`.
+
+That last point is the load-bearing one. A feature's code **does not exist yet**,
+so there is nothing for an anchor to resolve to, and a feature plan would be
+rejected by the region check on every round until `max_rounds` ran out. The mode
+cannot express "add a new module", only "change these existing lines" — which is
+the same limitation HANDOVER §6 trap 4 records for the loop itself.
+
+What a feature plan needs that this shape cannot carry: new files, an ordering
+between steps, more than one ticket out of one request, and acceptance criteria
+that are not "these named tests go from red to green in one edit".
+
+**Sequencing note.** Do O31 first. Plan mode currently builds its prompt from the
+defect text plus four profile fields and has never been shown the codebase
+(`build_context_slice` is imported and never called), so it is a poor foundation
+for the larger job. The context injection wants designing once, for both.
+
+**Open design questions**, none of which should be guessed:
+
+1. One mode with two entry shapes (`--defect` | `--feature`), or a separate
+   `feature` mode? The gate ladder and panel are worth reusing either way.
+2. Can a plan emit MORE than one ticket, with a declared order? The loader now
+   accepts a list (O33), so the file format is already capable of it.
+3. How does a region-based loop implement a ticket whose files do not exist?
+   Either the ticket schema grows a "new file" kind, or feature tickets go to
+   developer mode, which edits by tool call and has no region model.
+4. What is the acceptance criterion for a feature? `expect_green` presumes tests
+   that exist. Test mode can generate them, but for a feature it would be
+   generating them against code that is not written.
+
+Question 3 is the one that decides the shape of the rest.
 
 ---
 

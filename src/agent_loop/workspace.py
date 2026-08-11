@@ -262,18 +262,58 @@ class Workspace:
 
 
 def list_stale(repo: Path) -> List[str]:
-    """Worktrees left behind by crashed runs."""
+    """Worktrees left behind by crashed runs, from git AND from the filesystem.
+
+    Asking git alone was not enough. Observed live: after a real run,
+    `agentloop-<TICKET>-testgen-42184` was still on disk while `--prune` reported
+    "pruned 0 worktree(s)". `git worktree remove --force` had deleted the
+    contents but could not remove the DIRECTORY (Windows was holding a handle),
+    and the `git worktree prune` that follows then dropped the registration -- so
+    from that moment git had no record of it and this function was blind to it.
+
+    That is not merely untidy: `open_workspace` REFUSES to start when its target
+    path exists, the path carries the pid, and pids get recycled. A later run of
+    the same ticket can fail with "worktree path already exists" and `--prune`
+    would not have fixed it.
+    """
     out = _git(repo, "worktree", "list", "--porcelain", check=False)
     found = []
     for ln in out.splitlines():
         if ln.startswith("worktree ") and "agentloop-" in ln:
             found.append(ln.split(" ", 1)[1].strip())
+
+    # Orphans: named like ours, sitting where we put them, unknown to git.
+    known = {Path(p).resolve() for p in found}
+    parent = repo.resolve().parent
+    for child in sorted(parent.glob("agentloop-*")):
+        if child.is_dir() and child.resolve() not in known:
+            found.append(str(child))
     return found
 
 
 def prune(repo: Path, path: Optional[str] = None) -> None:
+    """Remove one worktree, or sweep git's records; optionally both.
+
+    An orphaned directory git no longer tracks is removed only when it is EMPTY.
+    A non-empty orphan is left alone and reported: it may be a crashed run whose
+    contents are the post-mortem, and prune must not be the thing that destroys
+    the evidence it exists to help you read. A live worktree belonging to a
+    concurrent run is registered with git, so it never reaches that branch.
+    """
     if path:
         _git(repo, "worktree", "remove", "--force", path, check=False)
+        target = Path(path)
+        if target.is_dir():
+            if any(target.iterdir()):
+                print(
+                    f"  worktree directory still present and NOT empty, left alone: {target}\n"
+                    f"    (git no longer tracks it. Read it, then delete it by hand.)"
+                )
+            else:
+                try:
+                    target.rmdir()
+                except OSError as exc:
+                    print(f"  could not remove empty worktree directory {target}: {exc}")
     _git(repo, "worktree", "prune", check=False)
 
 
