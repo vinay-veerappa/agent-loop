@@ -1231,3 +1231,53 @@ absence — O53's doubled-quote case (a naive scanner is wrong and right at once
 every single-line input) and O54's trailing semicolon (the comment did not END
 with one, so raw and stripped agreed). **Neither was caught by reading the test.
 Both were caught by mutating the code and watching the test not care.**
+
+### O55-O59 — five more, every one found by RUNNING the CM2 ticket
+
+The ticket took five attempts to get through the loop, and each failure was in
+the harness rather than in the work:
+
+| | defect | how it surfaced |
+|---|---|---|
+| O55 | the loop exported the LAST candidate, not the best | round 2 was green on every gate, round 3 failed to compile, `final.patch` held round 3 and said "for review" |
+| O56 | `dirty_files()` answered "is the candidate applied?" with a `__pycache__` | O55's first test could not observe its own subject: no patch was written at all |
+| O57 | the SHIPPED default panel could not complete a review | minimax spent all 24000 tokens on 104128 chars of reasoning, empty content |
+| O58 | the reviewer and arbiter budgets never reached their calls | the O57 fix changed nothing — minimax died at the same `eval_count=24000` |
+| O59 | one budget served the configured model AND its substitute | at the 64000 chosen for qwen3.5, kimi died with 282935 chars of thinking |
+
+**O58 is the one to internalise.** `ModelRegistry.max_tokens_for` exists for
+exactly one purpose and its docstring says so — *"every other call site
+hardcoded a literal, so the registry's per-model budgets were dead
+configuration"* — and it had been wired into the implementer only. The reviewer
+and arbiter kept `max_tokens: int = 24000` defaults that **no caller passed**,
+with the docstring describing the defect sitting three lines above two live
+instances of it. Fixing one instance of a class and leaving the class is how
+this recurs; the guard now walks the AST and fails any integer literal default
+for a `max_tokens` parameter, in any role.
+
+**Two of the five were found while testing another.** O56 surfaced because
+O55's test could not see its subject, and O58 because O57's fix visibly did
+nothing. A fix that changes no observable behaviour is evidence, not a mystery.
+
+### The reviewer corpus, and what its first case says
+
+`tests/fixtures/reviewer_bench/` is new: the arbiter has been measured across
+eighteen configurations and the reviewer never once, though the reviewer is the
+role that actually finds things.
+
+Case 1 is CM2 round 2 — a candidate that passed **every** mechanical gate, so
+anything in it is something no gate could catch. glm-5.2 raised six findings.
+Labelled by reading the candidate rather than the findings: **two are worth
+acting on, and its only BLOCKER is not one of them.** The strongest finding — a
+`"Relationships": null` section that routes to the flat path, throws inside a
+null `Populate`, and silently discards the entire copier configuration — was
+graded MAJOR. The BLOCKER concedes in its own text that the code does the right
+thing and rests on "if its initialiser is ever changed". One MINOR cites a type
+`CopierMode` that does not exist, the same hallucination that broke the build in
+run 1 round 3.
+
+⚠️ **This bears on the blocker rule landed the same day**, which fires on
+severity. It stays conservative in the right direction — a wrong BLOCKER costs an
+escalation, not a bad ship — but "an unaddressed BLOCKER forces ESCALATE"
+assumed BLOCKER meant something, and on this reviewer, on this case, it did not.
+Measure across models before leaning on it further.
