@@ -4,7 +4,7 @@ Live state for a fresh session. Written 2026-08-10 at the end of the review +
 self-hosted-run session. **Read §0 before touching anything.**
 
 Single source of truth for *open issues* is [BACKLOG.md](BACKLOG.md) §"2026-08-10
-— open issues after the F1-F6 self-hosted run" (items O1-O8). This file is the
+— open issues after the F1-F6 self-hosted run" (items **O1-O14**). This file is the
 orientation layer: state, hazards, commands, and the traps that cost real time.
 
 ---
@@ -42,23 +42,23 @@ directory or serialise.
 | Tests | **217 passed**, 0 failed — on Python 3.12 **and** 3.14; selftest 12/12 |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
-| `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `9be1b779` (unpushed) — pins + installs agent-loop `v0.2.2` |
+| `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `88c3a723` (**unpushed**) — pins + installs agent-loop `v0.3.0` |
 | Consumer profiles | present in tvDownloadOHLC HEAD and clean; `git log -S` attributes them to `fb682a93`, which was already in the log when this session began — the other session has been committing and possibly amending there, so **trust file contents over commit attribution in that repo** |
 
 ### ~~Two things that are broken right now~~ — RESOLVED 2026-08-10 (later session)
 
 Both consumer blockers are closed. `agent_loop` **is** installed in the
-tvDownloadOHLC venv, and `requirements.txt` pins **`v0.2.2`**. Fixing them
+tvDownloadOHLC venv, and `requirements.txt` pins **`v0.3.0`**. Fixing them
 exposed two defects in the package; see BACKLOG **O9-O11**. Two things to carry
 forward:
 
 - **`v0.2.0` is a poisoned tag.** It carries O9 (`Path.read_text(newline=)`,
   Python 3.13+ only) and therefore cannot run *at all* on Python < 3.13. The
-  consumer venv is 3.12. Pin `v0.2.2` or later; never `v0.2.0` or `v0.1.0`.
+  consumer venv is 3.12. Pin `v0.3.0` or later; never `v0.2.0` or `v0.1.0`.
 - **Run the suite on 3.12, not just the dev 3.14.** O9 was invisible on the dev
   interpreter and bricked every ticket on the consumer's:
   `C:/Users/vinay/tvDownloadOHLC/.venv/Scripts/python.exe -m pytest tests/ -q`.
-  173/173 pass on both today.
+  217/217 pass on both today.
 
 And one structural lesson, because it produced *both* new defects: **the test
 suite calls library functions directly with correct arguments, so nothing
@@ -77,10 +77,12 @@ C:/Users/vinay/agent-loop/                 the package (this repo)
   src/agent_loop/                          loop, gates, arbiter, regions, providers, ...
   profiles/self.py                          the self-hosting profile (agent-loop-self)
   tickets/review_followups.json             the F1-F6 tickets
-  tests/acceptance/                         148 tests
+  tests/acceptance/                         217 tests
+  src/agent_loop/config.py                  EVERY tunable, with the reason for each
+  agent_loop.config.example.json            copy to agent_loop.config.json to override
   logs/agent_loop/F1..F6/                   patches + artifacts from the self-hosted run
   logs/agent_loop/loop_run_F1-F6.log        the full run log
-  docs/architecture/BACKLOG.md              OPEN ISSUES (O1-O8) ← authoritative
+  docs/architecture/BACKLOG.md              OPEN ISSUES (O1-O14) ← authoritative
   docs/architecture/ROADMAP.md              what to build next (written by the other session)
   docs/architecture/IMPLEMENTATION_DECISIONS.md   why each non-obvious choice was made
 
