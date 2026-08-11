@@ -64,13 +64,42 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 # --------------------------------------------------------------------------
 @dataclass(frozen=True)
 class RoleSettings:
-    """A model bound to a job, with the budget that job needs."""
+    """A model bound to a job, with the budget that job needs.
+
+    `extra_members` names ADDITIONAL models playing this role, beyond `model`. It
+    exists because the reviewer role is one-to-many while every other role is
+    one-to-one.
+
+    Named "extra" rather than holding the full list, and that is the whole design:
+    `model` stays the single primary truth, so an override that sets
+    `roles.reviewer.model` still takes effect. The first attempt made `members` the
+    full set, which SHADOWED `model` -- overriding it was silently ignored, which
+    is exactly the failure this module's docstring warns about, and an existing
+    test caught it.
+    `ModelRegistry.register` appends and has always claimed the panel is several
+    reviewers from different families, but `registry_from_config` could only put
+    one member in it -- so the claim was unreachable from config and every run
+    that did not pass `--reviewers` got a one-member panel (O22).
+
+    `model` stays the primary member so its several readers are unaffected;
+    `all_members` is what anything building a panel should use.
+    """
     model: str
     max_tokens: int
     think: bool
     capability: str = ""
     cost_per_1m_out: float = 0.0
     cost_per_1m_in: float = 0.0
+    extra_members: Tuple[str, ...] = ()
+
+    @property
+    def all_members(self) -> Tuple[str, ...]:
+        """Every model playing this role: the primary, then any extras."""
+        out = [self.model]
+        for m in self.extra_members:
+            if m not in out:
+                out.append(m)
+        return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -370,8 +399,23 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # took 159s and burned the budget before emitting findings; thinking OFF
     # took 21s, 2.7k tokens, and returned ten findings. A reviewer enumerates
     # what it sees -- it does not need to plan.
+    # TWO members, from different families, because that is the policy: "we should
+    # always have at least two doing the review preferably from different view
+    # points". A panel of one is not a panel, and two from one family miss the
+    # same things -- which is the only thing that justifies the panel's cost.
+    #
+    # glm-5.2 is MEASURED good at generating findings (five correct ones on the O3
+    # patch). minimax-m3 is the second family: it is what every command in
+    # HANDOVER §5 has been pairing with glm, and on the O29 review it raised a
+    # correct point glm did not (that production profiles also hardcode `python`,
+    # which became O35) -- the marginal value a second viewpoint is supposed to
+    # provide, observed rather than assumed.
+    #
+    # `check_panel_policy` fails the build if this ever drops to one member or to
+    # a single family.
     "reviewer": RoleSettings(
         model="glm-5.2:cloud", max_tokens=24000, think=False, capability="fast",
+        extra_members=("minimax-m3:cloud",),
     ),
     # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
     # glm-5.2 raised six findings on the O3 patch, five of them verified correct
@@ -435,6 +479,37 @@ _DEFAULT_MODES: Dict[str, ModeSettings] = {
     # reasoning model the thinking is spent from the same budget as the answer.
     "developer": ModeSettings(max_tokens=48000, think=True, require_failing_test=True),
 }
+
+def check_panel_policy(roles: Mapping[str, "RoleSettings"]) -> None:
+    """The panel must be at least two members, from at least two families.
+
+    A static guard rather than a comment, because this is exactly the kind of
+    thing that decays quietly: O22 survived because every documented command
+    passes `--reviewers` explicitly, so nobody ever ran the one-member default and
+    nothing complained. Encoding the policy means a future edit that drops a
+    member fails the build instead of silently halving the review.
+
+    Raises ValueError; called on the shipped defaults at import time.
+    """
+    rs = roles.get("reviewer")
+    if rs is None:
+        raise ValueError("no reviewer role is configured")
+    members = rs.all_members
+    if len(members) < 2:
+        raise ValueError(
+            f"the reviewer panel must have at least two members; got {list(members)}. "
+            f"One reviewer is not a panel."
+        )
+    from .models import model_family
+
+    families = {model_family(m) for m in members}
+    if len(families) < 2:
+        raise ValueError(
+            f"the reviewer panel must span at least two model families; "
+            f"{list(members)} are all {families.pop()!r}. Two models from one "
+            f"family miss the same things, which is what the panel exists to avoid."
+        )
+
 
 _DEFAULT_LOOP = LoopSettings(
     # Four rounds. O1 exhausted three while oscillating between a capability and
@@ -581,6 +656,12 @@ def find_config_file(explicit: Optional[str] = None, start: Optional[Path] = Non
         return p
     candidate = (start or Path(".")) / DEFAULT_CONFIG_FILENAME
     return candidate if candidate.is_file() else None
+
+
+# Fail at import if the shipped defaults ever stop satisfying the panel policy.
+# The other static guards in this module exist for the same reason: a default that
+# drifts is not caught by any test that passes the value explicitly.
+check_panel_policy(_DEFAULT_ROLES)
 
 
 def load(explicit: Optional[str] = None, start: Optional[Path] = None) -> Config:

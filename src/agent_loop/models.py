@@ -10,6 +10,8 @@ override.
 """
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -121,17 +123,48 @@ class ModelRegistry:
 DEFAULT_REGISTRY = ModelRegistry()
 
 
+# Backend prefixes. `agy:` is a TRANSPORT, not a viewpoint: two agy-routed Claudes
+# are one family, and treating the prefix as the family would count them as two.
+_BACKEND_PREFIXES = ("agy:", "ollama:", "anthropic:", "openai:", "gemini:", "github:")
+
+
+def model_family(name: str) -> str:
+    """The vendor stem of a model name, for "are these two the same viewpoint?".
+
+    The panel's whole claim is that different families miss different things, so
+    the check that a panel HAS two viewpoints needs a definition of viewpoint.
+    This one is deliberately crude -- the vendor stem, lowercased -- because the
+    alternative is a hand-maintained mapping that goes stale the next time a model
+    ships, and being crude here fails safe: two names it cannot tell apart are
+    reported as one family, which warns rather than staying silent.
+    """
+    n = (name or "").strip().lower()
+    for pref in _BACKEND_PREFIXES:
+        if n.startswith(pref):
+            n = n[len(pref):]
+            break
+    n = n.split(":", 1)[0]
+    # Split on the first separator OR the first digit: `glm-5.2` -> glm,
+    # `gemma4` -> gemma, `qwen3.5` -> qwen.
+    m = re.match(r"[a-z]+", n)
+    return m.group(0) if m else n
+
+
 def registry_from_config(cfg: "config.Config") -> ModelRegistry:
     """A registry populated from a Config. One conversion, no duplicated values."""
     reg = ModelRegistry()
     for role, rs in cfg.roles.items():
-        reg.register(
-            ModelConfig(
-                rs.model, role, rs.capability, rs.cost_per_1m_out,
-                think=rs.think, max_tokens=rs.max_tokens,
-                cost_per_1m_in=rs.cost_per_1m_in,
+        # EVERY member, not just `rs.model`. The registry appends per role and its
+        # docstring always promised a multi-family panel; this loop registering
+        # one config is what made that promise unreachable (O22).
+        for member in rs.all_members:
+            reg.register(
+                ModelConfig(
+                    member, role, rs.capability, rs.cost_per_1m_out,
+                    think=rs.think, max_tokens=rs.max_tokens,
+                    cost_per_1m_in=rs.cost_per_1m_in,
+                )
             )
-        )
     return reg
 
 

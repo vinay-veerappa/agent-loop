@@ -470,14 +470,24 @@ def main(argv=None) -> int:
     except ValueError as exc:
         print(f"  MODEL VALIDATION ERROR: {exc}")
         return 2
+    # The panel's whole claim is that different families miss different things, so
+    # both halves of the policy are checked: at least two members, and at least two
+    # viewpoints. The default now satisfies both (config.check_panel_policy fails
+    # the build otherwise), so these fire only when a RUN overrides it.
     if len(reviewers) < 2:
-        # The panel's whole claim is that different families miss different
-        # things. One reviewer is not a panel, and nothing else says so.
         print(
             f"  WARNING: panel has one member ({reviewers[0] if reviewers else 'none'}). "
             "Pass --reviewers with two models from different families for an "
             "adversarial panel."
         )
+    else:
+        families = {models.model_family(m) for m in reviewers}
+        if len(families) < 2:
+            print(
+                f"  WARNING: all {len(reviewers)} reviewers are from the same family "
+                f"({families.pop()}), so this is one viewpoint twice. Two models "
+                "from one family miss the same things."
+            )
 
     if args.mode == "review":
         return _review(args, profile)

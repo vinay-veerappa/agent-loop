@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**448/448 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**470/470 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` has moved on past that
 tag, so **cut `v0.5.0` before re-pinning anything**
 (`git log --oneline v0.4.0..HEAD` for how far).
@@ -717,7 +717,50 @@ not guarantee the test covers the change. The durable fix is to review the
 acceptance test against the diff's blast radius before it locks — a design
 change, not a patch, and it wants a deliberate decision.
 
-#### O22. The default panel has one member — MEDIUM, OPEN
+#### O22. The default panel has one member — CLOSED
+
+**The schema call was answered by a policy**, stated by the user: *"we should
+always have at least two doing the review preferably from different view points."*
+That is stronger than the schema question, because it says what the DEFAULT must
+be, not just what the schema must be able to express. So it is encoded three ways:
+
+1. **The schema can express it.** `RoleSettings.extra_members` names members beyond
+   `model`, and `registry_from_config` registers every one. `ModelRegistry` already
+   stored `role -> [config]` and appended — the capability existed and was
+   unreachable because that loop registered one config per role.
+2. **The shipped default IS two, from different families:** `glm-5.2:cloud` +
+   `minimax-m3:cloud`. Both measured, not guessed — glm produced five correct
+   findings on the O3 patch, and on the O29 review minimax raised a correct point
+   glm did not (that production profiles also hardcode `python`, which became O35).
+   That is the marginal value of a second viewpoint, observed rather than assumed.
+3. **A static guard, `check_panel_policy`, runs at import** and fails the build if
+   the default ever drops below two members or two families. This is why: O22
+   survived because every documented command passes `--reviewers` explicitly, so
+   nobody ever ran the one-member default and nothing complained. Two of the five
+   mutations against this fix produce a **collection error** rather than a test
+   failure — the guard refusing to let the package load.
+
+`models.model_family()` supplies the definition of "viewpoint" — the vendor stem,
+lowercased. Deliberately crude: a hand-maintained mapping goes stale the next time
+a model ships, and crude fails SAFE here, because two names it cannot tell apart
+are reported as one family, which warns rather than staying silent. `agy:` and the
+other backend prefixes are stripped first: a transport is not a viewpoint, and two
+agy-routed Claudes are one family.
+
+The CLI now warns on a same-family panel as well as a one-member one, for runs that
+override the default.
+
+**Why `extra_members` and not a full `members` list** — the first attempt made
+`members` the full set, which SHADOWED `model`, so overriding `roles.reviewer.model`
+in a config file was silently ignored. That is precisely the failure this module's
+docstring warns about ("a typo that is quietly ignored is worse than no config
+file"), and an existing test caught it. `model` stays the single primary truth.
+
+22 tests, five mutations killed.
+
+Original text follows.
+
+#### O22 (original). The default panel has one member — MEDIUM
 
 `ModelRegistry.register` APPENDS for a role, and its docstring says the panel
 "is deliberately several reviewers from different families" and that overwriting

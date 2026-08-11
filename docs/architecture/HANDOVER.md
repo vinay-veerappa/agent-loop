@@ -15,12 +15,12 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | | |
 |---|---|
 | `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
-| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 448 now |
-| Tests | **448 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 470 now |
+| Tests | **470 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
 | Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`**. Do not trust a number written here — it went stale three times in one session. Run `git log --oneline v0.3.0..HEAD \| wc -l` for how far behind the consumer is, and `git log --oneline v0.4.0..HEAD` for how stale the latest TAG is (non-empty means cut `v0.5.0` rather than pinning `v0.4.0`) |
 
-**Closed in session 4:** O4, O7 (modes), O8, O14, O23, O29-O36.
-**Open:** O21, O22, O28, plus one deliberate remainder — the OpenAI cached-token
+**Closed in session 4:** O4, O7 (modes), O8, O14, O22, O23, O29-O36.
+**Open:** O21, O28, plus one deliberate remainder — the OpenAI cached-token
 field in O8, which cannot be verified without a key. O20 mitigated, not closed.
 
 **Next, in the order argued for:**
@@ -28,26 +28,10 @@ field in O8, which cannot be verified without a key. O20 mitigated, not closed.
 1. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
    labelled corpus is worth more than a fifteenth model, and both developer mode
    and feature planning now produce suitable material every run.
-2. **O22** — the one-member default panel. The schema call, stated precisely:
-   **`Config.roles` conflates "the settings for a role" with "the members playing
-   it"** — one-to-one for implementer/arbiter/compactor, one-to-many for reviewer.
-   `ModelRegistry` already stores `role -> [ModelConfig]` and appends, so the
-   registry can hold a panel; `registry_from_config` can only ever put one member
-   in it. Four ways out, in increasing cost:
-   * **A. `RoleSettings.models` becomes a tuple** (keep `model` as the derived
-     single value). Smallest change, matches what the registry already does, and
-     existing config files keep working. No per-member overrides.
-   * **B. a separate `panel: [{model, think, max_tokens}]` on `Config`.** Most
-     expressive; `roles` becomes a template. Two places then define reviewer
-     settings, which invites drift.
-   * **C. key `roles` by MEMBER id with a `role:` field inside.** Arbitrary
-     members with per-member settings, but the key stops being the role name, so
-     `cfg.role("reviewer")` and every `roles["implementer"]` lookup changes
-     meaning and config files in the wild break.
-   * **D. suffixed keys** (`reviewer`, `reviewer_2`), suffix stripped at
-     registration. Cheapest, and makes the key mean "role name, sometimes with a
-     number" — the same one-field-two-meanings problem `op`/`kind` avoided.
-   **A is the recommendation**, and it does not block B later.
+2. **O21** — a self-authored acceptance test can cover half a fix. Not
+   theoretical: **six mutations survived a green suite this session**, every one
+   found by mutating and none by reading. Wants a design answer (review the test
+   against the diff's blast radius before it locks), not a patch.
 
 Also outstanding and cheap: **cut `v0.5.0` and re-pin the consumer to it.**
 `v0.4.0` is already several fixes stale, so cutting the tag is the cheaper half of
@@ -907,3 +891,36 @@ working today. Fix it there.
 **Left open on purpose:** the OpenAI cached-token field. No `OPENAI_API_KEY` is
 set, so the fix cannot be checked against a real response — and guessing a response
 format is precisely what produced O24's and O34's confident wrong readings.
+
+### §12h O22 closed — the panel is two members from two families, by policy
+
+The requirement: *"we should always have at least two doing the review preferably
+from different view points."* That answered the schema question by overtaking it —
+it says what the DEFAULT must be, not just what the schema must express. Encoded
+three ways, because one would decay:
+
+1. `RoleSettings.extra_members` + `registry_from_config` registering every member.
+   `ModelRegistry` already appended per role; that loop registering one config was
+   what made the multi-family panel unreachable from config.
+2. The shipped default is `glm-5.2:cloud` + `minimax-m3:cloud` — both measured. glm
+   produced five correct findings on the O3 patch; minimax raised the point on the
+   O29 review that glm missed and that became O35. Marginal value observed, not
+   assumed.
+3. `config.check_panel_policy()` runs **at import** and fails the build if the
+   default drops below two members or two families. Two of the five mutations
+   against this produce a COLLECTION ERROR rather than a test failure — the guard
+   refusing to let the package load, which is the strongest form this can take.
+
+**Why the guard and not a comment:** O22 survived precisely because every
+documented command passes `--reviewers` explicitly, so nobody ever ran the
+one-member default and nothing complained.
+
+`models.model_family()` defines "viewpoint" as the vendor stem, lowercased, with
+backend prefixes stripped — `agy:` is a transport, and two agy-routed Claudes are
+one family. Deliberately crude, and it fails SAFE: two names it cannot tell apart
+read as one family, which warns rather than staying silent.
+
+**One trap worth carrying.** The first attempt made `members` the FULL set, which
+shadowed `model` — so overriding `roles.reviewer.model` in a config file became a
+silent no-op, the exact failure `config.py`'s docstring warns about. An existing
+test caught it. `extra_members` keeps `model` as the single primary truth.
