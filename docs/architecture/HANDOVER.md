@@ -37,9 +37,10 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | `afff8e0 fix: docs mode has never been able to run (v0.2.2)` — tags `v0.2.0`, `v0.2.1`, `v0.2.2` all pushed |
+| `agent-loop` HEAD | `v0.2.3` — O1 closed; tags `v0.2.0`-`v0.2.3` pushed (`v0.2.0` is poisoned, see below) |
 | Pushed? | **Yes** — `origin/main..HEAD` is empty, nothing outstanding |
-| Tests | **173 passed**, 0 failed — on Python 3.12 **and** 3.14 |
+| Tests | **185 passed**, 0 failed — on Python 3.12 **and** 3.14; selftest 12/12 |
+| First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
 | `tvDownloadOHLC` branch | `harden/riskguard-p0-51`, HEAD `9be1b779` (unpushed) — pins + installs agent-loop `v0.2.2` |
 | Consumer profiles | present in tvDownloadOHLC HEAD and clean; `git log -S` attributes them to `fb682a93`, which was already in the log when this session began — the other session has been committing and possibly amending there, so **trust file contents over commit attribution in that repo** |
@@ -230,8 +231,11 @@ Models confirmed available in the local ollama at handover time:
 
 ## §7 Suggested next steps
 
-1. **O1 `promote()`** — smallest fix with the largest correctness payoff. Either
-   apply `final.patch` with `git apply` or detect the collision and refuse.
+1. ~~**O1 `promote()`**~~ — DONE (`a4052e6`, released as `v0.2.3`). Applies a
+   patch instead of copying files. Read BACKLOG O1 before touching it: the loop's
+   own patch used `git apply --3way`, which on conflict **writes conflict markers
+   into the live file and only then returns non-zero** — it raised while having
+   already corrupted the target. Plain `git apply` is all-or-nothing.
 2. **Exercise developer mode** (O7). It received the largest changes — worktree,
    frozen baseline, protected-path gate in `_edit_file` — and has the least
    coverage. A deliberately hard ticket also exercises the arbiter, compaction
