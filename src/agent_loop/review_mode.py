@@ -240,7 +240,16 @@ def run_review(
     append_ledger(repo, record)
     (art / "result.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
 
-    print(f"\n  findings -> {art / 'review_prompt.txt'}")
+    # `review_prompt.txt` is what was SENT to the panel: the rendered prompt with
+    # the whole diff appended. Labelling it "findings" handed the reader a copy of
+    # their own diff, from which the only available conclusion is that the review
+    # found nothing -- while the findings sat unread beside it. Name the files the
+    # findings are actually in, and lead with the count, which is the one thing
+    # that tells the reader whether opening them is worth it.
+    finding_files = sorted(p.name for p in art.glob("r1_review_*.txt"))
+    where = ", ".join(finding_files) if finding_files else "(no reviewer output)"
+    print(f"\n  findings ({len(flat)}) -> {where}")
+    print(f"  prompt sent -> {art / 'review_prompt.txt'}")
     print(f"  artifacts -> {art}")
     print("  REVIEW MODE IS ADVISORY. It changes nothing; read the findings and decide.")
     return record

@@ -37,9 +37,9 @@ directory or serialise.
 | | |
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
-| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30 closed; O20 mitigated; O21-O23, O28 open |
+| `agent-loop` HEAD | **`e780e29`**, tagged **`v0.4.0`**. O3, O6, O14-O19, O24-O27, O29-O30, O32 closed; O20 mitigated; O21-O23, O28, O31, O33-O35 open |
 | Pushed? | **YES** (session 4). `main` and `v0.4.0` are on origin. The 23-commit unpushed backlog described below is cleared |
-| Tests | **303 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
+| Tests | **306 passed on BOTH 3.12 and 3.14** (session 4); selftest 12/12 on 3.12 **from the checkout**. The 3.12 gate found two defects first — O29, O30 — and closed the O14 flake |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -562,3 +562,46 @@ says `@v0.3.0` and its venv still has v0.3.0 installed, so until someone re-pins
 Re-pin with `@v0.4.0` and reinstall, then re-run `pytest tests/ -q` from the
 agent-loop checkout with the consumer interpreter — that is the pair of checks
 that caught O9 and O29.
+
+---
+
+## §12 Session 4 (later) — O7: the four unrun modes have been run
+
+`plan`, `test`, `brainstorm`, `review`, each through `main(argv)` against this
+repo with a live panel. Details and mechanisms: BACKLOG **O31-O35**.
+
+**The base rate broke.** Session 3 said "never been run" had meant "completely
+broken" three times out of three. It does not here: **all four run.** What three
+of them do instead is produce confident output that is not what it appears to be
+— which is worse, because a crash announces itself.
+
+| mode | verdict |
+|---|---|
+| `brainstorm` | runs. **O31** — recommends an approach having never read a line of the code (`in=264` tokens; no graph slice, no source) |
+| `review` | runs. **O32** — printed `findings -> review_prompt.txt`, i.e. the reader's own diff. **FIXED**, 3 tests, both mutations killed |
+| `plan` | runs, and produced a correct, well-anchored ticket. **O33** — but it writes a bare ticket object and both consumers expect `{"tickets": [...]}`, so plan→test and plan→loop each die on `KeyError: 'tickets'` |
+| `test` | runs. **O34** — printed `1 test(s) failing at baseline (correct)` for a test that died in its own stub before reaching any assertion |
+
+**O33 is the one to fix first.** Plan mode's only purpose is to feed the loop,
+and it has never once been able to.
+
+**O34 is the one to think about.** "Failing at baseline (correct)" counts
+failures; it cannot tell a defect-driven failure from a broken test, and prints
+`(correct)` either way. That is O19 and O21 in a third location.
+
+### Traps for §6
+
+10. **Do the static pass first — it is free.** All four CLI wrappers were checked
+    against their `run_*` signatures before spending a token. That is the O10
+    defect class, and ruling it out in one read meant every later finding was
+    known to be behavioural.
+11. **Your own test doubles are not evidence either.** The hand-written
+    replacement for the model's junk test was red for the WRONG reason twice
+    before it was right: `Finding(author=...)` and `Vote(counted=...)` do not
+    exist (`counted` is a derived property), and then `assert "1" in line` passed
+    against the unfixed code because the pytest temp path contains a `1`. Read
+    the failure; then mutate the fix.
+12. **Watch for a reviewer talking itself out of a correct finding.** On the O29
+    review, minimax raised in `<thinking>` that production profiles also hardcode
+    bare `python`, reasoned it out of scope, and emitted `NONE`. It was right
+    (O35). The thinking block is worth reading when the verdict is APPROVE.

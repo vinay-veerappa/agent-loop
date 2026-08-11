@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**303/303 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**306/306 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
 has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
 
@@ -223,7 +223,19 @@ enough tickets to populate the feedback store, then read unique-upheld per
 reviewer. If it stays near zero, the panel is latency and tokens for nothing on
 this class of ticket, and the interesting configuration is gates + arbiter.
 
-#### O7. Whole rungs are still unexercised end to end — TEST GAP
+#### O7. Whole rungs are still unexercised end to end — MODES DISCHARGED (session 4); rungs still open
+
+**The four unrun modes have now been run** — `plan`, `test`, `brainstorm`,
+`review` — see the session-4 section below (O31-O35). All four execute; three
+produce output that is not what it appears to be. `developer` and `docs` were
+discharged in session 3.
+
+**Still open under this item:** the RUNGS, not the modes. Nothing below this
+paragraph has been exercised — compaction, the settled-decisions store,
+`APPROVE_PARTIAL`, `PANEL_UNREACHABLE`, `NOT_CONVERGING`. The arbiter has since
+run for real (and got it wrong — O20).
+
+Original text follows.
 
 Because all six tickets converged in round 1 with a unanimous panel:
 
@@ -928,6 +940,139 @@ above is still what it does there until the next tag is cut and pinned.
 **State after this session:** 303 passed on **both** 3.12 and 3.14; selftest
 12/12 on 3.12 from the checkout. The new guard was mutation-checked
 (`return 2` → `return 0` kills the test).
+
+### 2026-08-10 (session 4, later) — O7 discharged: the four unrun modes: O31-O35
+
+O7 said `plan`, `test`, `brainstorm` and `review` had never been run, and that
+the base rate for "never been run" was three-for-three completely broken. All
+four were smoke-run through `main(argv)` against this repo, with a live panel.
+
+**The base rate broke: all four RUN.** What they do instead is worse in one
+respect — three of them produce confident output that is not what it appears to
+be, which no crash would have hidden.
+
+| mode | runs? | finding |
+|---|---|---|
+| `brainstorm` | yes | O31 — recommends an approach having never read a line of the code |
+| `review` | yes | O32 — points the reader at the prompt and calls it the findings (FIXED) |
+| `plan` | yes | O33 — produces a correct ticket that **nothing downstream can read** |
+| `test` | yes | O34 — confirms a red test "(correct)" when it is red for the wrong reason |
+
+Static checks first, which cost nothing: every one of the four CLI wrappers
+passes arguments that match its `run_*` signature, so the O10 defect class
+(`_docs` calling `run_docs` positionally against a mismatched signature) is not
+present here. The defects below are all behavioural.
+
+#### O33. Plan mode's output cannot be consumed by anything — HIGH, OPEN
+
+Plan mode's entire purpose is to turn a defect into a ticket the loop can run.
+It writes `logs/agent_loop/PLAN/plan.json` as a **bare ticket object**
+(`{id, title, defect, spec, regions, expect_green}`). Both consumers expect a
+**wrapper**, `{"tickets": [...]}`:
+
+```
+cli.py:140  tickets = spec["tickets"]   # --mode test  -> KeyError: 'tickets'
+cli.py:471  tickets = spec["tickets"]   # --tickets    -> KeyError: 'tickets'
+```
+
+So `--mode plan` → `--mode test` and `--mode plan` → the loop both die on an
+unhandled `KeyError`, with a traceback rather than a message. The documented
+pipeline has never worked end to end. Wrapping the object by hand is the
+workaround; the fix is to make plan emit the wrapper (and/or have the loader
+accept either shape and say which it got).
+
+Smaller, same area: the generated ticket's `expect_green` named
+`tests/test_review_mode.py::...`, but this repo's tests live in
+`tests/acceptance/` and the profile declares `test_sources=("tests/acceptance/*.py",)`.
+Plan's prompt never shows the model `profile.test_sources`, so it invents a path
+that the test-first machinery is not allowed to write to.
+
+#### O34. "failing at baseline (correct)" is not evidence — HIGH, OPEN
+
+Test mode generated an acceptance test, ran it, and printed
+
+```
+[test-first] 1 test(s) failing at baseline (correct)
+```
+
+The test was red because its own stub returned a `dict` where `review_panel`
+returns a `PanelResult`, so it died at `panel.votes` — **before reaching a single
+one of its assertions**. It could never have passed, against fixed or unfixed
+code.
+
+The gate counts failures. It cannot distinguish "red because the defect is
+there" from "red because the test is broken", and it prints `(correct)` either
+way. This is O19 and O21 again in a third location, and it is the same root as
+the memory-worthy lesson from session 3: *the gates cannot refuse what the suite
+cannot observe*. A red phase satisfied by a broken test is a red phase that
+proves nothing.
+
+Worth noting how cheaply it was confirmed: read the failure, do not trust the
+label. HANDOVER §6 trap 9 says exactly this and it still cost a run.
+
+**And it is not only the model's tests.** The hand-written replacement was red
+for the wrong reason twice — first `Finding(author=...)` and `Vote(counted=...)`,
+neither of which exists (`counted` is a derived property), then a count assertion
+`"1" in line` that passed against the UNFIXED code because the pytest temp path
+contains a `1`. Both were caught by reading the failure and by mutating the fix.
+
+#### O32. Review mode labelled the prompt as the findings — CLOSED
+
+`review_mode.py:243` printed `findings -> <art>/review_prompt.txt`.
+`review_prompt.txt` is the INPUT — the rendered prompt with the whole diff
+appended (37KB on the run that exposed this). Following the label hands the
+reader a copy of their own diff, from which the only available conclusion is that
+the review found nothing, while the findings sit unread in
+`r1_review_<model>.txt` beside it.
+
+Now prints the count and the files the findings are in, with the prompt on its
+own line labelled as what it is. Three acceptance tests, both mutations killed
+(empty the file list; drop the count).
+
+#### O31. Brainstorm mode has never seen the codebase — MEDIUM, OPEN
+
+`run_brainstorm` builds its entire prompt from the defect text plus four profile
+fields:
+
+```python
+prompt += f"Language: {profile.language}
+"
+prompt += f"File suffixes: {', '.join(profile.file_suffixes)}
+"
+prompt += f"Build: {profile.build_cmd or '(none)'}
+"
+prompt += f"Test: {profile.test_cmd or '(none)'}
+
+"
+```
+
+No graph context, no source, no regions — `in=264` tokens on a live run. Plan
+mode imports `build_context_slice` and docs mode has `_build_graph_context`;
+brainstorm alone injects nothing.
+
+It still returned a recommendation that reads as authoritative and happened to
+match O22's recorded fix — because the *defect description* named `Config.roles`,
+not because it read `config.py`. That is the failure mode: an approach
+recommendation with no evidentiary basis is indistinguishable, in the output,
+from one with a good basis. Give it the graph slice plan mode already builds, or
+document it as a rubber duck.
+
+#### O35. `python` in a PROFILE is resolved by PATH, same as O29 — LOW, OPEN
+
+O29 fixed the tests. The class extends past them: `profiles/self.py` uses
+`build_cmd="python -m py_compile {files}"` and `test_cmd="python -m pytest ..."`,
+and the consumer's `python-tvdownloadohlc` profile does the same. These run in
+the worktree during real runs, so PATH decides which interpreter establishes the
+frozen baseline.
+
+**Not broken today** — verified: bare `python` (3.14) and the repo venv (3.12)
+both give `1 failed, 64 passed` on the consumer's suite, which is the documented
+baseline. It is a hazard, not a break: the day the two interpreters' installed
+packages diverge, the frozen baseline silently changes under the loop.
+
+Interesting provenance — minimax raised exactly this in its `<thinking>` during
+the O29 review, reasoned that production profiles were out of scope, and emitted
+`NONE`. The finding was correct and the self-censorship was not.
 
 ---
 
