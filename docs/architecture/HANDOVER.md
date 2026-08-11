@@ -422,3 +422,13 @@ python tests/fixtures/compactor_bench/run_bench.py          # rejection recall
   read an eighth of its input, and every existing test used toy histories where
   that is invisible. The new ones build 160000 chars because that is where
   Phase 4b actually runs.
+* **A benchmark is a measuring instrument and needs its own validity check.**
+  The first compactor benchmark scored literal tag presence and gave gemma4:31b
+  0/8 — while its summary correctly said "Widening the protected-path glob:
+  Rejected because it would allow the patch to edit its own tests". It was
+  measuring tag-COPYING, not faithfulness, and it produced a confident,
+  published, wrong ranking. **Read the raw output of the worst-scoring arm
+  before believing any ranking.** Corrected, all four models score 7/8.
+* **Not all benchmarks are equally trustworthy.** The arbiter one grades
+  structured `UPHELD #N` rulings the model must emit; the compactor one grades
+  free prose. The first is much harder to fool yourself with than the second.

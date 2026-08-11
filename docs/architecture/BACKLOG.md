@@ -761,6 +761,42 @@ This code has still never run in a real loop (O7): everything converges in
 round 1. The tests use a 160000-char history because the defect is invisible at
 toy sizes.
 
+#### O27. Which model should compact — ANSWERED: the cheapest one (`82cab53`)
+
+Metric: eight tagged rejections planted across a history at real Phase 4b scale
+(216105 chars, above the 160000 trigger); how many does the summary carry
+forward? Losing one is the failure that matters — the next round proposes it
+again and burns a round rediscovering the rejection. Corpus at
+`tests/fixtures/compactor_bench/`.
+
+| model | size | rejections carried |
+|---|---|---|
+| glm-5.2 | 756B | 7/8, 7/8 |
+| deepseek-v4-flash | 304B | 7/8, 7/8 |
+| gemma4:31b | 32B | 7/8, 7/8 |
+| qwen3.5 | 397B | 7/8, 7/8 |
+
+Identical across a 20x size range, so compaction is not where capability buys
+anything. The single miss in every arm is the OLDEST rejection, correctly
+dropped by the input budget — which independently confirms the drop-oldest-whole
+behaviour and the `covers 14/16 messages` label from O24 on a real-scale input.
+
+The compactor stays `glm-5.2`: the measurement licenses a switch, it does not
+motivate one. `gemma4:31b` and `deepseek-v4-flash` are marked suited, so either
+is a one-line config change if latency or quota starts to matter.
+
+**The first version of this benchmark was wrong, and it is the most useful thing
+in this entry.** It scored literal tag presence, so `gemma4:31b` scored 0/8 —
+while its summary said *"Widening the protected-path glob: Rejected because it
+would allow the patch to edit its own tests"*. It was measuring tag-COPYING, not
+faithfulness, and it disqualified a model that was doing the job correctly. A
+benchmark is a measuring instrument and needs its own validity check: read the
+raw output of the worst-scoring arm before believing the ranking.
+
+Note also that this benchmark grades free prose, which makes it inherently
+softer evidence than the arbiter one (O20), which grades structured `UPHELD #N`
+rulings the model is required to emit. Two benchmarks, two levels of trust.
+
 #### O25. No catalogue of what each model IS — CLOSED (`89c7c22`)
 
 `MODEL_CATALOG` in config.py: parameters, context window, modalities, thinking
