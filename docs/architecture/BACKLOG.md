@@ -205,7 +205,7 @@ normalisation is a band-aid in either direction; the durable fix is to ask the
 arbiter — which already sees every finding from every reviewer — whether finding
 #3 is the same as last round's #7, and use that for convergence detection.
 
-#### O6. The panel did not earn its cost on this run — OBSERVATION
+#### O6. The panel did not earn its cost on this run — ANSWERED (it does); see the later session-3 section
 
 Two adversarial reviewers from different families, six patches, **zero
 findings**. Two of those patches had defects visible in what the reviewers were
@@ -598,7 +598,7 @@ protected 8`.
 
 Read O21 before trusting the generated tests that came with it.
 
-#### O20. The arbiter is not a reliable adjudicator — HIGH, OPEN
+#### O20. The arbiter is not a reliable adjudicator — MITIGATED (`f97492f`); see the measured table in the later session-3 section
 
 Two failures in one session, on the same defect:
 
