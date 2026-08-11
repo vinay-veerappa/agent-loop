@@ -173,6 +173,34 @@ def _post(url: str, payload: Dict[str, Any], headers: Dict[str, str], timeout: i
         return json.loads(resp.read().decode("utf-8"))
 
 
+def describe_exception(exc: Optional[Exception]) -> str:
+    """Render a transport failure with the part that says WHAT WENT WRONG.
+
+    `str(HTTPError)` is "HTTP Error 400: Bad Request" -- the status line only. The
+    response BODY is where the reason lives, and for a 400 it is usually complete
+    and actionable. Observed live: a run died on
+
+        {"error":"max_tokens (96000) exceeds model's maximum output tokens
+                  (65536) for model qwen3.5"}
+
+    and reported `HTTPError: HTTP Error 400: Bad Request`. Everything needed to fix
+    the run in one edit was in a body nobody printed.
+    """
+    if exc is None:
+        return "no exception recorded"
+    if isinstance(exc, urllib.error.HTTPError):
+        body = ""
+        try:
+            # Readable only once, and only if no backend consumed it first.
+            raw = exc.read()
+            body = raw.decode("utf-8", "replace").strip()[:500] if raw else ""
+        except Exception:  # noqa: BLE001 - a body is a bonus, never a new failure
+            body = ""
+        head = f"HTTPError {exc.code}: {exc.reason}"
+        return f"{head} -- {body}" if body else head
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _retryable(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.HTTPError):
         # 408 timeout, 409 conflict, 429 rate limit, 5xx server. A 400/401/404
@@ -601,7 +629,14 @@ def chat(
     fn = _BACKENDS[backend]
     last: Optional[Exception] = None
     t0 = time.time()
+    # The count of attempts ACTUALLY made, not the ceiling. A non-retryable error
+    # breaks out of this loop after one call, and the message used to claim
+    # `max_retries` anyway -- so a deterministic 400 was reported as "failed after
+    # 3 attempts". That sends the reader looking for a flaky endpoint instead of a
+    # bad request, and it is the loop lying about its own behaviour.
+    attempts = 0
     for attempt in range(max_retries):
+        attempts = attempt + 1
         try:
             out = fn(model, messages, temperature, max_tokens, timeout, num_ctx, think, cache)
             out.secs = round(time.time() - t0, 1)
@@ -613,4 +648,7 @@ def chat(
             if not _retryable(exc) or attempt == max_retries - 1:
                 break
             time.sleep(min(2**attempt + random.uniform(0, 1), 30))
-    raise ProviderError(f"{model_spec} failed after {max_retries} attempts: {type(last).__name__}: {last}")
+    plural = "attempt" if attempts == 1 else "attempts"
+    raise ProviderError(
+        f"{model_spec} failed after {attempts} {plural}: {describe_exception(last)}"
+    )

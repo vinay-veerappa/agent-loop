@@ -1833,4 +1833,35 @@ on a corpus of one.
 
 ---
 
+#### O46. A transport failure hid the reason and lied about the attempt count — CLOSED
+
+A plan run died with
+
+    qwen3.5:cloud failed after 3 attempts: HTTPError: HTTP Error 400: Bad Request
+
+**Two falsehoods in one line.** `_retryable` already excludes 400 (correctly -- a
+bad request fails identically forever), so exactly ONE call was made; the message
+hardcoded `max_retries`. And `str(HTTPError)` is the status line only, so the body
+
+    {"error":"max_tokens (96000) exceeds model's maximum output tokens (65536)
+              for model qwen3.5"}
+
+was discarded -- a complete, actionable diagnosis, thrown away. I read that
+message myself and reported "the loop retried three times" before checking, which
+is what a lying error costs.
+
+`describe_exception()` now appends the body (bounded, and a body that cannot be
+read is never a new failure), and the count is the number of attempts ACTUALLY
+made, singular when it is one. Five mutations, all killed.
+
+**Note the interaction with O42.** Raising plan mode to 96000 was right for the
+kimi implementer, whose ceiling is above it, and it makes `qwen3.5` (65536)
+unusable for plan mode without an override. A budget is only valid against a
+specific model's ceiling, and nothing in the config expresses that relationship.
+Not filed as a defect because auto-clamping would be guessing at limits the API
+does not advertise until you exceed them -- but a consumer switching implementers
+needs to know.
+
+---
+
 *End of backlog. Update as items are completed.*
