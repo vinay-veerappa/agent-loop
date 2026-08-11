@@ -373,6 +373,51 @@ def review_panel(
 # --------------------------------------------------------------------------
 # Ledger
 # --------------------------------------------------------------------------
+def failed_gate_names(rounds: Sequence[Dict[str, Any]]) -> List[str]:
+    """The distinct gates that blocked any round of a ticket, sorted.
+
+    A named function rather than an inline comprehension because the writer
+    half of the gate-failure record was otherwise untestable: the generated
+    acceptance tests for this feature hand-built ledger entries and fed them to
+    the report, so deleting the write site entirely left them green. This is
+    the same defect the feature exists to fix, one level up.
+
+    `stage` is read via .get() rather than [] deliberately. Every RoundRecord
+    carries one, but a ledger is append-only and long-lived, and a KeyError
+    here would crash a completed ticket at the moment it records its result --
+    losing the run's outcome over a malformed round.
+    """
+    return sorted({
+        r.get("stage", "") for r in rounds if not r.get("ok", True)
+    } - {""})
+
+
+def terminal_ledger_record(tid: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """The ledger entry a finished ticket writes.
+
+    Split out of `run_ticket` for the same reason as `failed_gate_names`: this
+    is the last line of a full ticket run, so testing it in place would mean
+    driving the whole loop. Deleting the gate field from it left every
+    generated acceptance test for this feature green.
+
+    A single failing gate is recorded as a string and several as a list, which
+    the report counts once per distinct gate. `gate` is OMITTED rather than set
+    empty when nothing failed: the report distinguishes "no gate failure" from
+    "written before this field existed", and a falsy value would collapse them.
+    """
+    record: Dict[str, Any] = {
+        "ticket": tid,
+        "verdict": result["final_verdict"],
+        "applied": result["applied"],
+        "rounds": len(result["rounds"]),
+        "cost_usd": result["cost_usd"],
+    }
+    failed = failed_gate_names(result["rounds"])
+    if failed:
+        record["gate"] = failed[0] if len(failed) == 1 else failed
+    return record
+
+
 def append_ledger(repo: Path, record: Dict[str, Any]) -> None:
     """Append-only. The predecessor's summary.json was rewritten wholesale per
     invocation and still records T1 as unapplied even though T1 is committed."""
@@ -452,7 +497,7 @@ def run_ticket(
         result["final_verdict"] = "TICKET_REJECTED"
         result["detail"] = g0.detail
         print(f"  REFUSED: {g0.detail}")
-        append_ledger(repo, {"ticket": tid, "verdict": "TICKET_REJECTED", "detail": g0.detail})
+        append_ledger(repo, {"ticket": tid, "verdict": "TICKET_REJECTED", "detail": g0.detail, "gate": "protected"})
         return result
 
     # ---- graph freshness check (Phase 2)
@@ -950,14 +995,5 @@ def run_ticket(
                     print(f"  NOT APPLIED: verdict={final}. Patch for review: {patch}")
 
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-    append_ledger(
-        repo,
-        {
-            "ticket": tid,
-            "verdict": result["final_verdict"],
-            "applied": result["applied"],
-            "rounds": len(result["rounds"]),
-            "cost_usd": result["cost_usd"],
-        },
-    )
+    append_ledger(repo, terminal_ledger_record(tid, result))
     return result

@@ -135,22 +135,30 @@ def _print_rounds_distribution(ledger: List[Dict[str, Any]]) -> None:
 
 
 def _print_gate_failures(ledger: List[Dict[str, Any]]) -> None:
-    # Gate failures are in the detail field of ledger entries
-    # The detail often contains gate names like "static", "compile", "test", "lock-scope"
-    gate_keywords = ["static", "compile", "test", "lock-scope", "protected", "expect_green"]
-    gate_counts: Dict[str, int] = {k: 0 for k in gate_keywords}
+    # Gate failures are recorded structurally in the "gate" field of ledger
+    # entries. Legacy entries without this field are unmeasurable and are excluded
+    # from the distribution; that exclusion is reported explicitly.
+    gate_counts: Counter[str] = Counter()
+    unmeasurable = 0
     for e in ledger:
-        detail = e.get("detail", "")
-        if not detail:
+        gate = e.get("gate")
+        if gate is None:
+            unmeasurable += 1
             continue
-        for kw in gate_keywords:
-            if kw in detail.lower():
-                gate_counts[kw] += 1
-    if any(gate_counts.values()):
+        if isinstance(gate, list):
+            # A ticket may have been blocked by multiple distinct gates across
+            # rounds. Count each distinct gate once per ticket.
+            for g in gate:
+                gate_counts[g] += 1
+        else:
+            gate_counts[str(gate)] += 1
+    if gate_counts:
         print(f"\n--- Gate-failure distribution ---")
-        for kw in gate_keywords:
-            if gate_counts[kw] > 0:
-                print(f"  {kw:<15} {gate_counts[kw]} ticket(s)")
+        for kw, count in gate_counts.most_common():
+            print(f"  {kw:<15} {count} ticket(s)")
+    if unmeasurable:
+        print(f"\n--- Unmeasurable legacy entries (no gate field) ---")
+        print(f"  excluded from gate-failure distribution: {unmeasurable} ticket(s)")
 
 
 def _same_finding(a: str, b: str) -> bool:
