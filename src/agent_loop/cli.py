@@ -306,6 +306,12 @@ def main(argv=None) -> int:
     ap.add_argument("--review-head", default="HEAD", help="review mode: head ref")
     ap.add_argument("--report-last", type=int, default=0, help="report mode: show only the last N tickets (0 = all)")
     ap.add_argument(
+        "--replay-dir", nargs="*", default=[],
+        help="replay mode: recorded ticket director(ies) to replay "
+             "(default: every ticket under logs/agent_loop/). The module "
+             "docstring documented this flag long before it existed.",
+    )
+    ap.add_argument(
         "--review-paths", nargs="*", default=[],
         help="review mode: limit the diff to these paths",
     )
@@ -385,19 +391,25 @@ def main(argv=None) -> int:
 
     if args.mode == "replay":
         from .replay import run_replay_corpus
-        import glob as _glob
-        # Find all ticket dirs under logs/agent_loop/
-        log_root = Path(".") / "logs" / "agent_loop"
-        if not log_root.is_dir():
-            print("No recorded tickets found in logs/agent_loop/")
-            return 1
-        corpus_dirs = sorted(
-            d for d in log_root.iterdir()
-            if d.is_dir() and (d / "result.json").exists()
-        )
+        if args.replay_dir:
+            corpus_dirs = [Path(d) for d in args.replay_dir]
+            missing = [str(d) for d in corpus_dirs if not d.is_dir()]
+            if missing:
+                print(f"no such replay dir(s): {', '.join(missing)}")
+                return 2
+        else:
+            # Find all ticket dirs under logs/agent_loop/
+            log_root = Path(".") / "logs" / "agent_loop"
+            if not log_root.is_dir():
+                print("No recorded tickets found in logs/agent_loop/")
+                return 2
+            corpus_dirs = sorted(
+                d for d in log_root.iterdir()
+                if d.is_dir() and (d / "result.json").exists()
+            )
         if not corpus_dirs:
             print("No recorded tickets found in logs/agent_loop/")
-            return 1
+            return 2
         print(f"Replaying {len(corpus_dirs)} recorded ticket(s)...\n")
         result = run_replay_corpus(
             Path("."),
@@ -407,7 +419,23 @@ def main(argv=None) -> int:
             arbiter,
             max_rounds=args.max_rounds,
         )
-        return 0 if result["flipped"] == 0 else 1
+        # Exit codes are three-valued on purpose. This used to be
+        # `0 if flipped == 0 else 1`, which reports SUCCESS for a corpus where
+        # every ticket errored -- and since a corpus recorded before prompt
+        # recording now errors on every ticket by design, that would be a green
+        # CI gate that measured nothing. Distinguish:
+        #   2 = could not measure (errors, or an empty corpus)
+        #   1 = measured, and a verdict flipped
+        #   0 = measured, nothing flipped
+        if result["errors"]:
+            print(
+                f"\n{result['errors']} ticket(s) could not be replayed. "
+                "A replay that cannot hold the prompt constant is not a measurement."
+            )
+            return 2
+        if result["total"] == 0:
+            return 2
+        return 1 if result["flipped"] else 0
 
     spec = json.loads(Path(args.tickets).read_text(encoding="utf-8"))
     tickets = spec["tickets"]

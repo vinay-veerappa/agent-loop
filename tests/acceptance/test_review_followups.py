@@ -185,5 +185,12 @@ def test_replay_mode_without_logs_dir_exits_cleanly(tmp_path, monkeypatch):
     register(prof)
 
     monkeypatch.chdir(tmp_path)
+    # The property under test is "reports instead of raising". The exit code was
+    # 1 when this was written because that was the only non-zero code replay had.
+    # Replay is now three-valued -- 2 = could not measure, 1 = measured and a
+    # verdict flipped, 0 = measured and stable -- and "there is nothing to
+    # replay" is a could-not-measure, not a flip. See
+    # test_o2_replay_fidelity.py::test_replay_exit_code_does_not_report_success_when_nothing_was_measured
+    # for why conflating the two is dangerous.
     code = main(["--mode", "replay", "--profile", "test-replay-missing-logs"])
-    assert code == 1
+    assert code == 2

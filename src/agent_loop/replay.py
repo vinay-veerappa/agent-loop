@@ -231,6 +231,12 @@ def run_replay_corpus(
             max_rounds,
         )
         results.append(result)
+        # An errored ticket must not print as "same": it was not compared at all,
+        # and "same" reads as a passing measurement. This is the same conflation
+        # O2 is about, in the display layer.
+        if "error" in result:
+            print(f"  {result.get('ticket', '?'):<10} [ERROR] {result['error']}")
+            continue
         status = "FLIPPED" if result.get("flipped") else "same"
         print(f"  {result.get('ticket', '?'):<10} "
               f"recorded={result.get('recorded_verdict', '?'):<25} "

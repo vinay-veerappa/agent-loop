@@ -29,8 +29,9 @@ from unittest.mock import patch
 import pytest
 
 from agent_loop import replay as replay_mod
+from agent_loop._io import write_text_verbatim
 from agent_loop.loop import PanelResult, Vote
-from agent_loop.profiles import Profile
+from agent_loop.profiles import Profile, register
 
 PROFILE = Profile(
     name="test-o2-replay",
@@ -38,6 +39,7 @@ PROFILE = Profile(
     block_comment=(), block_kind="indent",
     implementer_rules="test", reviewer_priorities="test",
 )
+register(PROFILE)  # the CLI-level tests resolve the profile by name
 
 RECORDED_PROMPT = (
     "# Review ticket T9 (round 1)\n\n"
@@ -60,7 +62,9 @@ def _corpus(tmp_path: Path, with_prompt: bool = True, verdict: str = "APPROVE") 
     )
     (d / "00_implement_prompt.md").write_text("the implement prompt", encoding="utf-8")
     if with_prompt:
-        (d / "r1_review_prompt.md").write_text(RECORDED_PROMPT, encoding="utf-8")
+        # Written the way the loop writes it: verbatim. Path.write_text would
+        # translate "\n" to "\r\n" on Windows, which is itself a prompt change.
+        write_text_verbatim(d / "r1_review_prompt.md", RECORDED_PROMPT)
     return d
 
 
@@ -147,6 +151,100 @@ def test_replay_reports_the_recorded_verdict_it_compares_against(tmp_path):
     assert result["recorded_verdict"] == "APPROVE"
     assert result["replayed_verdict"] == "APPROVE"
     assert result["flipped"] is False
+
+
+@pytest.mark.parametrize("terminator", ["\n", "\r\n"])
+def test_recorded_prompt_round_trips_byte_for_byte(tmp_path, terminator):
+    """Fidelity means bytes, including line terminators.
+
+    Recording with Path.write_text would translate "\\n" to "\\r\\n" on Windows,
+    so the replayed prompt would differ from the sent prompt on every line while
+    still looking identical in a diff viewer.
+    """
+    d = tmp_path / "T10"
+    d.mkdir()
+    prompt = terminator.join(["# Review", "## BEFORE", "x = 1", ""])
+    (d / "result.json").write_text(json.dumps({"ticket": "T10", "final_verdict": "APPROVE"}))
+    (d / "r1_impl_raw.txt").write_text("raw", encoding="utf-8")
+    write_text_verbatim(d / "r1_review_prompt.md", prompt)
+
+    seen = {}
+
+    def fake_panel(reviewers, p, system, art, rnd, deadline_secs=1800):
+        seen["prompt"] = p
+        return _approving_panel()
+
+    with patch.object(replay_mod, "review_panel", fake_panel):
+        replay_mod.run_replay(tmp_path, d, PROFILE, ["m1"], "")
+
+    assert seen["prompt"] == prompt
+    assert seen["prompt"].count(terminator) == prompt.count(terminator)
+
+
+def test_replay_exit_code_does_not_report_success_when_nothing_was_measured(tmp_path, monkeypatch):
+    """A corpus that could not be replayed must NOT exit 0.
+
+    The old code was `return 0 if flipped == 0 else 1`, which ignored errors.
+    Since a corpus recorded before prompt recording now errors on every ticket by
+    design, that would turn replay into a CI gate that passes while measuring
+    nothing -- the exact failure O2 is about, one layer down.
+    """
+    from agent_loop import cli
+
+    d = _corpus(tmp_path, with_prompt=False)  # legacy corpus: cannot be replayed
+    monkeypatch.chdir(tmp_path)
+
+    code = cli.main([
+        "--mode", "replay", "--profile", "test-o2-replay",
+        "--replay-dir", str(d),
+    ])
+    assert code == 2, "an unmeasurable corpus must not exit 0 or 1"
+
+
+def test_replay_exit_code_flags_a_flip(tmp_path, monkeypatch):
+    from agent_loop import cli
+
+    d = _corpus(tmp_path, verdict="ARBITER_SHIP")  # recorded != replayed
+    monkeypatch.chdir(tmp_path)
+
+    def fake_panel(reviewers, prompt, system, art, rnd, deadline_secs=1800):
+        return _approving_panel()
+
+    with patch.object(replay_mod, "review_panel", fake_panel):
+        code = cli.main([
+            "--mode", "replay", "--profile", "test-o2-replay",
+            "--replay-dir", str(d),
+        ])
+    assert code == 1, "a genuine verdict flip must be reported as a failure"
+
+
+def test_replay_exit_code_is_zero_when_measured_and_stable(tmp_path, monkeypatch):
+    from agent_loop import cli
+
+    d = _corpus(tmp_path, verdict="APPROVE")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_panel(reviewers, prompt, system, art, rnd, deadline_secs=1800):
+        return _approving_panel()
+
+    with patch.object(replay_mod, "review_panel", fake_panel):
+        code = cli.main([
+            "--mode", "replay", "--profile", "test-o2-replay",
+            "--replay-dir", str(d),
+        ])
+    assert code == 0
+
+
+def test_replay_dir_flag_exists_and_rejects_a_missing_dir(tmp_path, monkeypatch):
+    """replay.py's docstring documented --replay-dir long before the CLI had it."""
+    from agent_loop import cli
+
+    monkeypatch.chdir(tmp_path)
+    code = cli.main([
+        "--mode", "replay", "--profile", "test-o2-replay",
+        "--replay-dir", str(tmp_path / "nope"),
+    ])
+    assert code == 2
 
 
 def test_adjudication_records_the_prompt_it_sent():
