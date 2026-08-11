@@ -1,0 +1,23 @@
+C:\Users\vinay\agent-loop
+  rep1 gemma4:31b-cloud               think=False -> REVISE   upheld=[3, 5] correct-caught=1/5
+  rep1 mistral-large-3:675b-cloud     think=True  -> REVISE   upheld=[1, 2, 3, 4] correct-caught=3/5
+  rep2 qwen3.5:cloud                  think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 qwen3.5:397b-cloud             think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 minimax-m3:cloud               think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 deepseek-v4-flash:cloud        think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 gemma4:31b-cloud               think=False -> REVISE   upheld=[3, 5] correct-caught=1/5
+  rep2 mistral-large-3:675b-cloud     think=True  -> REVISE   upheld=[1, 2, 3, 5] correct-caught=3/5
+
+=== SUMMARY (correct findings upheld, out of 5) ===
+  0/5  REVISE       qwen3.5:cloud                  think=False budget=24000  upheld=[3]
+  0/5  SHIP         qwen3.5:397b-cloud             think=False budget=24000  upheld=[]
+  0/5  SHIP         minimax-m3:cloud               think=False budget=24000  upheld=[]
+  0/5  SHIP         deepseek-v4-flash:cloud        think=False budget=24000  upheld=[]
+  1/5  REVISE       gemma4:31b-cloud               think=False budget=24000  upheld=[3, 5]
+  3/5  REVISE       mistral-large-3:675b-cloud     think=True budget=64000  upheld=[1, 2, 3, 4]
+  0/5  SHIP         qwen3.5:cloud                  think=False budget=24000  upheld=[]
+  0/5  SHIP         qwen3.5:397b-cloud             think=False budget=24000  upheld=[]
+  0/5  SHIP         minimax-m3:cloud               think=False budget=24000  upheld=[]
+  0/5  SHIP         deepseek-v4-flash:cloud        think=False budget=24000  upheld=[]
+  1/5  REVISE       gemma4:31b-cloud               think=False budget=24000  upheld=[3, 5]
+  3/5  REVISE       mistral-large-3:675b-cloud     think=True budget=64000  upheld=[1, 2, 3, 5]

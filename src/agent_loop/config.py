@@ -56,7 +56,7 @@ import json
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 
 # --------------------------------------------------------------------------
@@ -78,6 +78,13 @@ class ModeSettings:
     """A non-patch mode's single generation call."""
     max_tokens: int
     think: bool
+    # Which model runs this mode. Empty means "inherit the implementer", which
+    # is what every mode did unconditionally: `docs` wrote prose and
+    # `brainstorm` enumerated approaches on a CODE-specialised model, and the
+    # schema had no way to say otherwise. Left empty everywhere below on
+    # purpose -- the mechanism is missing, the evidence for changing any
+    # particular assignment is not yet in. Measure before filling one in.
+    model: str = ""
     # Developer mode only. TDD is the default, and it is a correctness
     # requirement rather than a style preference: without a test that fails
     # first, the gate ladder cannot refuse a fix for a defect the suite does
@@ -128,6 +135,158 @@ class Config:
             raise KeyError(
                 f"no mode {name!r} configured; have {sorted(self.modes)}"
             ) from None
+
+
+# --------------------------------------------------------------------------
+# Model catalogue
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ModelProfile:
+    """What a model IS, as opposed to what we use it for.
+
+    `params`, `context_tokens` and the capability flags are harvested from
+    `ollama show` -- they are observations, not estimates. Re-harvest with:
+
+        ollama show <model>
+
+    `suited` is the opposite: it is a claim, and it is only worth anything
+    where it says MEASURED. See `note`. An unmeasured suitability is a guess
+    from capability flags and size, and this session produced two results that
+    should discourage guessing -- deepseek-v4-pro looked like the obvious
+    arbiter and scored 0/5, and glm-5.2 is excellent at generating findings
+    while being poor at adjudicating them.
+
+    Costs are per 1M tokens. Ollama cloud models are billed by SUBSCRIPTION,
+    not per token, so 0.0 here means "not metered per token", NOT "free".
+    """
+    params: str
+    context_tokens: int
+    modalities: Tuple[str, ...]        # text / vision / audio
+    thinking: bool                     # model supports a reasoning mode at all
+    tools: bool                        # native tool_calls -- see providers.O15
+    cost_per_1m_in: float
+    cost_per_1m_out: float
+    suited: Tuple[str, ...]            # roles this is a reasonable choice for
+    note: str = ""
+
+
+# Harvested 2026-08-10. `local` in the note means no network and no
+# subscription metering; everything else is an ollama cloud model.
+MODEL_CATALOG: Dict[str, ModelProfile] = {
+    "kimi-k2.7-code:cloud": ModelProfile(
+        "1.04T", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
+        ("implementer",),
+        "MEASURED good as implementer: localised O3 unaided across 34 turns, "
+        "correct file and field. Code-specialised. Emits NATIVE tool calls, "
+        "which is what O15 was about.",
+    ),
+    "kimi-k3:cloud": ModelProfile(
+        "2.81T", 1_048_576, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "Largest available and a 1M context. UNMEASURED here: it failed with "
+        "HTTP errors on 3 attempts during the arbiter benchmark, so treat "
+        "availability as a risk before relying on it.",
+    ),
+    "glm-5.2:cloud": ModelProfile(
+        "756B", 1_000_000, ("text",), True, True, 0.0, 0.0,
+        ("reviewer", "compactor"),
+        "MEASURED excellent as REVIEWER: five correct findings on the O3 patch, "
+        "including a tautological assertion in a generated test. MEASURED poor "
+        "as ARBITER on the same findings (0-1 of 5 upheld), and think=True made "
+        "it strictly worse there. Do not promote it to arbiter on the strength "
+        "of its reviewing.",
+    ),
+    "minimax-m3:cloud": ModelProfile(
+        "unreported", 524_288, ("text", "vision"), True, True, 0.0, 0.0,
+        ("reviewer",),
+        "Second panel member; different family from glm, which is the point. "
+        "Produced 0 findings on the O3 patch where glm produced 6 -- one data "
+        "point, but do not assume the panel is two equal voices. MEASURED BAD "
+        "as arbiter (0/5, SHIP, twice), so its value is breadth, not judgement.",
+    ),
+    "deepseek-v4-pro:cloud": ModelProfile(
+        "1.6T", 524_288, ("text",), True, True, 0.0, 0.0,
+        (),
+        "MEASURED BAD as arbiter: ruled SHIP on a patch with five real defects, "
+        "twice, upholding none of them, with thinking both off and on. It was "
+        "the default until 2026-08-10. Not currently recommended for any role.",
+    ),
+    "deepseek-v4-flash:cloud": ModelProfile(
+        "304B", 1_048_576, ("text",), True, True, 0.0, 0.0,
+        ("compactor",),
+        "Cheap tier with a 1M context, which is the shape compaction wants: "
+        "faithful extraction over a long input. UNMEASURED for compaction. "
+        "MEASURED BAD as arbiter (0/5, SHIP, twice) -- that is an adjudication "
+        "result and says little about summarisation, so it does not disqualify "
+        "it here, but it is not evidence in its favour either.",
+    ),
+    "qwen3.5:cloud": ModelProfile(
+        "397B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "MEASURED BAD as arbiter, both sizes: 0 of 5 correct findings upheld over "
+        "2 runs each, mostly ruling SHIP. Not an arbiter candidate.",
+    ),
+    "mistral-large-3:675b-cloud": ModelProfile(
+        "675B", 262_144, ("text", "vision"), False, True, 0.0, 0.0,
+        ("arbiter",),
+        "MEASURED best arbiter: 3 of 5 correct findings upheld on ALL FOUR runs, "
+        "and one of only three arms (of ten) to refuse the patch at all. NOTE it has NO "
+        "thinking capability, so think must be False -- setting it True is not "
+        "a trade-off, it is a no-op. Misses findings about test quality.",
+    ),
+    "gemma4:31b-cloud": ModelProfile(
+        "32.7B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
+        ("compactor",),
+        "Smallest cloud model, and the surprise of the benchmark: as ARBITER it "
+        "scored 1/5 twice, beating 1.6T deepseek-v4-pro, 397B qwen3.5 and 304B "
+        "deepseek-v4-flash, all of which scored 0/5 and ruled SHIP. Size does "
+        "not predict adjudication quality. UNMEASURED for compaction, which is "
+        "the role it is actually a candidate for.",
+    ),
+    "gemma4:latest": ModelProfile(
+        "8.0B", 131_072, ("text", "vision", "audio"), True, True, 0.0, 0.0,
+        (),
+        "local. Free and offline, weakest of the set. Only candidate with audio.",
+    ),
+    "qwen3-vl:8b": ModelProfile(
+        "8.8B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "local. The vision-first small model; no role here uses images.",
+    ),
+    "qwen2.5-coder:3b": ModelProfile(
+        "3.1B", 32_768, ("text",), False, True, 0.0, 0.0,
+        (),
+        "local. No thinking, 32K context. Too small for any role in this loop.",
+    ),
+    # Anthropic models are priced per token; see providers.PRICING. They are
+    # listed for completeness but no key is configured in this environment.
+    "claude-opus-5": ModelProfile(
+        "unpublished", 1_000_000, ("text", "vision"), True, True, 5.00, 25.00,
+        ("implementer", "reviewer", "arbiter"),
+        "Requires ANTHROPIC_API_KEY. Metered per token, unlike every ollama "
+        "entry above -- switching a role to it turns a subscription cost into "
+        "a per-run one.",
+    ),
+    "claude-sonnet-5": ModelProfile(
+        "unpublished", 1_000_000, ("text", "vision"), True, True, 3.00, 15.00,
+        ("reviewer", "compactor"),
+        "Requires ANTHROPIC_API_KEY. Metered per token.",
+    ),
+    "claude-haiku-4-5": ModelProfile(
+        "unpublished", 200_000, ("text", "vision"), True, True, 1.00, 5.00,
+        ("compactor",),
+        "Requires ANTHROPIC_API_KEY. Metered per token.",
+    ),
+}
+
+
+def model_profile(name: str) -> Optional[ModelProfile]:
+    """The catalogue entry for `name`, or None if it is not catalogued.
+
+    None is not an error: the loop runs any model the backend accepts. It means
+    nothing here has been observed about it.
+    """
+    return MODEL_CATALOG.get(name)
 
 
 # --------------------------------------------------------------------------

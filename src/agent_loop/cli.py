@@ -365,6 +365,19 @@ def main(argv=None) -> int:
     # Resolve model defaults from the registry
     registry = DEFAULT_REGISTRY
     implementer = args.implementer or registry.get("implementer").name
+    # A mode may name its own model. Every non-patch mode used to run on the
+    # implementer -- a CODE-specialised model -- including `docs`, which writes
+    # prose, and `brainstorm`, which enumerates approaches. Neither is a coding
+    # task, and there was no way to say so: ModeSettings had max_tokens and
+    # think but no model. An explicit --implementer still wins, and a mode that
+    # names nothing still inherits, so this changes no default.
+    if not args.implementer:
+        try:
+            mode_model = config.get().mode(args.mode).model
+        except KeyError:
+            mode_model = ""  # patch/review/report/replay have no ModeSettings
+        if mode_model:
+            implementer = mode_model
     reviewers_str = args.reviewers or ",".join(c.name for c in registry.get_all("reviewer"))
     arbiter = args.arbiter or registry.get("arbiter").name
 
