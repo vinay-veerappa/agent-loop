@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**389/389 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**416/416 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` is now 7 commits
 past that tag, so **cut `v0.5.0` before re-pinning anything**.
 **tvDownloadOHLC still pins and has installed `v0.3.0`**, which is 33 commits
@@ -1252,7 +1252,79 @@ the O29 review, reasoned that production profiles were out of scope, and emitted
 
 ### 2026-08-11 — asked for by the user: plan mode must plan FEATURES: O36
 
-#### O36. Plan mode can only plan a defect fix — MEDIUM, OPEN
+#### O36. Plan mode can only plan a defect fix — CHANGE MODEL DONE, ENTRY POINT OPEN
+
+**Answered question 3, and the answer was neither of the two options as written.**
+The requirement settled it: *"a new feature can be completely new files or adding
+something to an existing file. Both should be accommodated."* Routing to developer
+mode cannot do that — `_edit_file` returns `ERROR: file not found`, so **developer
+mode cannot create a source file either**; only `write_test` creates files, and
+only under `test_sources`. Neither option was free.
+
+So the region model grew an **operation**, per region:
+
+| `op` | file | anchor | the model returns |
+|---|---|---|---|
+| `replace` (default) | must exist | must resolve | the region's new body |
+| `create` | must **not** exist | none | the whole file |
+| `insert` | must exist | must resolve | only the code to add |
+
+`op` is deliberately **not** folded into `kind`. `kind` is the LOCATOR strategy
+(decl/indent/line) consumed by `find_region`; the operation is a different axis,
+and one field with two meanings is the ambiguous helper this repo avoids.
+
+Because `op` is per-region, **one ticket mixes all three** — a new module, a hook
+into an existing file, and a signature change at the call site. That is the
+requirement met directly, and multi-step ordering is already expressible as a list
+of tickets (the O33 loader accepts one).
+
+**`insert` earns its keep twice.** It is also the fix for §6 trap 4, "the region
+model cannot add a module-level function", which is a pre-existing limitation that
+already bit F1-F6 on DEFECT work: F5 emitted a mid-file `import` because its
+region began at a `def` and it had no legal alternative.
+
+**Three things that had to come with it:**
+
+* `Workspace.stage_new_files()` — `diff()` is `git diff`, which ignores untracked
+  files, so a created file would be **absent from its own patch** and `promote`
+  would land a change referencing a module the patch does not add. The red phase
+  learned this once with a new test file; this is that fix generalised to source.
+  All four apply sites in `loop.py` now go through `_apply_regions`.
+* Per-op prompt text. Left implicit, `create` gets a fragment instead of a file and
+  `insert` gets the anchored block re-emitted, duplicating it.
+* `lines_1based` said `1-0` for a create region (start=0, end=-1), which would
+  have gone into the prompt and `--list` as though it were a real range.
+
+**The interaction that would have shipped O36 broken — O34.** A feature's first
+red test imports something not yet written, so it fails with
+`ImportError`/`AttributeError`. O34's rule reads that as "died in its own
+scaffolding, proves nothing" and **refuses in test mode** — so the gate added three
+commits earlier would have rejected every feature on arrival. Now
+`reached_an_assertion(kinds, feature=True)` accepts the "this name is not there"
+family, and `gates.is_feature_ticket(ticket)` derives it from `op: create` so the
+caller does not declare it twice. Deliberately narrow: a `TypeError` in a stub is a
+broken test whether the work is a feature or a fix. Same output, opposite meaning,
+and only the ticket knows which job it is.
+
+27 tests. Six mutations, all killed — including widening the exception to
+`TypeError`, which is the mistake that would make it meaningless.
+
+**STILL OPEN — the entry point.** The change model can express a feature; plan mode
+still cannot ask for one:
+
+* `run_plan(repo, defect_description, ...)` and `--defect`; `PLAN_SYSTEM` says
+  "analyze the defect, localize it in the codebase". A `--feature` sibling wants a
+  prompt that asks for new files and emits `op` per region.
+* Plan emits ONE ticket. A feature is usually several with an order, and the
+  loader already accepts a list.
+* Question 4 is still unanswered: what is the acceptance criterion for a feature?
+  `expect_green` presumes tests that exist. Test mode can generate them, and the
+  O34 exception now lets them be red for the right reason — but that path has not
+  been run end to end.
+
+Original text follows.
+
+#### O36 (original). Plan mode can only plan a defect fix — MEDIUM
 
 Requested directly: *"plan mode should also be capable of planning a complete
 development idea, not only a defect fix."* Recorded here because it is a

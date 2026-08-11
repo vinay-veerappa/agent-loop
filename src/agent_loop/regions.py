@@ -68,6 +68,14 @@ def strip_code(line: str, profile: Profile) -> str:
     return "".join(out)
 
 
+# What to DO to a region, as distinct from `kind`, which is how to FIND it.
+# Kept on a separate axis on purpose: `kind` (decl/indent/line) is the locator
+# strategy consumed by find_region, and folding an operation into it would give
+# one field two meanings.
+REPLACE, CREATE, INSERT = "replace", "create", "insert"
+OPS = (REPLACE, CREATE, INSERT)
+
+
 @dataclass
 class Region:
     id: str
@@ -79,9 +87,16 @@ class Region:
     end_line: int    # 0-based, inclusive
     text: str
     note: str = ""
+    # `replace` is the default so every existing ticket keeps its behaviour.
+    op: str = REPLACE
 
     @property
     def lines_1based(self) -> str:
+        # A create region has no span: start=0/end=-1 renders as "1-0", which
+        # would appear in the implement prompt and in `--list` as if it were a
+        # real range.
+        if self.op == CREATE:
+            return "new file"
         return f"{self.start_line + 1}-{self.end_line + 1}"
 
 
@@ -295,6 +310,35 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
     out: List[Region] = []
     for spec in specs:
         path = repo / spec["file"]
+        op = spec.get("op", REPLACE)
+        if op not in OPS:
+            # Named, not defaulted: a typo that fell back to `replace` would
+            # overwrite a file the ticket meant to create or extend.
+            raise RegionError(
+                f"{spec['id']}: unknown op {op!r}. Expected one of {', '.join(OPS)}."
+            )
+
+        if op == CREATE:
+            # Nothing to locate: the point of this op is that the file is not
+            # there yet, which is exactly what plan mode could not express.
+            if path.exists():
+                raise RegionError(
+                    f"{spec['id']}: op=create but {spec['file']} already exists. "
+                    f"Use op=replace or op=insert to change a file that is there."
+                )
+            # The language check still applies -- a Python profile must not be
+            # talked into authoring a .cs file.
+            language_for(path, profile)
+            out.append(
+                Region(
+                    id=spec["id"], file=spec["file"], path=path, anchor="",
+                    kind=spec.get("kind", profile.block_kind),
+                    start_line=0, end_line=-1, text="",
+                    note=spec.get("note", ""), op=CREATE,
+                )
+            )
+            continue
+
         if not path.exists():
             raise RegionError(f"{spec['id']}: file does not exist: {spec['file']}")
         language_for(path, profile)
@@ -316,17 +360,35 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
                 end_line=end,
                 text=text,
                 note=spec.get("note", ""),
+                op=op,
             )
         )
     return out
 
 
 def apply(regions: List[Region], blocks: Dict[str, str]) -> List[str]:
-    """Splice replacements in, per file, bottom-up so earlier spans stay valid."""
+    """Splice replacements in, per file, bottom-up so earlier spans stay valid.
+
+    Three operations, per region: `replace` overwrites the located span, `insert`
+    adds after it, and `create` writes a whole new file.
+    """
     touched: List[str] = []
     by_file: Dict[Path, List[Region]] = {}
     for r in regions:
-        by_file.setdefault(r.path, []).append(r)
+        if r.op == CREATE:
+            body = blocks.get(r.id)
+            if not body or not body.strip():
+                continue
+            r.path.parent.mkdir(parents=True, exist_ok=True)
+            text = body if body.endswith("\n") else body + "\n"
+            # A brand-new file has no existing terminator to preserve, so it is
+            # written verbatim in the one style the model emitted rather than
+            # being normalised -- write_text_verbatim is what keeps a later
+            # `replace` on this same file from rewriting every line.
+            write_text_verbatim(r.path, text)
+            touched.append(r.file)
+        else:
+            by_file.setdefault(r.path, []).append(r)
     for path, regs in by_file.items():
         # Read with newline="" so the file's real line terminators survive.
         # read_text() universalises them to "\n" and write_text() then rewrites
@@ -337,6 +399,16 @@ def apply(regions: List[Region], blocks: Dict[str, str]) -> List[str]:
         changed = False
         for r in sorted(regs, key=lambda x: x.start_line, reverse=True):
             body = blocks.get(r.id)
+            if r.op == INSERT:
+                # Additive: the anchored block STAYS and the new code follows it.
+                # An empty body is a no-op rather than a deletion -- the model
+                # declining to add anything must not remove what is there.
+                if not body or not body.strip():
+                    continue
+                new_lines = body.replace("\r\n", "\n").split("\n")
+                lines[r.end_line + 1: r.end_line + 1] = new_lines
+                changed = True
+                continue
             if body is None or body.rstrip() == r.text.rstrip():
                 continue
             lines[r.start_line: r.end_line + 1] = body.replace("\r\n", "\n").split("\n")

@@ -133,6 +133,29 @@ class Workspace:
         out = _git(self.root, "status", "--porcelain")
         return [ln[3:].strip() for ln in out.splitlines() if ln.strip()]
 
+    def stage_new_files(self, files: Sequence[str]) -> List[str]:
+        """Intent-to-add files a `create` region wrote, so they reach the diff.
+
+        `diff()` is `git diff`, which does not show untracked files. Without this
+        an `op=create` region produces a patch that references a module the patch
+        itself does not add -- and `promote` then lands a change whose own code is
+        missing. The red phase hit the same wall with a new test file and solved
+        it the same way; this is that fix generalised to source.
+
+        `--intent-to-add` puts the path in the index for diff purposes WITHOUT
+        staging content, so nothing is committed behind the caller's back.
+        A path that was never written is skipped rather than raising: a `create`
+        region whose body the model never emitted is a no-op, not an error.
+        """
+        staged: List[str] = []
+        for f in files:
+            if not (self.root / f).exists():
+                continue
+            rc = _git(self.root, "add", "-N", f, check=False)
+            del rc
+            staged.append(f)
+        return staged
+
     def diff(self, paths: Sequence[str] | None = None) -> str:
         """The worktree diff, with content line endings intact.
 

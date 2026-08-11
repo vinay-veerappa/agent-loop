@@ -181,10 +181,32 @@ def build_implement_prompt(
             "",
             f'### REGION id="{r.id}"  file={r.file}  lines {r.lines_1based}',
             f"Purpose: {r.note}" if r.note else "",
-            f"```{profile.fence}",
-            r.text,
-            "```",
         ]
+        # Each op wants a different thing back, and a region whose instruction is
+        # left implicit gets the default: `create` would receive a fragment
+        # instead of a file, and `insert` would receive the anchored block
+        # re-emitted, duplicating the function it anchored to.
+        if r.op == regions.CREATE:
+            parts += [
+                "This file DOES NOT EXIST yet. Return the ENTIRE contents of the new "
+                "file as this block -- imports, definitions, everything. There is no "
+                "existing code to preserve.",
+            ]
+        elif r.op == regions.INSERT:
+            parts += [
+                "This block is INSERTED AFTER the code shown below, which stays "
+                "exactly as it is. Return ONLY the new code to add. DO NOT re-emit "
+                "the block below; doing so would duplicate it.",
+                f"```{profile.fence}",
+                r.text,
+                "```",
+            ]
+        else:
+            parts += [
+                f"```{profile.fence}",
+                r.text,
+                "```",
+            ]
     parts += ["", "Return one block per region id above, in the same order. No other output."]
     return "\n".join(p for p in parts if p)
 
@@ -473,6 +495,19 @@ class RoundRecord:
     arbiter_output_tokens: int = 0
 
 
+def _apply_regions(ws, regs, blocks):
+    """Apply a round's blocks and make any CREATED file visible to `git diff`.
+
+    Every apply site must go through here. `Workspace.diff()` is `git diff`,
+    which ignores untracked files, so an `op=create` region that is applied and
+    not intent-added produces a patch referencing a module the patch does not
+    add -- and `promote` then lands a change whose own code is missing.
+    """
+    touched = regions.apply(regs, blocks)
+    ws.stage_new_files([r.file for r in regs if r.op == regions.CREATE])
+    return touched
+
+
 def run_ticket(
     repo: Path,
     ticket: Dict[str, Any],
@@ -676,7 +711,7 @@ def run_ticket(
             ]
             touched: List[str] = []
             if gate_results[-1].ok:
-                touched = regions.apply(regs, blocks)
+                touched = _apply_regions(ws, regs, blocks)
                 if profile.lint_cmd:
                     # files=touched, or a lint_cmd containing {files} silently
                     # short-circuits to "no files to lint" on every round -- a
@@ -965,7 +1000,7 @@ def run_ticket(
                 # On an arbiter override the candidate was reverted when its
                 # round ended, so put it back before exporting.
                 if not ws.dirty_files():
-                    regions.apply(regs, blocks)
+                    _apply_regions(ws, regs, blocks)
                 patch = ws.export_patch(art / "final.patch")
                 if apply:
                     moved = ws.promote(sorted({r.file for r in regs}))
@@ -983,7 +1018,7 @@ def run_ticket(
                 # JSON-escaped C# and unreadable, and a human has to decide what
                 # happens next.
                 if not ws.dirty_files():
-                    regions.apply(regs, blocks)
+                    _apply_regions(ws, regs, blocks)
                 patch = ws.export_patch(art / "final.patch")
                 ws.revert(sorted({r.file for r in regs}))
                 if final in ("ARBITER_SHIP", "APPROVE_PARTIAL"):

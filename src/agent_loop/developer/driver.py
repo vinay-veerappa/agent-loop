@@ -387,6 +387,10 @@ def _run_turns(
                     # the defect raises, and a gate the model cannot override
                     # would strand the run in the red phase.
                     kinds = gates.failure_kinds(outcome.raw)
+                    # Developer mode has no ticket, so it cannot derive this
+                    # from `op: create`. It localises its own work, and a
+                    # feature request is indistinguishable from a defect here,
+                    # so the warning stays advisory either way (see O34).
                     reached = gates.reached_an_assertion(kinds)
                     why = ", ".join(sorted(kinds)) if kinds else "(no exception identified)"
                     print(f"           [red] failed with: {why}")

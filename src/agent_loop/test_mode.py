@@ -159,7 +159,11 @@ def run_test(
                     # turns went into satisfying it (O34, and O19 before it).
                     # So read the failures, classify them, and say which.
                     kinds = gates.failure_kinds(outcome.raw)
-                    reached = gates.reached_an_assertion(kinds)
+                    # A feature's red test fails on a name that does not
+                    # exist yet, which is evidence here and a broken test
+                    # anywhere else. Only the ticket knows which job this is.
+                    feature = gates.is_feature_ticket(ticket)
+                    reached = gates.reached_an_assertion(kinds, feature=feature)
                     result["failure_kinds"] = sorted(kinds)
                     result["reached_assertion"] = reached
                     why = ", ".join(sorted(kinds)) if kinds else "(no exception identified)"

@@ -15,22 +15,25 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | | |
 |---|---|
 | `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
-| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 389 now |
-| Tests | **389 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
+| Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 416 now |
+| Tests | **416 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
 | Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`** — **33 commits behind HEAD**, and `v0.4.0` is itself 7 commits behind (5 of them `fix(` commits closing O7/O32, O33, O34, O23, O31). Counts from `git log --oneline v0.3.0..HEAD` |
 
 **Closed in session 4:** O7 (for the modes), O14, O23, O29, O30, O31, O32, O33, O34.
-**Open:** O21, O22, O28, O35, O36. O20 mitigated, not closed.
+**Open:** O21, O22, O28, O35, and O36's ENTRY POINT (its change model is done).
+O20 mitigated, not closed.
 
 **Next, in the order argued for:**
 
-1. **O36** — plan mode must be able to plan a FEATURE, not only a defect fix
-   (requested by the user). O31 was its prerequisite and is now done, so plan mode
-   can finally see the tree it plans against. **Question 3 in BACKLOG O36 decides
-   the shape of everything else** and should be answered before any code: how does
-   a region-based loop implement a ticket whose files do not exist yet? Either the
-   ticket schema grows a "new file" kind, or feature tickets route to developer
-   mode, which edits by tool call and has no region model.
+1. **O36's entry point.** The change model is done: regions now carry an `op`
+   (`replace`/`create`/`insert`), one ticket can mix all three, created files reach
+   the patch, and O34 no longer refuses a feature's red test. What is missing is the
+   way to ASK: `run_plan` still takes `defect_description`, the CLI flag is
+   `--defect`, and `PLAN_SYSTEM` says "analyze the defect". Wants a `--feature`
+   sibling that emits `op` per region, and a decision on whether one request may
+   emit several ordered tickets (the loader already accepts a list). **Question 4 in
+   BACKLOG O36 is still unanswered** — what the acceptance criterion for a feature
+   is — and the plan→test→loop path has not been run end to end for a feature.
 2. **O28** — the arbiter ranking rests on ONE patch and ONE finding set. A second
    labelled corpus is worth more than a fifteenth model, and developer mode now
    produces suitable material every run.
@@ -91,7 +94,7 @@ directory or serialise.
 |---|---|
 | `agent-loop` branch | `main`, working tree **clean** |
 | `agent-loop` HEAD, tag, tests | **see START HERE at the top of this file** — these rows went stale three times in one session, so they now live in exactly one place |
-| Closed / open issues | O3, O6, O14-O19, O23, O24-O27, O29-O34 closed; O20 mitigated; O21, O22, O28, O35, O36 open |
+| Closed / open issues | O3, O6, O14-O19, O23, O24-O27, O29-O34 closed; O20 mitigated; O21, O22, O28, O35 open; O36 part-closed |
 | Developer mode | **Works, and is test-first.** First patch it ever produced was a no-op that passed every gate; that is what motivated the red phase. See BACKLOG O18. |
 | First real loop run since F1-F6 | O1: 3 rounds, **did not converge**, `ARBITER_NEVER_RAN`. The gate ladder refused all three patches — one of which would have corrupted files with conflict markers. Round 3's architecture was right and needed one flag removed, done by hand. See BACKLOG O13. |
 | `python -m agent_loop.selftest` | **12/12** (offline, ~40s, free) |
@@ -778,3 +781,45 @@ request. That is the difference between advice and grounded advice.
 One test in this file was written so it could not fail (it used `src/` and
 `tests/`, where `src` already sorts first) and passed against the unranked
 implementation. It now uses a directory that genuinely sorts before the source.
+
+### §12e O36: the change model can express a feature; the entry point cannot ask for one
+
+**Question 3 answered, and the answer was neither option as written.** The
+requirement decided it — a feature is new files *and* additions to existing ones,
+both. Routing to developer mode cannot do that: `_edit_file` returns
+`ERROR: file not found`, so **developer mode cannot create a source file either**.
+Only `write_test` creates files, and only under `test_sources`. Neither option was
+free, so the cheaper one was to grow the region model.
+
+Regions now carry an `op`: `replace` (default, unchanged), `create`, `insert`.
+Per-region, so **one ticket mixes all three** — new module, hook into an existing
+file, signature change at the call site. `op` is deliberately NOT folded into
+`kind`, which is the locator strategy; one field with two meanings is the
+ambiguous helper this repo avoids.
+
+`insert` also fixes **§6 trap 4** — "the region model cannot add a module-level
+function" — a limitation that already bit F1-F6 on *defect* work.
+
+**Three things that had to ship with it**, each a defect if omitted:
+`Workspace.stage_new_files()` (`git diff` ignores untracked files, so a created
+file would be missing from its own patch — the red phase learned this once with a
+new test file); per-op prompt text (left implicit, `create` gets a fragment and
+`insert` re-emits the block it anchored to, duplicating it); and `lines_1based`,
+which said `1-0` for a create region.
+
+**The interaction that would have shipped this broken.** A feature's first red test
+imports something not yet written, so it fails with `ImportError`. O34 — added
+three commits earlier — reads that as "died in its own scaffolding" and REFUSES in
+test mode. So the gate would have rejected every feature on arrival.
+`reached_an_assertion(kinds, feature=True)` now accepts the "name is not there"
+family, and `gates.is_feature_ticket()` derives the flag from `op: create`.
+Narrow on purpose: a `TypeError` in a stub is a broken test either way — and
+widening it to `TypeError` is one of the six mutations, because that is the change
+that would quietly make the whole exception meaningless.
+
+**What is NOT done: the entry point.** `run_plan` still takes
+`defect_description`, the flag is `--defect`, and `PLAN_SYSTEM` says "analyze the
+defect". Question 4 — the acceptance criterion for a feature — is unanswered, and
+the plan→test→loop path has never been run for a feature end to end. Do not assume
+it works; every mode that had "never been run" this session turned out to be
+broken in some way.

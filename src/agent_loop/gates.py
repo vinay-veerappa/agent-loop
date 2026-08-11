@@ -355,6 +355,36 @@ _SUMMARY_BARE_ASSERT = re.compile(r"^FAILED\s+\S+\s+-\s+assert\b", re.M)
 
 _ASSERTION_KINDS = frozenset({"AssertionError", "Failed"})
 
+# For a FEATURE, these are legitimate evidence of red rather than a broken test.
+# The natural first test for code that does not exist yet imports a module that
+# does not exist yet, so it fails on the name -- and that failure IS the thing
+# being demonstrated. Without this, the O34 gate refuses every feature on arrival.
+#
+# Deliberately narrow: a TypeError or a ZeroDivisionError inside a stub is a
+# broken test whether the work is a feature or a fix, so the exception covers only
+# the "this name is not there" family.
+_NOT_YET_KINDS = frozenset({
+    "ImportError", "ModuleNotFoundError", "AttributeError", "NameError",
+})
+
+
+def is_feature_ticket(ticket: Dict[str, Any]) -> bool:
+    """Is this ticket authoring code that does not exist yet?
+
+    True when any region creates a file, or when the ticket says so explicitly.
+    Derived rather than required, so a caller that has already declared
+    `op: create` does not have to say it twice.
+    """
+    if not ticket:
+        return False
+    if str(ticket.get("kind", "")).lower() == "feature":
+        return True
+    return any(
+        str(r.get("op", "")).lower() == "create"
+        for r in ticket.get("regions") or ()
+        if isinstance(r, dict)
+    )
+
 
 def failure_kinds(raw: str) -> Set[str]:
     """The exception types a test run ended its failures with.
@@ -375,7 +405,7 @@ def failure_kinds(raw: str) -> Set[str]:
     return kinds
 
 
-def reached_an_assertion(kinds: Set[str]) -> Optional[bool]:
+def reached_an_assertion(kinds: Set[str], feature: bool = False) -> Optional[bool]:
     """Did any failure get as far as asserting something?
 
     True  - at least one failure was an assertion. The test ran and disagreed.
@@ -386,10 +416,20 @@ def reached_an_assertion(kinds: Set[str]) -> Optional[bool]:
             rather than as a refusal: the NT8 profile's runner prints
             `[FAIL] Suite.Test` and no exception at all, and a check that fails
             every run on a runner it does not understand would just be turned off.
+
+    `feature=True` also accepts a missing NAME as evidence. A feature's first test
+    imports something that has not been written, so it fails with ImportError or
+    AttributeError -- which for a defect fix means "the test is broken" and for a
+    feature means "the code is not there yet, which is the point". Same output,
+    opposite meaning, and only the caller knows which job it is.
     """
     if not kinds:
         return None
-    return bool(kinds & _ASSERTION_KINDS)
+    if kinds & _ASSERTION_KINDS:
+        return True
+    if feature and kinds & _NOT_YET_KINDS:
+        return True
+    return False
 
 
 def names_match(name: str, failure: str) -> bool:
