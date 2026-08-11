@@ -95,7 +95,8 @@ def test_docs_parses_output(tmp_path):
         )
 
     with patch("agent_loop.docs_mode.chat", side_effect=mock_chat):
-        result = run_docs(repo, "HEAD~1", PROFILE, "test-impl",
+        result = run_docs(repo, PROFILE, "test-impl",
+                         docs_type="changelog", diff_ref="HEAD~1",
                          output_path="docs/UPDATES.md")
 
     assert result["docs"] is not None
@@ -109,6 +110,7 @@ def test_docs_handles_no_diff(tmp_path):
     repo.mkdir()
     os.system(f'cd /d "{repo}" && git init && git add -A && git commit -m init --allow-empty')
 
-    result = run_docs(repo, "HEAD", PROFILE, "test-impl")
+    result = run_docs(repo, PROFILE, "test-impl",
+                     docs_type="changelog", diff_ref="HEAD")
     assert "error" in result
-    assert result["docs"] is None
+    assert "docs" not in result or result.get("docs") is None
