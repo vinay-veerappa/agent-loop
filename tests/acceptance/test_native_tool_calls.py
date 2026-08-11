@@ -291,3 +291,65 @@ def test_driver_does_not_double_count_a_native_call(tmp_path):
                 )
 
     assert seen.count("read_file") == 1, f"read_file executed {seen.count('read_file')}x: {seen}"
+
+
+# ---------------------------------------------------------------------------
+# Turn exhaustion must name itself
+# ---------------------------------------------------------------------------
+def test_max_turns_exhausted_is_named_not_blank(tmp_path):
+    """A run that spends every turn without <<<DONE>>> used to fall out of the
+    loop with verdict still "" -- fifteen turns of real work reported as no
+    state at all, and indistinguishable downstream from a run that did
+    nothing, because every branch after the loop keys off verdict == "DONE"."""
+    repo = _make_repo(tmp_path)
+    dev_profile = Profile(
+        name="test-max-turns",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        build_cmd="python -m py_compile src/target.py", test_cmd="",
+        file_scope_whitelist=("src/",), protected=("test_*.py", "tests/*"),
+        implementer_rules="test", reviewer_priorities="test",
+    )
+    register(dev_profile)
+
+    def never_done(model, messages, **kw):
+        return Completion(text="", model=model, output_tokens=7, tool_calls=[
+            {"name": "read_file", "args": {"path": "src/target.py"}}])
+
+    with patch("agent_loop.developer.driver.chat", side_effect=never_done):
+        result = run_developer(
+            repo, "defect", dev_profile, "test-impl", ["r1"],
+            arbiter_model="", max_turns=3, apply=False,
+        )
+
+    assert result["verdict"] == "MAX_TURNS_EXHAUSTED", result["verdict"]
+    assert "3 turns" in result.get("error", "")
+
+
+def test_turns_are_recorded(tmp_path):
+    """result["turns"] shipped as a permanently empty list."""
+    repo = _make_repo(tmp_path)
+    dev_profile = Profile(
+        name="test-turns-recorded",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        build_cmd="python -m py_compile src/target.py", test_cmd="",
+        file_scope_whitelist=("src/",), protected=("test_*.py", "tests/*"),
+        implementer_rules="test", reviewer_priorities="test",
+    )
+    register(dev_profile)
+
+    def two_turns(model, messages, **kw):
+        return Completion(text="", model=model, output_tokens=11, tool_calls=[
+            {"name": "read_file", "args": {"path": "src/target.py"}}])
+
+    with patch("agent_loop.developer.driver.chat", side_effect=two_turns):
+        result = run_developer(
+            repo, "defect", dev_profile, "test-impl", ["r1"],
+            arbiter_model="", max_turns=2, apply=False,
+        )
+
+    assert len(result["turns"]) == 2, result["turns"]
+    assert result["turns"][0]["tools"] == ["read_file"]
+    assert result["turns"][0]["phase"] == "explore"
+    assert result["turns"][0]["output_tokens"] == 11

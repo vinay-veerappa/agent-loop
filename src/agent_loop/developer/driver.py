@@ -206,6 +206,16 @@ def _run_turns(
         # no tool calls", so the model was told to continue with no hint that
         # its request had been refused, and could repeat it until max_turns.
         rejected = [c["name"] for c in found if c["name"] not in offered]
+        # Record every turn, including one that made no call at all. `turns`
+        # shipped as a permanently empty list, so result.json described a
+        # fifteen-turn run as though nothing had happened.
+        result["turns"].append({
+            "turn": turn,
+            "phase": phase,
+            "tools": [c["name"] for c in tool_calls],
+            "rejected": rejected,
+            "output_tokens": out.output_tokens,
+        })
         if not tool_calls and not rejected:
             # No tool calls and not done -- ask the LLM to continue
             history += [
@@ -256,6 +266,19 @@ def _run_turns(
             {"role": "assistant", "content": raw},
             {"role": "user", "content": "\n\n".join(tool_results)},
         ]
+    else:
+        # Falling out of the for loop means max_turns was spent without the
+        # model ever emitting <<<DONE>>>. That used to leave verdict at its ""
+        # initial value: the run reported no state at all, and every branch
+        # below keys off verdict == "DONE", so a run that did fifteen turns of
+        # real work was indistinguishable from one that did nothing. Name it.
+        if not result["verdict"]:
+            result["verdict"] = "MAX_TURNS_EXHAUSTED"
+            result["error"] = (
+                f"spent all {max_turns} turns without emitting <<<DONE>>>; "
+                f"edited {len(edited)} file(s). Raise --max-rounds (max_turns "
+                f"is 5x it) or narrow the defect."
+            )
 
     # After the loop: run gate ladder on the diff
     if result["verdict"] == "DONE":
