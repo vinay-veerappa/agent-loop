@@ -10,14 +10,35 @@ not current state. When two sections disagree, the higher-numbered one wins.
 
 ---
 
-## START HERE — checkpoint, 2026-08-11 (session 6)
+## START HERE — checkpoint, 2026-08-11 (session 7)
 
 | | |
 |---|---|
-| `main` | see `git log --oneline -1`; clean at last commit |
-| Tag | **`v0.6.2`** is on origin but is now STALE — session 6 landed on top of it. Cut `v0.6.3` before re-pinning the consumer |
-| Tests | **551 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
-| Consumer | tvDownloadOHLC **pins and has installed `v0.6.2`**, so it does NOT yet have the blocker rule (§14). Do not trust a number written here — it went stale three times in session 4 and moved eight times in session 5. Run `git log --oneline v0.6.2..HEAD` for how stale the TAG is (non-empty means cut a new one rather than pinning this) |
+| `main` | see `git log --oneline -1` |
+| Tag | **`v0.6.4`**. `v0.6.2` and `v0.6.3` both predate O53-O60 |
+| Tests | **605 pass, 22 skipped, on 3.12 and 3.14**; `selftest` 13/13 |
+| Consumer | tvDownloadOHLC pins `v0.6.4`. Do not trust a number written here — it went stale three times in session 4, moved eight times in session 5 and eight more in session 7. Run `git log --oneline v0.6.4..HEAD` for how stale the TAG is |
+
+**Session 7 ran a real ticket (CM2, the copier config round trip) through the
+loop and it took SIX attempts. Every failure was in the harness. O53-O60, eight
+defects, none findable by reading.** The ticket itself is still not landed.
+
+**Closed in session 7:** O52, O53, O54, O55, O56, O57, O58, O59, O60.
+**Closed in session 5:** O35 (consumer), O37-O50. **Session 4:** O4, O7, O8,
+O14, O22, O23, O29-O36.
+
+**The through-line, and it is not subtle:** three of the eight were found while
+testing another one. O56 surfaced because O55's test could not observe its own
+subject. O58 because O57's fix visibly changed nothing. O60 because O59's fix
+changed nothing either. **A fix that alters no observable behaviour is
+evidence, not a mystery** — twice this session that meant the knob had never
+been connected to anything.
+
+**And four times this session a first-draft test could not tell the fix from its
+absence** — O53's doubled quote, O54's trailing semicolon, O55's approve case,
+O60's `assert "think" in msg.lower()` passing on the words "chars of thinking".
+Not one was caught by reading. All four were caught by mutating the code, or by
+running the test before the fix existed.
 
 **Session 5 was one long exercise of `--feature` → `--mode test` → the loop against a
 real feature in the consumer repo (the NT8 trade copier), which is what §12i asked
@@ -40,7 +61,7 @@ it by quoting a short version:
 | **O21** | Self-authored tests covering half a fix. **Six mutations survived a green suite this session**, all found by mutating and none by reading. Wants a design answer, not a patch. |
 | **O10** | Closed for wiring, **open for conventions** — docs mode does not inject the house format, so generated docs need editing. |
 | **O51** | Developer mode records `ARBITER_SHIP` **without calling the arbiter** when a counted REVISE vote's findings do not match `_FINDING_RE`, and that verdict is promotable. Found 2026-08-11 while checking what the blocker rule protects; recorded, not fixed. The patch loop does not have the hole. |
-| **O52** | `import agent_loop.models` as the FIRST import of the package raises ImportError — `config.py`'s module-scope `check_panel_policy` imports back into a half-initialised `models`. Pre-existing at `v0.6.2`; the 552-test suite passes because something always imports `config` first. Any test of it must run in a FRESH interpreter. |
+| ~~**O52**~~ | CLOSED 2026-08-11. `import agent_loop.models` as the FIRST import of the package raised ImportError — `config.py`'s module-scope `check_panel_policy` imports back into a half-initialised `models`. Pre-existing at `v0.6.2`; the 552-test suite passes because something always imports `config` first. Any test of it must run in a FRESH interpreter. |
 | **O8 remainder** | The OpenAI cached-token field. Left deliberately: no key, so it cannot be checked against a real response shape, and guessing a response format is what produced O24's and O34's confident wrong readings. |
 
 **O5, O20 and O28 are one cluster**, and the dependency runs one way: O5's fix
@@ -1281,3 +1302,42 @@ severity. It stays conservative in the right direction — a wrong BLOCKER costs
 escalation, not a bad ship — but "an unaddressed BLOCKER forces ESCALATE"
 assumed BLOCKER meant something, and on this reviewer, on this case, it did not.
 Measure across models before leaning on it further.
+
+---
+
+## §16 OPEN: is `think=False` the right answer, or just the one that works?
+
+Set on the consumer's implementer at the end of session 7, on the strength of
+one measured fact (reasoning expands to fill the budget) and one precedent (the
+reviewer role, where `think=False` was measured strictly better). **It has not
+been validated for patch QUALITY**, and the user's objection is the right one: a
+strong-coder model asked to write a 113-line refactor with reasoning disabled
+may produce worse patches, and the loop's gate ladder would then spend rounds on
+it. Revert if that happens; the budget stays at 96000 either way.
+
+### The alternative worth measuring: bound the reasoning, do not remove it
+
+*"Restrict reasoning to 3 bulleted points"* — asked for by the user, and it is
+the obvious middle setting. Two things to weigh before believing it:
+
+* **A strict output contract already exists and did not bound anything.** The
+  reviewer prompt specifies exact `<<<VERDICT>>>` / `<<<FINDINGS>>>` blocks, and
+  minimax-m3 still produced 104128 characters of thinking and *empty content*.
+  A format instruction constrained the answer and left the reasoning untouched.
+* **On this provider the reasoning is a SEPARATE CHANNEL.** Ollama returns it in
+  `message.thinking`, not in `message.content`, which is why `providers.py` reads
+  the two independently. An instruction about how to format the answer is not
+  obviously able to reach a channel the answer does not live in.
+
+Neither point settles it — both are arguments, and this file's whole standard is
+that arguments about model behaviour lose to measurements. **The experiment is
+cheap and the harness for it already exists**: `tests/fixtures/reviewer_bench`
+holds a labelled case and replays one recorded prompt across arms. Add a third
+axis to the arms — the system prompt with and without a reasoning bound — and
+read `think_chars` per arm. That answers it for this provider in one run, for
+both roles, and the answer might be "the instruction works and think=False is
+unnecessary".
+
+**Do that before deciding anything about `think` permanently.** Turning thinking
+off is a big hammer chosen under time pressure on a day when the loop failed six
+times, which is not the same as a measured choice.
