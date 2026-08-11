@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from . import config
+# model_family lives in config.py, which needs it for check_panel_policy at
+# module scope. Importing it back from here made `import agent_loop.models`
+# a circular import whenever it was the FIRST import of the package (O52).
+# Re-exported because cli.py and two tests already import it from models.
+from .config import model_family, _BACKEND_PREFIXES  # noqa: F401
 
 
 @dataclass
@@ -125,31 +130,6 @@ DEFAULT_REGISTRY = ModelRegistry()
 
 # Backend prefixes. `agy:` is a TRANSPORT, not a viewpoint: two agy-routed Claudes
 # are one family, and treating the prefix as the family would count them as two.
-_BACKEND_PREFIXES = ("agy:", "ollama:", "anthropic:", "openai:", "gemini:", "github:")
-
-
-def model_family(name: str) -> str:
-    """The vendor stem of a model name, for "are these two the same viewpoint?".
-
-    The panel's whole claim is that different families miss different things, so
-    the check that a panel HAS two viewpoints needs a definition of viewpoint.
-    This one is deliberately crude -- the vendor stem, lowercased -- because the
-    alternative is a hand-maintained mapping that goes stale the next time a model
-    ships, and being crude here fails safe: two names it cannot tell apart are
-    reported as one family, which warns rather than staying silent.
-    """
-    n = (name or "").strip().lower()
-    for pref in _BACKEND_PREFIXES:
-        if n.startswith(pref):
-            n = n[len(pref):]
-            break
-    n = n.split(":", 1)[0]
-    # Split on the first separator OR the first digit: `glm-5.2` -> glm,
-    # `gemma4` -> gemma, `qwen3.5` -> qwen.
-    m = re.match(r"[a-z]+", n)
-    return m.group(0) if m else n
-
-
 def registry_from_config(cfg: "config.Config") -> ModelRegistry:
     """A registry populated from a Config. One conversion, no duplicated values."""
     reg = ModelRegistry()

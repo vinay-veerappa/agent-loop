@@ -41,6 +41,36 @@ def test_default_implementer_budget_exceeds_the_one_that_failed():
     )
 
 
+def test_default_reviewer_budget_survives_a_model_that_always_reasons():
+    """O57. The SHIPPED default panel could not complete a review.
+
+    `minimax-m3:cloud` is the second panel member by default, and the reviewer
+    role ships `think=False`. It reasoned anyway -- measured on the consumer's
+    CM2 ticket:
+
+        minimax-m3:cloud exhausted its output budget on reasoning: 104128 chars
+        of thinking, empty content (eval_count=24000, done_reason=length)
+
+    24000 tokens of budget, 24000 spent before a single character of answer, so
+    the panel came back INVALID and a fully green round-1 candidate went nowhere.
+    `think=False` is not a switch this model has; the budget has to cover
+    reasoning AND the answer.
+
+    Raising a ceiling is not spending: a budget is a cap, so this costs nothing
+    on the runs that do not need it.
+    """
+    budget = DEFAULT_REGISTRY.max_tokens_for("minimax-m3:cloud", "reviewer", 0)
+    assert budget > 24000, (
+        "the reviewer budget must exceed the value at which minimax-m3 returned "
+        "empty content on the CM2 review"
+    )
+    # It must also fit the model, or it is refused at the API rather than at the
+    # ceiling -- the O42/qwen3.5 failure in the other direction.
+    from agent_loop.config import MODEL_CATALOG
+
+    assert budget < MODEL_CATALOG["minimax-m3:cloud"].context_tokens
+
+
 def test_loop_does_not_hardcode_the_implementer_budget():
     """The literal is what made the registry value unreachable."""
     from pathlib import Path

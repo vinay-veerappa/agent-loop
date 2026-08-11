@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -413,8 +414,23 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     #
     # `check_panel_policy` fails the build if this ever drops to one member or to
     # a single family.
+    # WHY 48000 AND NOT 24000: `think=False` is not a switch minimax-m3 has.
+    # MEASURED on the consumer's CM2 review, 2026-08-11, at the old 24000:
+    #
+    #   minimax-m3:cloud exhausted its output budget on reasoning: 104128 chars
+    #   of thinking, empty content (eval_count=24000, done_reason=length)
+    #
+    # The whole budget went on reasoning before a character of answer, the panel
+    # came back INVALID, and a round-1 candidate that had passed every mechanical
+    # gate went nowhere. The budget has to cover reasoning AND the answer for a
+    # model that reasons whether or not it is asked to.
+    #
+    # Raising a ceiling is not spending: this costs nothing on the runs that do
+    # not need it, and 48000 sits far under minimax's 524288 context and glm's,
+    # so it cannot fail the other way (the O42/qwen3.5 direction, where a budget
+    # above the model's ceiling is refused at the API).
     "reviewer": RoleSettings(
-        model="glm-5.2:cloud", max_tokens=24000, think=False, capability="fast",
+        model="glm-5.2:cloud", max_tokens=48000, think=False, capability="fast",
         extra_members=("minimax-m3:cloud",),
     ),
     # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
@@ -494,6 +510,31 @@ _DEFAULT_MODES: Dict[str, ModeSettings] = {
     "developer": ModeSettings(max_tokens=48000, think=True, require_failing_test=True),
 }
 
+_BACKEND_PREFIXES = ("agy:", "ollama:", "anthropic:", "openai:", "gemini:", "github:")
+
+
+def model_family(name: str) -> str:
+    """The vendor stem of a model name, for "are these two the same viewpoint?".
+
+    The panel's whole claim is that different families miss different things, so
+    the check that a panel HAS two viewpoints needs a definition of viewpoint.
+    This one is deliberately crude -- the vendor stem, lowercased -- because the
+    alternative is a hand-maintained mapping that goes stale the next time a model
+    ships, and being crude here fails safe: two names it cannot tell apart are
+    reported as one family, which warns rather than staying silent.
+    """
+    n = (name or "").strip().lower()
+    for pref in _BACKEND_PREFIXES:
+        if n.startswith(pref):
+            n = n[len(pref):]
+            break
+    n = n.split(":", 1)[0]
+    # Split on the first separator OR the first digit: `glm-5.2` -> glm,
+    # `gemma4` -> gemma, `qwen3.5` -> qwen.
+    m = re.match(r"[a-z]+", n)
+    return m.group(0) if m else n
+
+
 def check_panel_policy(roles: Mapping[str, "RoleSettings"]) -> None:
     """The panel must be at least two members, from at least two families.
 
@@ -514,8 +555,6 @@ def check_panel_policy(roles: Mapping[str, "RoleSettings"]) -> None:
             f"the reviewer panel must have at least two members; got {list(members)}. "
             f"One reviewer is not a panel."
         )
-    from .models import model_family
-
     families = {model_family(m) for m in members}
     if len(families) < 2:
         raise ValueError(

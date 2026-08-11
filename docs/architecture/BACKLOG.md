@@ -2423,3 +2423,55 @@ available, and only an adversarial reader caught it. **A test states what must b
 true; it does not state what must not become true on the way.**
 
 ---
+#### O52. `agent_loop.models` could not be the first import — CLOSED
+
+Recorded earlier the same day and fixed when it stopped being theoretical: it
+blocked `pytest tests/acceptance/test_registry_budgets.py`, which is where O57's
+guard had to go, so the next fix could not be tested until this one landed.
+
+`model_family` is a pure string function over a model name. It now lives in
+`config.py`, which is what needs it, and is re-exported from `models` for
+`cli.py` and the two tests that already import it from there. `config` no longer
+imports `models` at all, so the cycle is **gone rather than deferred** — and
+`check_panel_policy` still runs at import, which was the point of putting it at
+module scope.
+
+Ten tests, each in a FRESH interpreter, over every plausible first import of the
+package. In-process the import is already cached, so an in-process assertion
+proves nothing about the thing under test — which is exactly how this survived
+595 tests.
+
+#### O57. The SHIPPED default panel could not complete a review — CLOSED
+
+Found by the CM2 re-run, on a round that had passed every mechanical gate:
+
+```
+round 1: [test] ok - 830 passed, 0 failed; all 10 acceptance test(s) green
+         [lock-scope] ok
+         [panel] REVISE  [glm-5.2=REVISE(6), minimax-m3=UNREACHABLE(0)]
+         panel INVALID - minimax-m3:cloud exhausted its output budget on
+         reasoning: 104128 chars of thinking, empty content
+         (eval_count=24000, done_reason=length)
+```
+
+`minimax-m3` is the second panel member **by default**, and the reviewer role
+ships `think=False`. It reasoned anyway — `think=False` is not a switch this
+model has — and spent all 24000 tokens before a character of answer. The panel
+came back INVALID and a green candidate went nowhere.
+
+This is O42's shape a third time: a shipped default that cannot do the job it is
+shipped for. It had not fired before because it is prompt-size dependent — the
+same panel reviewed the *smaller* CM2 round-2 prompt successfully an hour
+earlier.
+
+Reviewer budget raised to 48000, with the measurement recorded at the constant.
+**Raising a ceiling is not spending**: a budget is a cap, so this costs nothing
+on runs that do not need it, and 48000 sits far under minimax's 524288 context,
+so it cannot fail in the O42 direction either.
+
+**An existing test caught the second half of the change**:
+`test_shipped_example_file_loads_and_equals_the_defaults` failed because
+`agent_loop.config.example.json` still documented 24000. A config example that
+lies is how a consumer copies the broken value forward.
+
+---
