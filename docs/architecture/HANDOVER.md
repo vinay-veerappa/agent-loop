@@ -17,7 +17,7 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | `main` | see `git log --oneline -1`; working tree was clean at last commit, **nothing unpushed** |
 | Tag | **`v0.4.0`** (`e780e29`), on origin. First tag verified green on 3.12 *and* 3.14. **Tests have moved on since the tag** — 434 now |
 | Tests | **434 pass on both 3.12 and 3.14**; `selftest` 12/12 from the checkout |
-| Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`** — **33 commits behind HEAD**, and `v0.4.0` is itself 7 commits behind (5 of them `fix(` commits closing O7/O32, O33, O34, O23, O31). Counts from `git log --oneline v0.3.0..HEAD` |
+| Consumer | tvDownloadOHLC **still pins and has installed `v0.3.0`**. Do not trust a number written here — it went stale three times in one session. Run `git log --oneline v0.3.0..HEAD \| wc -l` for how far behind the consumer is, and `git log --oneline v0.4.0..HEAD` for how stale the latest TAG is (non-empty means cut `v0.5.0` rather than pinning `v0.4.0`) |
 
 **Closed in session 4:** O7 (modes), O14, O23, O29-O34, **O36**.
 **Open:** O21, O22, O28, O35. O20 mitigated, not closed.
@@ -33,9 +33,9 @@ not current state. When two sections disagree, the higher-numbered one wins.
    while actually looking at `config.py`.
 
 Also outstanding and cheap: **cut `v0.5.0` and re-pin the consumer to it.**
-Pinning `v0.4.0` would already be five fixes stale, so the tag is the cheaper
-half of the job. Until the consumer is re-pinned, O30 still throws its bare
-`FileNotFoundError` in that venv and none of O23/O31/O33/O34 is present there.
+`v0.4.0` is already several fixes stale, so cutting the tag is the cheaper half of
+the job. Until the consumer is re-pinned, O30 still throws its bare
+`FileNotFoundError` in that venv, and none of O23/O31/O33/O34/O36 is present there.
 Bump `__version__` and `pyproject.toml` together — a test pins them to each other.
 
 **The one lesson session 4 kept re-learning**, in six separate items: *a check
@@ -125,7 +125,7 @@ C:/Users/vinay/agent-loop/                 the package (this repo)
   src/agent_loop/                          loop, gates, arbiter, regions, providers, ...
   profiles/self.py                          the self-hosting profile (agent-loop-self)
   tickets/review_followups.json             the F1-F6 tickets
-  tests/acceptance/                         389 tests
+  tests/acceptance/                         the suite (count in START HERE, not here)
   src/agent_loop/config.py                  EVERY tunable, with the reason for each
   agent_loop.config.example.json            copy to agent_loop.config.json to override
   logs/agent_loop/F1..F6/                   patches + artifacts from the self-hosted run

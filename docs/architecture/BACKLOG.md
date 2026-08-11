@@ -10,10 +10,11 @@ section or decision log entry that motivates it.
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
 **434/434 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
-Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` is now 7 commits
-past that tag, so **cut `v0.5.0` before re-pinning anything**.
-**tvDownloadOHLC still pins and has installed `v0.3.0`**, which is 33 commits
-behind: re-pinning is what delivers O15-O19, O23, O24, O29-O34.
+Latest tag: **`v0.4.0`**, and `main` is pushed — but `main` has moved on past that
+tag, so **cut `v0.5.0` before re-pinning anything**
+(`git log --oneline v0.4.0..HEAD` for how far).
+**tvDownloadOHLC still pins and has installed `v0.3.0`**; re-pinning is what
+delivers O15-O19, O23, O24, O29-O34 and O36 to the consumer.
 
 Tag hazards: `v0.1.0` predates Phase 9 and all review fixes. `v0.2.0` carries
 the O9 defect and **cannot run on Python < 3.13 at all**. Use `v0.3.0` or later;
