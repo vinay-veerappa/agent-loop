@@ -1175,3 +1175,59 @@ it is a separate behavioural decision. The patch loop does not have the hole.
 open, O28 still needs a third labelled case, and `ARBITER_SHIP` on the NT8
 profile is still not a review — it is now merely a claim that no reviewer thought
 anything blocked.
+
+---
+
+## §15 Session 7 (2026-08-11) — continuing the feature run: O53, O54
+
+The user's instruction was to carry the copier ratio feature forward and let it
+find loop defects on the way. It found two before a single model call was spent,
+both by trying to use the thing rather than by reading it.
+
+### O53 — a block comment anywhere refused the whole file
+
+**This is what had blocked slice 3 all along**, and the handover recorded it as a
+constraint to work around rather than a defect to fix: *"`McpBridgeAddOn.cs` and
+`RiskGuardAddOnTests.cs` cannot be edited by the agent loop at all."* The cause
+is two `catch { /* indexer or access threw */ }` lines in a **5,576**-line file,
+and one comment in an **11,258**-line one.
+
+The refusal was right about the danger — `strip_code` is per-line and stateless,
+so a brace inside a comment counts as real and the region silently ends in the
+wrong place — and wrong about the scope. Block comments are now masked over the
+whole text in one pass, understanding line comments, strings, char literals and
+verbatim strings. Anchors still match the RAW text, because a marker comment is a
+legitimate anchor.
+
+Landed on one invariant: **on a file with no block comment the masker is the
+identity**. Measured against the consumer — 8 of 10 addon files come back
+byte-identical, the two that do not are the two that used to be refused, and
+CM1's shipped regions still resolve to 442-663 and 382-440.
+
+### O54 — `kind=decl` on a bodyless declaration swallows the class
+
+Found in the next five minutes, by checking that the newly-reachable file was
+actually usable. `McpBridgeAddOn.cs:3600` is expression-bodied; `kind=decl`
+resolved it to **3600-3715**, one line of intent and 116 lines of region, and
+printed `OK`. `decl` is the C# profile's default kind.
+
+**Third of a family** with O40 and O47: the anchor is individually correct and
+the result is silently wrong, so no gate catches it — *a region that is too big
+is still a region*. A ticket meaning to change one line hands the implementer 116
+lines to re-emit, and every line not reproduced exactly is a silent deletion.
+
+Measured rather than argued: over all ten addons, 767 declarations still resolve,
+81 are newly refused and every one is genuinely bodyless, 0 unbalanced.
+
+### The lesson, for the third session running
+
+**Both defects were found by USING the tool, neither by reading it**, and both
+had been sitting in front of previous sessions as accepted constraints. §12i's
+observation keeps holding: every path that has never been run turns out to be
+broken somewhere.
+
+And twice in one session a first-draft test could not tell the fix from its
+absence — O53's doubled-quote case (a naive scanner is wrong and right at once on
+every single-line input) and O54's trailing semicolon (the comment did not END
+with one, so raw and stripped agreed). **Neither was caught by reading the test.
+Both were caught by mutating the code and watching the test not care.**
