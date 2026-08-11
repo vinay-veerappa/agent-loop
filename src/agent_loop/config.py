@@ -214,17 +214,18 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     "deepseek-v4-flash:cloud": ModelProfile(
         "304B", 1_048_576, ("text",), True, True, 0.0, 0.0,
         ("compactor",),
-        "Cheap tier with a 1M context, which is the shape compaction wants: "
-        "faithful extraction over a long input. UNMEASURED for compaction. "
+        "MEASURED fine for compaction: 7/8 planted rejections carried forward, "
+        "twice, identical to every other candidate. 1M context. "
         "MEASURED BAD as arbiter (0/5, SHIP, twice) -- that is an adjudication "
         "result and says little about summarisation, so it does not disqualify "
         "it here, but it is not evidence in its favour either.",
     ),
     "qwen3.5:cloud": ModelProfile(
         "397B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
-        (),
+        ("compactor",),
         "MEASURED BAD as arbiter, both sizes: 0 of 5 correct findings upheld over "
-        "2 runs each, mostly ruling SHIP. Not an arbiter candidate.",
+        "2 runs each, mostly ruling SHIP. Not an arbiter candidate. MEASURED "
+        "fine for compaction (7/8, twice).",
     ),
     "mistral-large-3:675b-cloud": ModelProfile(
         "675B", 262_144, ("text", "vision"), False, True, 0.0, 0.0,
@@ -237,7 +238,8 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     "gemma4:31b-cloud": ModelProfile(
         "32.7B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
         ("compactor",),
-        "Smallest cloud model, and the surprise of the benchmark: as ARBITER it "
+        "MEASURED fine for compaction: 7/8, twice, identical to models 20x its "
+        "size -- so the cheapest model is enough for that job. As ARBITER it "
         "scored 1/5 twice, beating 1.6T deepseek-v4-pro, 397B qwen3.5 and 304B "
         "deepseek-v4-flash, all of which scored 0/5 and ruled SHIP. Size does "
         "not predict adjudication quality. UNMEASURED for compaction, which is "

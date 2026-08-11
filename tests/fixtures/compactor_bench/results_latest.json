@@ -1,0 +1,50 @@
+[
+  {
+    "model": "glm-5.2:cloud",
+    "rep": 1,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "rep": 2,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "rep": 1,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "rep": 2,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "gemma4:31b-cloud",
+    "rep": 1,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "gemma4:31b-cloud",
+    "rep": 2,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "rep": 1,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "rep": 2,
+    "kept": 7,
+    "missing": "RJ-ALPHA"
+  }
+]
