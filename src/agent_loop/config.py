@@ -260,6 +260,30 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         (),
         "local. No thinking, 32K context. Too small for any role in this loop.",
     ),
+    # Gemini, via the OpenAI-compatibility endpoint. Requires GEMINI_API_KEY.
+    # NOTE the `-high` suffix in agy's names (gemini-3.6-flash-high) is an
+    # agy-side reasoning-effort setting, not part of the API id, and the
+    # compatibility layer does not accept this loop's `think` flag -- so these
+    # run at Google's default effort and a high-effort result is NOT what was
+    # measured here.
+    "gemini-3.6-flash": ModelProfile(
+        "unpublished", 1_000_000, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "MEASURED BAD as arbiter: 0/5, ruled SHIP, twice. Free tier is not "
+        "metered per token but IS rate limited; see gemini-3.1-pro-preview.",
+    ),
+    "gemini-3.5-flash": ModelProfile(
+        "unpublished", 1_000_000, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "MEASURED BAD as arbiter: 0/5, ruled SHIP, twice.",
+    ),
+    "gemini-3.1-pro-preview": ModelProfile(
+        "unpublished", 1_000_000, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "UNTESTED as arbiter: HTTP 429 on the free tier "
+        "(generate_content_free_tier_input_token_count) -- the arbiter prompt "
+        "is large. Needs a billing-enabled key. Do not read this as a result.",
+    ),
     # Anthropic models are priced per token; see providers.PRICING. They are
     # listed for completeness but no key is configured in this environment.
     "claude-opus-5": ModelProfile(

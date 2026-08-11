@@ -1,0 +1,14 @@
+findings parsed: 6 (expect 6); ground-truth correct: [1, 2, 4, 5, 6]
+
+  rep1 gemini:gemini-3.6-flash        think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep1 gemini:gemini-3.5-flash        think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 gemini:gemini-3.6-flash        think=False -> SHIP     upheld=[] correct-caught=0/5
+  rep2 gemini:gemini-3.5-flash        think=False -> SHIP     upheld=[] correct-caught=0/5
+
+=== SUMMARY (correct findings upheld, out of 5) ===
+  0/5  SHIP         gemini:gemini-3.6-flash        think=False budget=24000  upheld=[]
+  0/5  UNREACHABLE  gemini:gemini-3.1-pro-preview  think=False budget=24000  gemini:gemini-3.1-pro-preview failed after 3 attempts: HTTPE
+  0/5  SHIP         gemini:gemini-3.5-flash        think=False budget=24000  upheld=[]
+  0/5  SHIP         gemini:gemini-3.6-flash        think=False budget=24000  upheld=[]
+  0/5  UNREACHABLE  gemini:gemini-3.1-pro-preview  think=False budget=24000  gemini:gemini-3.1-pro-preview failed after 3 attempts: HTTPE
+  0/5  SHIP         gemini:gemini-3.5-flash        think=False budget=24000  upheld=[]
