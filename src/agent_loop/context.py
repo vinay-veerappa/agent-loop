@@ -22,6 +22,7 @@ profile's context_token_budget (default 3000 tokens).
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -359,3 +360,340 @@ def write_context_cache(
     cache_path = repo / "logs" / "agent_loop" / "graph_context.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(context_data, indent=2), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# O31: context keyed on the REQUEST, for modes that have no regions yet
+# --------------------------------------------------------------------------
+#
+# `build_context_slice` above needs `regions`, and plan mode exists to PRODUCE
+# regions -- there was nothing to pass it, which is why plan_mode imported it and
+# never called it. Brainstorm had no context of any kind. Both were reasoning
+# about a codebase they had never seen: measured at in=264 and in=319 tokens on
+# live runs.
+#
+# The mechanism here is the FILESYSTEM, not the graph. Docs mode's private
+# builder returns "" unless codebase-memory-mcp is live, so copying its shape
+# would have left both modes blind on every machine without the server running.
+# The graph is added on top when it happens to be available.
+
+# Words that look like identifiers but are just English. Kept small on purpose:
+# the identifier SHAPE tests below do most of the filtering, and this set only
+# has to catch prose that survives them.
+_PROSE = {
+    "the", "and", "for", "with", "from", "that", "this", "there", "then", "than",
+    "when", "where", "which", "what", "into", "onto", "over", "under", "about",
+    "should", "would", "could", "must", "will", "can", "cannot", "does", "not",
+    "but", "are", "was", "were", "has", "have", "had", "its", "you", "your",
+    "fix", "add", "remove", "update", "change", "make", "get", "set", "use",
+    "user", "users", "code", "file", "files", "line", "lines", "test", "tests",
+    "bug", "defect", "feature", "instead", "rather", "because", "every", "each",
+    "output", "input", "error", "errors", "wrong", "right", "correct", "prints",
+    "print", "call", "calls", "called", "return", "returns", "mode", "modes",
+    "colours", "colors", "nicer",
+}
+
+# A path-shaped token: at least one directory separator and a file extension,
+# optionally followed by :LINE.
+_PATH_RE = re.compile(r"\b((?:[\w.\-]+/)+[\w.\-]+\.\w{1,6})(?::\d+)?")
+# A bare filename with an extension, when no directory is given.
+_BARE_FILE_RE = re.compile(
+    r"\b([\w\-]+\.(?:py|cs|js|ts|tsx|go|rs|java|rb|md|json|ya?ml))\b"
+)
+_BACKTICK_RE = re.compile(r"`([^`\n]{1,120})`")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_FILE_EXTS = {"py", "cs", "js", "ts", "tsx", "go", "rs", "java", "rb", "md",
+              "json", "yaml", "yml"}
+
+
+def _looks_like_code(tok: str) -> bool:
+    """Is this token shaped like an identifier rather than an English word?
+
+    Recall matters more than precision here, and the reason is structural: a
+    candidate that is not real simply finds no DEFINITION in the tree and is
+    dropped, so the filesystem is the filter. Being strict, by contrast, loses
+    the name silently.
+
+    Measured: the first version required an underscore or a lower-to-upper
+    transition, which rejects every single-word class name -- `Config`, `Vote`,
+    `Finding`. On a live brainstorm run about `Config.roles` it therefore found
+    nothing and added 25 tokens of context to a 264-token prompt.
+    """
+    if len(tok) < 3 or len(tok) > 60:
+        return False
+    if tok.lower() in _PROSE:
+        return False
+    if "_" in tok:
+        return True
+    # CamelCase / mixedCase: a lower-to-upper transition.
+    if re.search(r"[a-z][A-Z]", tok):
+        return True
+    # A leading capital: a class name (`Config`) or a constant (`PROMOTABLE`).
+    # Sentence-initial English words reach here too and cost one failed lookup.
+    return tok[0].isupper()
+
+
+def extract_intent_symbols(intent: str) -> List[str]:
+    """Identifiers a request points at, best signal first.
+
+    Backticked spans are trusted -- someone marked them as code. Otherwise a
+    token must be SHAPED like an identifier (snake_case or CamelCase), because
+    the alternative, taking every non-stopword, sends the dictionary to the
+    searcher and buries the real names in noise.
+    """
+    out: List[str] = []
+
+    def _add(tok: str) -> None:
+        if tok and tok not in out and tok.lower() not in _PROSE and len(tok) >= 3:
+            out.append(tok)
+
+    # 1. Backticked: trusted, and split on non-identifier characters so
+    #    `gates.run_tests()` contributes `run_tests`.
+    for m in _BACKTICK_RE.finditer(intent):
+        for part in _IDENT_RE.findall(m.group(1)):
+            if part.lower() not in _FILE_EXTS:
+                _add(part)
+
+    # 2. Dotted qualified names in prose: take the member being talked about.
+    for m in re.finditer(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b", intent):
+        seg = m.group(0).split(".")
+        # A file path is not a symbol: `review_mode.py` means the module.
+        _add(seg[-2] if seg[-1].lower() in _FILE_EXTS else seg[-1])
+
+    # 3. Identifier-shaped bare tokens.
+    for tok in _IDENT_RE.findall(intent):
+        if _looks_like_code(tok):
+            _add(tok)
+
+    return out
+
+
+def split_paths_and_symbols(intent: str):
+    """(file paths, symbol names) named by a defect or feature description."""
+    paths: List[str] = []
+    for m in _PATH_RE.finditer(intent):
+        if m.group(1) not in paths:
+            paths.append(m.group(1))
+    for m in _BARE_FILE_RE.finditer(intent):
+        p = m.group(1)
+        if not any(p in seen for seen in paths):
+            paths.append(p)
+    return paths, extract_intent_symbols(intent)
+
+
+_SKIP_DIRS = {"__pycache__", ".git", "node_modules", ".venv", "venv", "logs",
+              ".pytest_cache", "dist", "build", ".mypy_cache", ".ruff_cache"}
+
+
+def _is_test_path(repo: Path, path: Path, profile: Profile) -> bool:
+    rel = path.relative_to(repo).as_posix()
+    if any(fnmatch.fnmatch(rel, pat) for pat in (profile.test_sources or ())):
+        return True
+    name = path.name.lower()
+    return (
+        name.startswith("test_")
+        or name.endswith(("_test.py", "_tests.py", "test.cs", "tests.cs"))
+        or "tests" in path.parts
+        or "test" in path.parts
+    )
+
+
+def _iter_sources(repo: Path, profile: Profile):
+    """Source files, PRODUCTION FIRST.
+
+    Ordering is load-bearing, not cosmetic: `_find_symbols` stops at two hits per
+    name, and on a live run `roles` matched `roles = dict(base.roles)` in two test
+    files and pushed the real declaration out of the budget entirely -- because
+    `rglob` is alphabetical and the test tree happened to sort first. For
+    localisation the production tree is the answer; a test is corroboration.
+    """
+    found: List[Path] = []
+    for suffix in profile.file_suffixes or (".py",):
+        for path in repo.rglob(f"*{suffix}"):
+            if _SKIP_DIRS & set(path.parts):
+                continue
+            found.append(path)
+    found.sort(key=lambda p: (_is_test_path(repo, p, profile), p.as_posix()))
+    yield from found
+
+
+def _definition_patterns(name: str):
+    esc = re.escape(name)
+    return (
+        # def/class/func/struct NAME
+        re.compile(
+            rf"^\s*(?:@\w+\s*)?(?:async\s+)?"
+            rf"(?:def|class|struct|func|fn|function|interface|enum)\s+{esc}\b"
+        ),
+        # A C#-style signature: modifiers, return type, NAME(
+        re.compile(
+            rf"^\s*(?:(?:public|private|protected|internal|static|override|virtual"
+            rf"|sealed|abstract|async)\s+)*[\w<>\[\],.?]+\s+{esc}\s*"
+            rf"(?:<[^<>()]*>)?\s*\("
+        ),
+        # An assignment or a typed field. Indentation is allowed on purpose: a
+        # dataclass field like `Config.roles` lives inside the class body, and a
+        # column-0-only pattern missed exactly the name the request pointed at.
+        # `==` is excluded so a comparison is not read as a definition.
+        re.compile(rf"^\s*{esc}\s*(?::[^=]|=(?!=))"),
+    )
+
+
+def _find_symbols(
+    repo: Path,
+    profile: Profile,
+    names: Sequence[str],
+    per_name: int = 2,
+) -> Dict[str, List[str]]:
+    """Where each symbol is DEFINED: name -> [`relpath:line  <the line>`].
+
+    One walk for all names. The per-symbol version re-read the whole tree once
+    per candidate, which was fine for thirty files and quadratic in the thing
+    that grows -- and loosening extraction to catch `Config` multiplied the
+    candidates.
+
+    Definitions only. Every call site is a longer and less useful answer than
+    the one place the thing is declared, and the budget is small.
+    """
+    if not names:
+        return {}
+    pats = {n: _definition_patterns(n) for n in names}
+    hits: Dict[str, List[str]] = {n: [] for n in names}
+    for path in _iter_sources(repo, profile):
+        outstanding = [n for n in names if len(hits[n]) < per_name]
+        if not outstanding:
+            break
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        present = [n for n in outstanding if n in text]
+        if not present:
+            continue
+        rel = path.relative_to(repo).as_posix()
+        for i, line in enumerate(text.splitlines(), 1):
+            for name in present:
+                if len(hits[name]) >= per_name or name not in line:
+                    continue
+                if any(p.search(line) for p in pats[name]):
+                    hits[name].append(f"{rel}:{i}  {line.strip()[:160]}")
+    return {n: v for n, v in hits.items() if v}
+
+
+def _is_useful_trace(res: Any) -> bool:
+    """Does this graph answer say anything, or is it a failure wearing a 200?
+
+    Observed live: `trace_call_path` returns `{"error":"function not found"}` for
+    a name it does not know. That is a JSON body, not a string beginning with
+    "ERROR", so the first version injected three of them into the prompt under
+    the heading "Call paths" -- which does not merely waste tokens, it tells the
+    model those symbols do not exist.
+    """
+    if not res:
+        return False
+    text = str(res).strip()
+    if not text or text.startswith("ERROR"):
+        return False
+    if text.startswith(("{", "[")):
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return True
+        if isinstance(parsed, dict) and ("error" in parsed or not parsed):
+            return False
+        if isinstance(parsed, list) and not parsed:
+            return False
+    return True
+
+
+def _graph_traces(profile: Profile, names: Sequence[str], limit: int = 3) -> List[str]:
+    """Optional enrichment. Every failure path returns [], because a graph that
+    is down must not take the filesystem findings down with it."""
+    if not profile.graph_project:
+        return []
+    try:
+        from .mcp_client import get_mcp_client
+        client = get_mcp_client()
+        if not client:
+            return []
+        out: List[str] = []
+        for name in list(names)[:limit]:
+            try:
+                res = client.call_tool("trace_call_path", {
+                    "function_name": name,
+                    "direction": "both",
+                    "project": profile.graph_project,
+                    "depth": 1,
+                })
+            except Exception:
+                continue
+            if _is_useful_trace(res):
+                out.append(f"- {name}: {str(res)[:400]}")
+        return out
+    except Exception:
+        return []
+
+
+def build_intent_context(
+    repo: Path,
+    profile: Profile,
+    intent: str,
+    max_symbols: int = 8,
+) -> str:
+    """Codebase context for a request that has no regions yet.
+
+    Returns "" when nothing in the tree matches. An empty section is worse than
+    no section: it costs tokens and reads as "the codebase has nothing to say
+    about this", which is a claim this function is not entitled to make.
+    """
+    repo = Path(repo)
+    if not repo.is_dir():
+        return ""
+
+    paths, symbols = split_paths_and_symbols(intent)
+    if not paths and not symbols:
+        return ""
+
+    budget = max(200, profile.context_token_budget * _CHARS_PER_TOKEN)
+    parts: List[str] = []
+
+    named: List[str] = []
+    for p in paths:
+        if (repo / p).is_file():
+            named.append(f"- {p}")
+        else:
+            named += [
+                f"- {q.relative_to(repo).as_posix()}"
+                for q in _iter_sources(repo, profile)
+                if q.as_posix().endswith(p)
+            ][:3]
+    if named:
+        parts.append(
+            "### Files named in the request\n" + "\n".join(dict.fromkeys(named))
+        )
+
+    found = _find_symbols(repo, profile, symbols[:max_symbols])
+    located = [
+        f"- `{name}` -- {hit}"
+        for name in symbols[:max_symbols]
+        for hit in found.get(name, ())
+    ]
+    if located:
+        parts.append("### Where those names are defined\n" + "\n".join(located))
+
+    traces = _graph_traces(profile, symbols)
+    if traces:
+        parts.append(
+            "### Call paths (from the code knowledge graph)\n" + "\n".join(traces)
+        )
+
+    if not parts:
+        return ""
+
+    body = "## Codebase context\n" + "\n\n".join(parts) + "\n"
+    if len(body) > budget:
+        # The notice is counted INSIDE the budget, not added on top of it. A
+        # budget that the truncation message can overshoot is not a budget.
+        notice = "\n... (truncated to the context budget)\n"
+        body = body[: max(0, budget - len(notice))].rstrip() + notice
+    return body

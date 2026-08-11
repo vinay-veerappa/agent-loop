@@ -160,50 +160,18 @@ _SYSTEMS = {
 # ---------------------------------------------------------------------------
 
 def _build_graph_context(repo: Path, profile: Profile, intent: str = "") -> str:
-    """Build graph context for the prompt: callers, callees, types.
+    """Codebase context for the prompt.
 
-    When the graph is available (via codebase-memory-mcp), this queries
-    the functions mentioned in the intent or the diff. When the graph is
-    not available, returns an empty string (the mode still works, just
-    without graph context).
+    Delegates to `context.build_intent_context`, which is the shared
+    implementation (O31). This used to be a private copy that queried the graph
+    directly and returned "" whenever codebase-memory-mcp was not live -- so on
+    any machine without the server running, docs mode saw nothing. The shared
+    version searches the tree first and treats the graph as enrichment, so this
+    is strictly more context than before, from one implementation instead of two.
     """
-    if not profile.graph_project:
-        return ""
+    from .context import build_intent_context
 
-    # Try to use the MCP client for live graph context
-    try:
-        from .mcp_client import get_mcp_client
-        client = get_mcp_client()
-        if not client:
-            return ""
-
-        # Extract function names from the intent
-        import re as _re
-        names = _re.findall(r"\b([a-z_][a-z0-9_]*)\b", intent.lower())
-        # Filter to likely function names (not stopwords)
-        stop = {"the", "a", "an", "to", "in", "for", "of", "and", "or", "is",
-                "it", "that", "this", "with", "from", "by", "on", "at", "be",
-                "fix", "add", "remove", "update", "change", "make", "get", "set"}
-        names = [n for n in names if n not in stop and len(n) > 2][:5]
-
-        if not names:
-            return ""
-
-        parts = ["## Graph context (from code knowledge graph)"]
-        for name in names[:3]:
-            result = client.call_tool("trace_call_path", {
-                "function_name": name,
-                "direction": "both",
-                "project": profile.graph_project,
-                "depth": 1,
-            })
-            if result and not result.startswith("ERROR"):
-                # Truncate each trace result
-                parts.append(f"### {name}\n{result[:500]}")
-
-        return "\n".join(parts) if len(parts) > 1 else ""
-    except Exception:
-        return ""
+    return build_intent_context(repo, profile, intent)
 
 
 # ---------------------------------------------------------------------------

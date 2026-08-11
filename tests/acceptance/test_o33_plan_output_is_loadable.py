@@ -168,7 +168,7 @@ def test_run_plan_writes_a_file_the_loader_accepts(tmp_path):
     # `review_panel` is imported INSIDE run_plan, so patching plan_mode.review_panel
     # would silently do nothing -- the first version of this test did that.
     with patch.object(plan_mode, "chat", return_value=Completion(text=raw, model="m")), \
-         patch.object(plan_mode, "build_context_slice", return_value=""), \
+         patch.object(plan_mode, "build_intent_context", return_value=""), \
          patch.object(plan_mode.regions, "extract", return_value=[]):
         plan_mode.run_plan(
             tmp_path, "a defect", PROFILE, "impl", [], max_rounds=1, fast_plan=True,

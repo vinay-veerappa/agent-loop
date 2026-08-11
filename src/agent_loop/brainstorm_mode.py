@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import config
+from .context import build_intent_context
 from .profiles import Profile
 from .providers import Completion, ProviderError, chat
 
@@ -71,6 +72,16 @@ def run_brainstorm(
     result: Dict[str, Any] = {"ticket": tid, "approaches": None, "recommendation": ""}
 
     prompt = f"# Defect to brainstorm\n\n{defect_description}\n\n"
+
+    # Until O31 this mode recommended an approach having never read a line of the
+    # code: its entire context was the four profile fields below, `in=264` tokens
+    # on a live run. It still returned an authoritative-sounding recommendation,
+    # and that is the failure mode -- advice with no evidentiary basis is
+    # indistinguishable, in the output, from advice with a good one.
+    code_context = build_intent_context(repo, profile, defect_description)
+    if code_context:
+        prompt += code_context + "\n"
+
     prompt += f"## Context\n"
     prompt += f"Language: {profile.language}\n"
     prompt += f"File suffixes: {', '.join(profile.file_suffixes)}\n"

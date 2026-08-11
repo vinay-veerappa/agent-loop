@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from . import arbiter as arbiter_mod
 from . import config
 from . import gates, profiles, regions, workspace
-from .context import build_context_slice
+from .context import build_intent_context
 from .memory import inject_settled
 from .providers import Completion, ProviderError, chat
 
@@ -83,6 +83,16 @@ def run_plan(
     effective_settled = inject_settled(profile.settled, repo)
 
     prompt = f"# Defect to analyze\n\n{defect_description}\n\n"
+
+    # The codebase this defect lives in. Plan mode is asked to LOCALISE and emit
+    # regions whose anchors must resolve against the tree, and until O31 it did
+    # that having never been shown the tree: this module imported
+    # `build_context_slice` and never called it, because that function takes the
+    # regions plan mode exists to produce. `in=319` tokens on a live run.
+    code_context = build_intent_context(repo, profile, defect_description)
+    if code_context:
+        prompt += code_context + "\n"
+
     prompt += "## Context\n"
     prompt += f"Language: {profile.language}\n"
     prompt += f"File suffixes: {', '.join(profile.file_suffixes)}\n"

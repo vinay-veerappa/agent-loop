@@ -9,7 +9,7 @@ section or decision log entry that motivates it.
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
-**365/365 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
+**389/389 tests pass on Python 3.12 and 3.14** (re-verified on both, session 4).
 Latest tag: **`v0.4.0`**, and `main` is pushed. **tvDownloadOHLC still pins and
 has installed `v0.3.0`** — re-pin to get any of O15-O19, O24, O29 or O30.
 
@@ -1143,7 +1143,60 @@ Now prints the count and the files the findings are in, with the prompt on its
 own line labelled as what it is. Three acceptance tests, both mutations killed
 (empty the file list; drop the count).
 
-#### O31. Brainstorm mode has never seen the codebase — MEDIUM, OPEN
+#### O31. Plan and brainstorm had never seen the codebase — CLOSED
+
+**Fixed** by `context.build_intent_context(repo, profile, intent)`, wired into
+plan and brainstorm, with docs mode's private duplicate now delegating to it.
+
+**The mechanism is the FILESYSTEM, and that is the whole design decision.** Docs
+mode's `_build_graph_context` returns "" unless `codebase-memory-mcp` is live, so
+reusing its shape would have "fixed" O31 only on machines running the graph
+server. Here the tree is searched for definitions of the symbols the request
+names, and the graph is added on top when available.
+
+Why the unused import was NOT simply an oversight: `build_context_slice` takes
+`regions`, and regions are what plan mode exists to PRODUCE. There was nothing to
+pass it. The missing piece was context keyed on the REQUEST.
+
+Measured before and after, same defect text, live model:
+
+| | in tokens | grounding |
+|---|---|---|
+| before | 264 | none — inferred `Config.roles` from the prompt text |
+| first attempt | 289 | still none, and that is the finding below |
+| after | 367 | cites `Mapping[str, RoleSettings]` and `_DEFAULT_ROLES`, neither of which was in the request |
+
+**Four things the measurement caught that review would not have:**
+
+1. **The first version was strict and therefore useless.** `_looks_like_code`
+   required an underscore or a lower-to-upper transition, which rejects every
+   single-word class name — `Config`, `Vote`, `Finding`. On the live run it found
+   nothing and added 25 tokens. **Recall matters more than precision here, for a
+   structural reason: a candidate that is not real finds no definition and is
+   dropped, so the filesystem is the filter.** Being strict loses the name
+   silently.
+2. **The graph injected its own failures as findings.** `trace_call_path` answers
+   `{"error":"function not found"}` — a 200-OK JSON body, not a string starting
+   with `ERROR`, which was all the code checked. Three of those went into the
+   prompt under the heading "Call paths", which does not merely waste tokens: it
+   tells the model those symbols do not exist.
+3. **Test files outranked production code.** `roles` matched
+   `roles = dict(base.roles)` in two test files and pushed the real
+   `roles: Mapping[str, RoleSettings]` out of the two-hit budget, because `rglob`
+   is alphabetical. `_iter_sources` now yields production files first.
+4. **A column-0 assignment pattern missed the field the request pointed at.**
+   `Config.roles` is a dataclass field, indented inside the class body.
+
+Eight mutations, all killed — but **one survived the first pass and it is the
+third instance of the same shape this session**: replacing the `if not parts:
+return ""` guard with `pass` left everything green, because the test that
+exercises "nothing found" returns at an EARLIER guard (nothing extracted) and
+never reaches it. Two guards that can return the same value need a test each. See
+O33 for the first instance.
+
+Original defect text follows.
+
+#### O31 (original). Brainstorm mode has never seen the codebase — MEDIUM
 
 `run_brainstorm` builds its entire prompt from the defect text plus four profile
 fields:
