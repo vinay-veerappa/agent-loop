@@ -2380,3 +2380,46 @@ candidate outright, which is also more correct than the conditional it replaces:
 applying onto an already-modified file was never safe.
 
 ---
+### 2026-08-11 — O28 gains its THIRD labelled case, and this one ACQUITS the arbiter
+
+Two cases said the arbiter does not discriminate. Case 3 is the other sign, and
+it was produced by an ordinary ticket rather than an experiment.
+
+**The case.** CM2 in tvDownloadOHLC: `LoadFromDisk` silently dropping the fields
+`SaveToDisk` writes. Implementer `kimi-k2.7-code`, panel `glm-5.2` +
+`minimax-m3`, arbiter `mistral-large-3` (the measured best from the eighteen-arm
+sweep). Round 2 passed **every** mechanical gate — static, compile, 828 tests
+with all 10 acceptance criteria green, lock-scope. Panel:
+`REVISE [glm=REVISE(3), minimax=APPROVE(0)]`. Arbiter:
+`REVISE (upheld=3 rejected=2)`.
+
+**Human ruling: all three upheld findings are CORRECT, and both rejections are
+correct.** The candidate satisfied a green-at-baseline guard ("one unreadable
+field must not discard the whole config") by installing a blanket Json.NET
+`Error` handler that swallows *every* deserialisation error. A type mismatch then
+leaves the field at the CLR default rather than its property initialiser's value:
+`MaxPositionSize` 0 instead of 100, `QuantityRatio` 0.0 instead of 1.0. A zero
+cap or a zero ratio sizes every fill at nothing — the leader trades and the
+follower does not. The arbiter's rationale named the remedy precisely:
+*"distinguish between unrecognized enum values (allowed) and type-mismatch errors
+(not allowed)"*. The two rejections — a duplicate `source.Properties()` iteration
+and an unchanged `JArray` error path — are genuinely inert.
+
+**So the corpus now reads 2 bad, 1 good**, and the good one is not a small
+result: **the panel caught a naked-risk regression that every mechanical gate had
+passed**, on a patch whose author (a human, writing the ticket and its tests) had
+not thought of it.
+
+**What it does NOT license.** One acquittal against two convictions is not a
+reason to loosen the blocker rule landed earlier the same day — `SHIP` was never
+in question here, the arbiter said REVISE. It is evidence that the *panel* earns
+its cost, and that `mistral-large-3` rules sensibly when the findings are
+concrete.
+
+**The methodological point is the sharper one.** This is O21's shape from the
+other side: hand-written acceptance tests covering half a fix. The guard asked
+for tolerance and did not say how much, the implementer took the widest reading
+available, and only an adversarial reader caught it. **A test states what must be
+true; it does not state what must not become true on the way.**
+
+---

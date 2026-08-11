@@ -34,7 +34,7 @@ it by quoting a short version:
 
 | | |
 |---|---|
-| **O28** | Second labelled arbiter corpus. **The bottleneck is the LABELLING, not the running** — someone must judge which findings were actually correct. The corpus today is literally one case: `o3.patch` + one finding set + one shipped ruling. The 12-entry results JSON is 12 model CONFIGS against that one case, not 12 cases. |
+| **O28** | Third labelled arbiter corpus (2 bad, 1 good as of 2026-08-11 — case 3 ACQUITS it, and came free from an ordinary ticket). **The bottleneck is the LABELLING, not the running** — someone must judge which findings were actually correct. The corpus today is literally one case: `o3.patch` + one finding set + one shipped ruling. The 12-entry results JSON is 12 model CONFIGS against that one case, not 12 cases. |
 | **O20** | *Mitigated further 2026-08-11 (session 6), still not closed.* **`SHIP` is now unavailable while any BLOCKER stands dismissed** — the arbiter can reject one, but rejecting one and shipping is converted to ESCALATE (§14). In practice SHIP now requires that no BLOCKER was filed at all. The arbiter is no better at judging; the damage a bad judgement can do is bounded. Arbiter still 3/5, and **cannot close before O28**, because O28 is the measurement it would need. |
 | **O5** | `Finding.signature` breaks on suffix changes, so `thrashing()` can fire on a converging ticket. Its planned fix delegates dedup to the arbiter — **revisit that premise first**, given O20. |
 | **O21** | Self-authored tests covering half a fix. **Six mutations survived a green suite this session**, all found by mutating and none by reading. Wants a design answer, not a patch. |
