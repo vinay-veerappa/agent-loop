@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import arbiter, gates, profiles, regions, workspace
+from .models import DEFAULT_REGISTRY
 from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
 from .memory import (
@@ -582,7 +583,15 @@ def run_ticket(
                     # so a ticket that converges in round 1 loses 0.25x of one
                     # prompt and a ticket that reaches round 2 saves 0.9x of the
                     # pinned head on every round after. No-op on ollama/openai.
-                    out = chat(implementer, history, max_tokens=48000, cache=True)
+                    # Budget comes from the registry, not a literal: this call
+                    # hardcoded 48000 while models.py declared 48000 for the same
+                    # model, so raising it meant editing the loop. O1's first run
+                    # died here -- kimi spent 125,070 chars on reasoning and
+                    # emitted empty content, and the budget was unreachable.
+                    impl_budget = DEFAULT_REGISTRY.max_tokens_for(
+                        implementer, "implementer", 48000
+                    )
+                    out = chat(implementer, history, max_tokens=impl_budget, cache=True)
                 except ProviderError as exc:
                     print(f"  round {rnd}: implementer unreachable -- {exc}")
                     result["rounds"].append(RoundRecord(rnd, "implement", False, str(exc)).__dict__)

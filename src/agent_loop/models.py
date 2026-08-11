@@ -81,6 +81,29 @@ class ModelRegistry:
                     f"reviewer's blind spots."
                 )
 
+    def max_tokens_for(self, model: str, role: str, fallback: int) -> int:
+        """The output budget for `model` acting in `role`.
+
+        Prefers an exact model-name match, because `--implementer <other-model>`
+        must not silently inherit the budget of whatever model happens to be
+        registered first for the role. Falls back to the role's default, then to
+        the caller's literal.
+
+        This exists because ModelConfig.max_tokens was read in exactly one place
+        (compaction), while every other call site hardcoded a literal -- so the
+        registry's per-model budgets were dead configuration. loop.py hardcoded
+        48000 while models.py declared 48000 for the same model, and when the
+        implementer exhausted that budget on reasoning there was no way to raise
+        it short of editing the loop.
+        """
+        for cfg in self._configs.get(role, []):
+            if cfg.name == model:
+                return cfg.max_tokens
+        try:
+            return self.get(role).max_tokens
+        except KeyError:
+            return fallback
+
     def cost_summary(self, role: str, input_tokens: int, output_tokens: int) -> float:
         """Estimate the cost of a call. Returns 0.0 for subscription models."""
         config = self.get(role)
@@ -91,7 +114,11 @@ class ModelRegistry:
 
 # Default registry. Consumers override by registering their own configs.
 DEFAULT_REGISTRY = ModelRegistry()
-DEFAULT_REGISTRY.register(ModelConfig("kimi-k2.7-code:cloud", "implementer", "strong-coder", 0.0, think=True, max_tokens=48000))
+# 48000 was not enough: on a two-region ticket this model spent 125,070 chars on
+# reasoning and returned empty content, so the run failed as
+# IMPLEMENTER_UNREACHABLE without ever emitting a patch. think=True is deliberate
+# (it is planning a patch), so the budget has to cover reasoning AND the answer.
+DEFAULT_REGISTRY.register(ModelConfig("kimi-k2.7-code:cloud", "implementer", "strong-coder", 0.0, think=True, max_tokens=96000))
 DEFAULT_REGISTRY.register(ModelConfig("glm-5.2:cloud", "reviewer", "fast", 0.0, think=False, max_tokens=24000))
 DEFAULT_REGISTRY.register(ModelConfig("deepseek-v4-pro:cloud", "arbiter", "strong-reasoner", 0.0, think=False, max_tokens=24000))
 DEFAULT_REGISTRY.register(ModelConfig("glm-5.2:cloud", "compactor", "cheap", 0.0, think=False, max_tokens=8000))
