@@ -317,9 +317,22 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
             f"(eval_count={eval_count}, done_reason={done_reason})."
         )
         if done_reason == "length" or eval_count >= max_tokens:
+            # "Raise max_tokens" was the only advice here, and it is not
+            # reliable: reasoning expands to fill whatever it is given. Measured
+            # on one ticket, same model, same prompt --
+            #   64000 -> 282935 chars of thinking, empty content
+            #   96000 -> 435641 chars of thinking, empty content
+            # 4.42 and 4.54 characters per token. The budget is not a control on
+            # reasoning, it is only where the model gets cut off. The measured
+            # fix for the identical failure in the reviewer role was think=False
+            # (159s and no verdict, versus 21s and ten findings), so name that
+            # first and offer the budget second (O60).
             raise ProviderError(
                 f"{model} exhausted its output budget on reasoning: {detail} "
-                f"Raise max_tokens above {max_tokens}."
+                f"It produced no answer at all, so it did not run out of room to "
+                f"write one -- it never started. Set think=False for this role "
+                f"before raising max_tokens above {max_tokens}: reasoning expands "
+                f"to fill the budget, so a larger one may buy only more of it."
             )
         raise ProviderError(
             f"{model} returned neither content nor a tool call: {detail} "

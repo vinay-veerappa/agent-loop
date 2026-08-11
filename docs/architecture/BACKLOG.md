@@ -2554,3 +2554,46 @@ Three mutations killed, including "clamp everything to 65536 when unmeasured",
 which is the tempting version of this fix and the one that silently truncates.
 
 ---
+#### O60. "Raise max_tokens" was advice the data does not support — CLOSED
+
+The empty-content error has always ended `Raise max_tokens above {n}`. On the
+CM2 ticket that advice was followed twice and failed twice, with the same model
+and the same prompt:
+
+| budget | thinking | content | chars/token |
+|---|---|---|---|
+| 64000 | 282,935 chars | **empty** | 4.42 |
+| 96000 | 435,641 chars | **empty** | 4.54 |
+
+**Reasoning expanded to fill whatever it was given.** The budget is not a control
+on it — it is only where the model gets cut off. Raising it buys more reasoning
+and the same empty answer.
+
+The package already had the measured answer to this exact failure, for a
+different role. `review_panel`'s docstring records it: *"Measured on a T2-sized
+review with deepseek-v4-pro: thinking on took 159s, burned the full 24k-token
+budget on 90k chars of reasoning and returned NO verdict; thinking off took 21s,
+2.7k tokens, and returned ten findings."* The reviewer was set to `think=False`
+and the implementer was left at `think=True`, and the lesson was never carried
+across.
+
+The message now says so: it names `think=False` first, the budget second, and
+states why — *"It produced no answer at all, so it did not run out of room to
+write one -- it never started."*
+
+**The consumer's implementer is now `think=False`**, with the two measurements
+recorded at the setting. Revert if patch quality drops; the budget stays either
+way.
+
+**The test for this was vacuous on its first draft and passed unchanged.**
+`assert "think" in msg.lower()` is satisfied by the existing text — *"435641
+chars of thinking"*. It now asserts `think=False`, the actual remediation. That
+is the fourth time this session a first-draft test could not tell the fix from
+its absence, and the fourth time mutation or a baseline run caught it rather than
+reading.
+
+**An existing test pinned the old sentence verbatim** and had to change with it.
+Its intent — a genuine truncation still names the budget — is asserted directly
+now instead of through one phrasing, which is what it should have asserted.
+
+---

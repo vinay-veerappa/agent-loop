@@ -140,14 +140,21 @@ def test_empty_answer_that_stopped_early_is_not_blamed_on_the_budget():
 
 def test_genuine_truncation_still_reports_the_budget():
     """The original diagnosis was right for the case it was written for:
-    deepseek-v4-pro burning its whole budget on chain of thought."""
+    deepseek-v4-pro burning its whole budget on chain of thought.
+
+    The exact sentence "Raise max_tokens above 48000" was asserted here until
+    O60 changed the advice -- reasoning expands to fill the budget, so raising
+    it is no longer the FIRST thing this message recommends. What the test is
+    for is that a genuine truncation still names the budget it died on, and
+    that is asserted directly rather than through one phrasing of it."""
     data = _ollama_response(done_reason="length", eval_count=48000)
     data["message"]["tool_calls"] = []
     data["message"]["thinking"] = "x" * 40000
     with pytest.raises(ProviderError) as exc:
         _call(data)
     assert "exhausted its output budget" in str(exc.value)
-    assert "Raise max_tokens above 48000" in str(exc.value)
+    assert "48000" in str(exc.value), "the budget it died on must be named"
+    assert "max_tokens" in str(exc.value), "and named as the budget knob"
 
 
 def test_openai_backend_captures_tool_calls_too():
@@ -355,3 +362,36 @@ def test_turns_are_recorded(tmp_path):
     assert result["turns"][0]["tools"] == ["read_file"]
     assert result["turns"][0]["phase"] == "explore"
     assert result["turns"][0]["output_tokens"] == 11
+
+
+def test_a_budget_exhausted_on_reasoning_does_not_only_advise_raising_it():
+    """O60. "Raise max_tokens" is the advice this message has always given, and
+    it failed twice in a row on the same ticket:
+
+        64000 budget -> 282935 chars of thinking, empty content
+        96000 budget -> 435641 chars of thinking, empty content
+
+    4.42 and 4.54 characters per token. The reasoning expanded to fill whatever
+    it was given; the budget is not a control on it, it is only where the model
+    gets cut off. The message must not send the next person up the same ladder
+    -- especially since the measured fix for the identical failure in the
+    reviewer role was `think=False`, not a bigger number.
+    """
+    data = _ollama_response()
+    data["message"]["content"] = ""
+    data["message"]["tool_calls"] = []
+    data["message"]["thinking"] = "x" * 435641
+    data["done_reason"] = "length"
+    data["eval_count"] = 96000
+
+    with pytest.raises(providers.ProviderError) as exc:
+        _call(data, max_tokens=96000)
+
+    msg = str(exc.value)
+    assert "96000" in msg, "the budget it died on has to be in the message"
+    assert "think=False" in msg, (
+        "the message must name the lever that actually bounds reasoning. "
+        "Asserting on the word 'think' passes on the existing text, which says "
+        "'chars of thinking' -- an assertion the unfixed message also satisfies. "
+        f"got: {msg}"
+    )
