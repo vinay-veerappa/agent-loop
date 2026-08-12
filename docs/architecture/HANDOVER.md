@@ -15,15 +15,16 @@ not current state. When two sections disagree, the higher-numbered one wins.
 | | |
 |---|---|
 | `main` | see `git log --oneline -1` |
-| Tag | **`v0.6.4`**. `v0.6.2` and `v0.6.3` both predate O53-O60 |
-| Tests | **605 pass, 22 skipped, on 3.12 and 3.14**; `selftest` 13/13 |
-| Consumer | tvDownloadOHLC pins `v0.6.4`. Do not trust a number written here — it went stale three times in session 4, moved eight times in session 5 and eight more in session 7. Run `git log --oneline v0.6.4..HEAD` for how stale the TAG is |
+| Tag | **`v0.6.5`**. Anything at or below `v0.6.4` still has O61: a truncated reviewer loses every finding, which silently disarms the blocker rule |
+| Tests | **613 pass, 22 skipped, on 3.12 and 3.14**; `selftest` 13/13 |
+| Consumer | tvDownloadOHLC pins `v0.6.5`. Do not trust a number written here — it went stale three times in session 4, moved eight times in session 5 and eight more in session 7. Run `git log --oneline v0.6.4..HEAD` for how stale the TAG is |
 
 **Session 7 ran a real ticket (CM2, the copier config round trip) through the
-loop and it took SIX attempts. Every failure was in the harness. O53-O60, eight
-defects, none findable by reading.** The ticket itself is still not landed.
+loop and it took SIX attempts. Every failure was in the harness. O52-O61, ten
+defects, none findable by reading.** The ticket landed on the seventh pass, by
+hand: see §17.
 
-**Closed in session 7:** O52, O53, O54, O55, O56, O57, O58, O59, O60.
+**Closed in session 7:** O52, O53, O54, O55, O56, O57, O58, O59, O60, O61.
 **Closed in session 5:** O35 (consumer), O37-O50. **Session 4:** O4, O7, O8,
 O14, O22, O23, O29-O36.
 
@@ -1341,3 +1342,84 @@ unnecessary".
 **Do that before deciding anything about `think` permanently.** Turning thinking
 off is a big hammer chosen under time pressure on a day when the loop failed six
 times, which is not the same as a measured choice.
+
+---
+
+## §17 START OF NEXT SESSION — read this if you are working on THE LOOP
+
+There are two handovers in play and they are not interchangeable:
+
+| you are working on | read |
+|---|---|
+| **the agent-loop package** | THIS file, this section, then `BACKLOG.md` |
+| **the NT8 copier / RiskGuard addons** | `tvDownloadOHLC/docs/architecture/RISKGUARD_HARDENING_HANDOVER.md` §4x |
+
+### State
+
+* `main` pushed, tagged **`v0.6.5`**. 613 pass + 22 skipped on 3.12 and 3.14,
+  `selftest` 13/13. Consumer pinned and installed.
+* Ten defects closed this session: **O52-O61**. All were found by running one
+  real ticket six times, and none by reading.
+
+### ⚠️ The one measurement that is NOT done
+
+**The reviewer model sweep has not been run. Zero models are measured.** The
+`--reasoning` axis is untested against a live provider.
+
+What exists:
+
+* `tests/fixtures/reviewer_bench/run_bench.py` — the harness, with a
+  `--reasoning default|off|low|medium|high|bounded` axis. `off/low/medium/high`
+  test whether this provider accepts a LEVEL rather than a boolean
+  (`providers.py` does `payload["think"] = think`, so any value goes through and
+  a rejection is a RESULT); `bounded` is a system-prompt instruction to reason in
+  at most three bullets.
+* One labelled case, `cases/cm2_roundtrip/`, with `answer_key.json`.
+* `out/` does not exist yet. Nothing has been run.
+
+Run it with the loop idle — competing for the same subscription risks 503s that
+corrupt both.
+
+### What the corpus says so far, from labelling rather than from the bench
+
+Two hand-labelled data points, both from real CM2 rounds:
+
+1. **glm's severity grading is not a usable signal.** Six findings on the round-2
+   candidate: two worth acting on, and its only BLOCKER was not one of them — it
+   concedes in its own text that the code does the right thing. The strongest
+   finding was graded MAJOR. One MINOR cites a type `CopierMode` that does not
+   exist.
+2. **Repetition of a false claim got it UPHELD.** On round 4 the arbiter upheld
+   five findings; four are the same claim — *"nested dictionaries inside
+   `PerTickerRatios` lose their comparer"*. `PerTickerRatios` is
+   `Dictionary<string,double>`. There are no nested dictionaries, the candidate
+   already calls `EnsureOrdinalIgnoreCase`, and a green acceptance test matches
+   `'mes'` against a stored `'MES'`. The claim is false and was upheld four
+   times because it was made four times.
+
+⚠️ **Both bear on the blocker rule landed this session**, which fires on
+severity. It stays conservative in the right direction — a wrong BLOCKER costs an
+escalation, not a bad ship — but it assumed BLOCKER meant something. **Do not
+loosen it and do not build further on it until the sweep is run.**
+
+### Next, in the order argued for
+
+1. **Run the sweep.** It is the only thing standing between two anecdotes and an
+   answer, and both open questions (which models belong on the panel; whether
+   reasoning can be bounded by instruction) fall out of one run.
+2. **`--reasoning bounded` specifically** answers the open question in §16. If
+   the instruction works, `think=False` on the implementer can be reverted.
+3. **O21** — a self-authored acceptance test covering half a fix. This session
+   produced a live example: a green-at-baseline guard asking for tolerance
+   without saying how much, which the implementer satisfied with a blanket
+   `Error` handler that left `MaxPositionSize` at 0.
+4. **O28** — the arbiter corpus now has three cases. Case 3 acquits it, case 4
+   (the repeated false claim) does not.
+
+### Two things to know before running anything
+
+* **CM2 says a 113-line region is too big for this loop.** Six attempts, and the
+  panel found new surface every round on a candidate that was already green. Its
+  own stop message is right: split the ticket into smaller regions.
+* **`--reasoning` arms are untested code.** They have never been executed against
+  a provider. Expect the first run to find something.
