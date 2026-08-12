@@ -142,9 +142,25 @@ def _matches(text: str, entry: dict) -> bool:
 
 
 def score(findings, key):
-    joined = "\n".join(f.text for f in findings)
-    hits = [e["id"] for e in key.get("correct", []) if _matches(joined, e)]
-    noise = [e["id"] for e in key.get("inert", []) if _matches(joined, e)]
+    """Match each key entry against a SINGLE finding, never against the join.
+
+    The first version joined every finding into one blob and asked whether the
+    key's terms appeared anywhere in it. That rewards VOLUME: deepseek-v4-pro
+    filed 37 findings on this case, most of them self-refuting ("[BLOCKER] ...
+    **No blocker here.**"), and scored 2 hits -- more than any concise model --
+    because with 37 findings some sentence somewhere contains "null" and some
+    other sentence contains "Relationships". The blob cannot tell "raised the
+    defect" from "used both words at some point".
+
+    Requiring one finding to carry all the terms is still only a HINT -- a model
+    can name MaxPositionSize while saying something wrong about it, which is why
+    the header insists the honest number comes from reading out/. But it no
+    longer scores a model higher for talking longer.
+    """
+    hits = [e["id"] for e in key.get("correct", [])
+            if any(_matches(f.text, e) for f in findings)]
+    noise = [e["id"] for e in key.get("inert", [])
+             if any(_matches(f.text, e) for f in findings)]
     return hits, noise
 
 
@@ -164,6 +180,15 @@ def main() -> int:
         "--jobs", type=int, default=10,
         help="arms in flight at once. The arms are independent and the panel "
              "already runs two reviewers concurrently against this endpoint.",
+    )
+    ap.add_argument(
+        "--temperature", type=float, default=None,
+        help="override the sampling temperature (config's default is 0.1). "
+             "This is the LOTTERY axis: a review is a long generation whose "
+             "content is a search over what to examine, so one divergent token "
+             "early produces a wholly different review. glm-5.2 raised this "
+             "case's strongest defect on one draw and not on a byte-identical "
+             "re-draw. Set 0.0 to ask whether that variance is sampling.",
     )
     ap.add_argument(
         "--reps", type=int, default=1,
@@ -229,6 +254,7 @@ def main() -> int:
                 [{"role": "system", "content": case["system"] + system_suffix},
                  {"role": "user", "content": case["prompt"]}],
                 max_tokens=budget, timeout=900, think=effective,
+                temperature=args.temperature,
             )
             text, err = out.text or "", ""
         except ProviderError as exc:
@@ -238,6 +264,7 @@ def main() -> int:
         secs = time.time() - t0
 
         stem = (f"{case['name']}__{model.replace(':', '_')}__{reasoning}"
+                + (f"__t{args.temperature}" if args.temperature is not None else "")
                 + (f"__r{rep}" if rep > 1 else ""))
         (OUT / f"{stem}.txt").write_text(text or f"ERROR: {err}", encoding="utf-8")
 
@@ -265,7 +292,7 @@ def main() -> int:
         # Found by running it, not by reading it.
         return {
             "case": case["name"], "model": model, "reasoning": reasoning,
-            "rep": rep, "think": effective,
+            "rep": rep, "think": effective, "temperature": args.temperature,
             "status": status, "findings": n,
             "hits": hits, "noise": noise, "severity": sev,
             "out_tokens": getattr(out, "output_tokens", 0) if out else 0,
@@ -286,10 +313,12 @@ def main() -> int:
     merged = {}
     if prior.is_file():
         for r in json.loads(prior.read_text(encoding="utf-8")):
-            merged[(r["case"], r["model"], r["reasoning"], r.get("rep", 1))] = r
+            merged[(r["case"], r["model"], r["reasoning"], r.get("rep", 1),
+                str(r.get("temperature")))] = r
 
     def persist(row):
-        merged[(row["case"], row["model"], row["reasoning"], row["rep"])] = row
+        merged[(row["case"], row["model"], row["reasoning"], row["rep"],
+                str(row["temperature"]))] = row
         prior.write_text(
             json.dumps([merged[k] for k in sorted(merged)], indent=2),
             encoding="utf-8")

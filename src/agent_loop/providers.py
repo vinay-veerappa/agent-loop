@@ -283,7 +283,28 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
     # wherever the caller wants a structured answer rather than deliberation:
     # on a T2-sized review deepseek-v4-pro spends ~90k chars thinking and then
     # has no budget left to answer, versus 21s and a full set of findings with
-    # thinking off. `think="low"` is not honoured -- it reasons at full length.
+    # thinking off.
+    #
+    # AN EFFORT LEVEL IS NOT A DIAL HERE. ollama accepts think="low"/"medium"/
+    # "high" for some models, so this passes the value through unchanged -- but
+    # MEASURED on the reviewer bench, 2026-08-11, one review prompt, three
+    # models, every level:
+    #
+    #   minimax-m3    off 91559 chars | medium 59435 | high 43734  (all APPROVE, 0 findings)
+    #   deepseek-v4-pro  off 0 chars, 37 findings | low 65887, 2 findings
+    #                    medium 189061 chars -> NO ANSWER | high HTTP 500
+    #   kimi-k2.7-code   off 0 chars | low 201035 -> NO ANSWER | high 166890, 3 findings
+    #
+    # The ordering is not monotonic and four of the level arms exhausted the
+    # output budget on reasoning and returned nothing. These are truthy strings,
+    # so on a model that does not implement levels they simply mean THINKING ON,
+    # which is strictly worse than the False these callers want. Only False does
+    # anything reliable. Do not reach for a level to "reduce" reasoning.
+    #
+    # Nor can it be done from the prompt: an arm instructing "think in AT MOST 3
+    # short bullet points" produced the LARGEST burn in the sweep -- 216211
+    # chars and no answer. The reasoning channel is not the answer channel, so
+    # an instruction about how to answer has no purchase on it.
     if think is not None:
         payload["think"] = think
     data = _post(
