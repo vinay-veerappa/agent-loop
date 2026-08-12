@@ -2750,3 +2750,111 @@ designed response, but expect it at roughly that rate.
 ⚠️ STILL ONE CASE. Nothing here ranks models in general.
 
 ---
+
+## 2026-08-13 — four rough edges from a consumer repo (`nt8-riskguard`, ticket UI1)
+
+Filed by the operator of the `nt8-riskguard` consumer, not from inside this repo,
+which is why they are worth reading: they are what the loop feels like from a
+ticket author's chair rather than a maintainer's.
+
+**Six loop runs landed one ticket. Exactly ONE of the six failed on the model's
+own reasoning.** The other five were the ticket or the harness — and four of
+those five were diagnosable only after spending a model call, which is the
+common thread below. Every one of them is a check that could run locally, for
+free, before the first request.
+
+#### O64. The test-first gate makes ADDITIVE work impossible to start — DEFECT
+
+`TICKET_REJECTED`: the loop refuses to run until every `expect_green` string is
+already failing. For a bug fix that is exactly right. For a NEW API it is a
+deadlock — no test can be red against a function that does not exist yet,
+because the suite will not COMPILE, and a suite that does not compile produces
+no failure lines at all.
+
+The consumer's workaround was to hand-write the scaffold (the DTOs plus a method
+whose body returns an empty result) and 18 red tests against it, then give the
+loop the bodies to fill. That worked twice running and is arguably the better
+process — but it is undocumented, and it is discovered by having a ticket
+rejected.
+
+Two things would close it: say so in the README (the loop implements against
+tests you wrote; for new APIs, commit a compiling stub first), and distinguish
+`TICKET_REJECTED because the strings are green` from `TICKET_REJECTED because
+the suite does not build`. They are different problems and today they read the
+same.
+
+#### O65. `expect_green` is never checked against the test sources — DEFECT
+
+A whole run was lost to ONE string. The ticket said *"after one latency is
+actually recorded"*; the assertion said *"after one measured fill"*. Both are
+accurate English about the same behaviour, and the loop matches them literally
+against the runner's failure lines.
+
+`--list` validates regions and says nothing about `expect_green`. A substring
+scan over the failing-test output would have caught it locally in under a second.
+
+The consumer has since written `agent/_check_expect_green.py`, which runs the
+suite and does a SET DIFFERENCE in both directions:
+
+* a string matching no current failure (the gate is **vacuous** for it — it can
+  never go red-then-green, so the run can pass without the implementation having
+  done anything), and
+* a failure no `expect_green` claims (a forgotten criterion, or a test that was
+  already broken before the ticket).
+
+That is ~50 lines and belongs in `--list`, not in every consumer repo.
+
+#### O66. A region can resolve, resolve to the WRONG code, and print `OK` — DEFECT
+
+Two separate failures, one root.
+
+**Four rounds of `CS0101`/`CS0111`.** The regions pointed at `GetRelationships()`
+while the stub they were supposed to replace sat two lines below, outside every
+region. The model could see a method it was told to modify and could not see the
+stub, so it reasonably created the type again — and got "already contains a
+definition". `--list` printed `OK` before both failed runs. **It reports that a
+region RESOLVES, not that it resolves to the code the ticket describes.**
+
+**Four rounds of invented member names** (`CopierGroup.Followers`, `.Name`,
+`Instrument.Name` — none exist). Same cause seen from the other side: **regions
+are not only the editing window, they are the model's entire view of the file.**
+A type named in `spec` whose declaration falls in no region is invisible, and an
+invisible type gets a plausible guess.
+
+The cheap, mechanical check: for every capitalised identifier appearing in
+`spec` or `context`, warn when it is not declared inside any region of the same
+file. That is a lint, not intelligence, and it turns two four-round failures into
+a warning before the first model call. The README should also state the rule
+outright — **if the ticket names a symbol, put its declaration in a read-only
+region** — because it is not currently written anywhere.
+
+#### O67. `PANEL_UNREACHABLE` reads as a verdict and is an outage — DEFECT
+
+Twice in one ticket, `deepseek-v4-flash` returned **475 findings against a cap of
+60**, then **371**. The run stopped. That is not a review outcome, it is one
+panel member malfunctioning, and it is adjacent to the known
+`UNPARSEABLE at 48000 tokens` degeneracy recorded under O63 — same seat, same
+shape, different overflow.
+
+Two asks, in order of value:
+
+1. **Do not fail the run on one member.** With `review_panel` already downgrading
+   an uncorroborated REJECT, the machinery for "proceed on the reviewers that
+   answered" exists. A member returning 8x the cap should be DROPPED with a
+   loud line, not allowed to end the ticket.
+2. **Say which member and why in the status.** `PANEL_UNREACHABLE` is
+   indistinguishable from a network failure, from an auth failure, and — to a
+   ticket author — from a rejection. The consumer's first reading was that the
+   ticket had been refused.
+
+#### Not a defect, and worth recording as the opposite
+
+One run reached **17 of 18 green and stalled**, and it was right to. The ticket
+told the implementer to enumerate via a function that excludes quarantined
+relationships **by default**, and separately demanded a `QUARANTINED` verdict.
+The spec was not merely wrong, it was UNSATISFIABLE, and no amount of model
+quality could have closed it.
+
+**The gate does not only check the code — it proves the specification is
+satisfiable.** That is the strongest argument for the test-first design in this
+file, and it came from a consumer who was, at the time, annoyed by it.
