@@ -325,18 +325,18 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     # compatibility layer does not accept this loop's `think` flag -- so these
     # run at Google's default effort and a high-effort result is NOT what was
     # measured here.
-    "gemini-3.6-flash": ModelProfile(
+    "gemini:gemini-3.6-flash": ModelProfile(
         "unpublished", 1_000_000, ("text", "vision"), True, True, 0.0, 0.0,
         (),
         "MEASURED BAD as arbiter: 0/5, ruled SHIP, twice. Free tier is not "
         "metered per token but IS rate limited; see gemini-3.1-pro-preview.",
     ),
-    "gemini-3.5-flash": ModelProfile(
+    "gemini:gemini-3.5-flash": ModelProfile(
         "unpublished", 1_000_000, ("text", "vision"), True, True, 0.0, 0.0,
         (),
         "MEASURED BAD as arbiter: 0/5, ruled SHIP, twice.",
     ),
-    "gemini-3.1-pro-preview": ModelProfile(
+    "gemini:gemini-3.1-pro-preview": ModelProfile(
         "unpublished", 1_000_000, ("text", "vision"), True, True, 0.0, 0.0,
         (),
         "UNTESTED as arbiter: HTTP 429 on the free tier "
@@ -383,19 +383,19 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     ),
     # Anthropic models are priced per token; see providers.PRICING. They are
     # listed for completeness but no key is configured in this environment.
-    "claude-opus-5": ModelProfile(
+    "anthropic:claude-opus-5": ModelProfile(
         "unpublished", 1_000_000, ("text", "vision"), True, True, 5.00, 25.00,
         ("implementer", "reviewer", "arbiter"),
         "Requires ANTHROPIC_API_KEY. Metered per token, unlike every ollama "
         "entry above -- switching a role to it turns a subscription cost into "
         "a per-run one.",
     ),
-    "claude-sonnet-5": ModelProfile(
+    "anthropic:claude-sonnet-5": ModelProfile(
         "unpublished", 1_000_000, ("text", "vision"), True, True, 3.00, 15.00,
         ("reviewer", "compactor"),
         "Requires ANTHROPIC_API_KEY. Metered per token.",
     ),
-    "claude-haiku-4-5": ModelProfile(
+    "anthropic:claude-haiku-4-5": ModelProfile(
         "unpublished", 200_000, ("text", "vision"), True, True, 1.00, 5.00,
         ("compactor",),
         "Requires ANTHROPIC_API_KEY. Metered per token.",

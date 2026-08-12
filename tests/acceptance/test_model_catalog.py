@@ -63,11 +63,16 @@ def test_catalogue_costs_are_stated_not_implied():
     Anthropic entries must carry real prices so a switch to them is visibly a
     cost change rather than a silent one."""
     for name, p in config.MODEL_CATALOG.items():
-        # Keyed by how the model is REACHED, not by family. `claude-sonnet-4-6`
+        # Keyed by how the model is REACHED, not by family. `claude-sonnet-5`
         # over the Anthropic API is metered per token; `agy:claude-sonnet-4-6`
         # is the same family through the Antigravity subscription and is not.
-        # This guard fired the moment those were catalogued under bare names.
-        if name.startswith("claude-"):
+        #
+        # O62: this used to test `name.startswith("claude-")`, which was the
+        # right INTENT read off the wrong thing -- the bare name. The bare names
+        # were the defect: they dispatched to ollama and 404'd. Now that the key
+        # carries its backend, the predicate can be what the comment above
+        # already said it was.
+        if name.startswith("anthropic:"):
             assert p.cost_per_1m_in > 0 and p.cost_per_1m_out > 0, name
         else:
             assert p.cost_per_1m_in == 0.0 and p.cost_per_1m_out == 0.0, name
