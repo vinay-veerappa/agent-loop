@@ -1423,3 +1423,75 @@ loosen it and do not build further on it until the sweep is run.**
   own stop message is right: split the ticket into smaller regions.
 * **`--reasoning` arms are untested code.** They have never been executed against
   a provider. Expect the first run to find something.
+
+## §18 Session 9 (2026-08-11, later) — the sweep §17 asked for has been run
+
+§17's one open item was *"the reviewer model sweep has not been run; zero models
+are measured."* It has now been run. **This section supersedes §17's "what the
+corpus says so far".**
+
+### The panel changed
+
+| | before | after |
+|---|---|---|
+| reviewers | `glm-5.2` + `minimax-m3` | `glm-5.2` + **`deepseek-v4-flash`** |
+| a solo REJECT | ordered a full rewrite | **downgraded to REVISE** |
+
+Both are in `ca2833f`. 633 pass + 34 skipped on 3.12 and 3.14, selftest 13/13.
+
+### The three results that drove it
+
+1. **The verdict is a property of the MODEL, not of the patch.** Same candidate,
+   every arm and rep: glm REVISE ×4, minimax APPROVE ×4, deepseek-v4-flash
+   REJECT ×4, gemma4:31b REJECT, qwen3.5 REJECT. Panel *composition* decides the
+   verdict. The findings carry the signal; the verdict barely moves.
+2. **`minimax-m3` could never change a verdict at all**, because APPROVE is the
+   best rank under worst-wins — so its entire possible contribution was findings,
+   at 1-in-7, for ~197s and ~22k tokens a call.
+3. **Review quality is a per-call LOTTERY.** glm found the case's strongest
+   defect on 2 of 5 byte-identical draws. **It is not temperature** — 3 draws at
+   `temperature=0.0` also differed, so the nondeterminism is in the provider's
+   serving stack and is not removable from here. Independent draws are the only
+   mitigation, which is a different claim from "different families".
+
+### Answered NO: can reasoning be bounded?
+
+§16's open question. Both levers fail:
+
+* `think="low"/"medium"/"high"` are truthy strings — on a model without effort
+  levels they just mean THINKING ON. Non-monotonic, and 4 level-arms exhausted
+  the budget on reasoning and returned nothing.
+* The prompt instruction ("think in AT MOST 3 short bullets") produced the two
+  LARGEST burns of the sweep — 216,211 and 200,768 chars, neither answering.
+
+Only `think=False` does anything, and even that is a dial not a switch (minimax
+produced 91,559 chars with it off). **§16 is closed: do not revert the
+implementer's `think=False`, and do not try to bound reasoning by prompt.**
+
+### Also closed: O62
+
+Six catalogue models could never be dispatched — `gemini-*` and `claude-*` were
+keyed without their backend prefix, so `split_model` sent them to ollama, which
+404'd with a message blaming the model name. Found by the sweep.
+
+### Read before running the bench again
+
+* `tests/fixtures/reviewer_bench/out/` holds every raw response — 344K, committed
+  deliberately, because O28's lesson is that the bottleneck is labelling.
+* **`rescore.py` re-scores those files with NO model calls.** Use it when the
+  answer key changes. Re-running instead both costs an hour and *changes the
+  data*, since these models are not deterministic.
+* Local models are OFF by default (`--include-local` to restore): `qwen3-vl:8b`
+  at a 73728 context wants 17GB on an 8GB card, ran 69% on CPU, and took >9
+  minutes for ONE review while ten cloud arms took ten minutes between them.
+* `--jobs` defaults to 10. At that width, expect some HTTP 500s after long
+  generations; they are transport, not model results.
+* `agy:` is unusable for reviews: the prompt is 32,481 chars against a 30,000
+  limit on the Windows command line. Not a model result either.
+
+### ⚠️ Still one case
+
+O28's lesson stands — the bottleneck is the corpus, not the pool, and nothing
+here ranks models in general. The `minimax` result is the exception: six
+independent zeroes is an absence, not a ranking. **The next thing worth doing is
+a SECOND labelled case**, not more arms on this one.
