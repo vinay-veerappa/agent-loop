@@ -1,0 +1,35 @@
+Looking at this patch, I need to verify it satisfies all six constraints and the settled decisions, and check for new defects.
+
+**Constraint-by-constraint analysis:**
+
+1. **No ObjectCreationHandling.Replace**: Patch uses JObject.Parse + reflection, not JsonConvert with settings. ✓
+2. **camelCase aliases**: `aliasMap` covers `leaderAccount`, `quantityRatio`, `maxPositionSize` and all the new fields. ✓
+3. **Enum tolerance + numeric default retention**: `TryConvertToken` returns `false` for unknown enums (via `Enum.IsDefined`) AND for malformed numbers/bools. `Populate` only calls `SetValue` and `present.Add` when conversion succeeds, so the CLR default from the property initializer is retained on malformed input. ✓
+4. **Flat legacy form**: `ParseRelationship` is used for the flat legacy path, and it falls back to `kv.Key` for `LeaderAccountName` when not in JSON. ✓
+5. **ArmedForLive default**: Not set unless present in JSON; relies on property initializer. ✓
+6. **One shared parse path**: `Populate` is the single reflection-based parse used by both `ParseRelationship` and `ParseGroup`. ✓
+
+**Subtle checks:**
+
+- The `present` HashSet uses `prop.Name` (actual .NET name) so `present.Contains("Id")` matches correctly after alias mapping.
+- `BindingFlags.IgnoreCase` on `GetProperty` is a defensive bonus — `"leaderaccount"` (no alias entry) still finds `LeaderAccountName`.
+- For `Dictionary<string, double>` (PerTickerRatios) and `Dictionary<string, string>` (CustomSymbolMappings), the comparer is hard-coded to `OrdinalIgnoreCase`, preserving the initializer's contract.
+- The Clear-then-parse-then-catch behavior is preserved (pinned by green-at-baseline test).
+- No risk calls (Flatten/Cancel/Submit/CreateOrder) under the lock; lock scope is bounded to Clear/Add.
+- No async, no timers, no event handlers — no new race windows.
+- `Enum.IsDefined` guards both string and integer enum paths, including the case of integer `0` for a non-zero enum.
+- The catch-all `token.ToObject(targetType)` at the end of `TryConvertToken` is wrapped in try/catch returning false — malformed complex types also retain the initializer default.
+
+**Edge case verification:** A round-trip of a relationship with `SizingMode = PerTickerMatrix` and a populated `PerTickerRatios` table will, on reload, have `SizingMode` set via the enum path and `PerTickerRatios` set via the `Dictionary<string, double>` path with `OrdinalIgnoreCase`, enabling ratio-based sizing on the next entry.
+
+**Compile check:** C# 7.0 local functions, full-qualified reflection types, no init-only setters, no using declarations. Compatible with net48 + net8.0-with-stubs.
+
+<<<VERDICT>>>
+APPROVE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- NONE
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- NONE
+<<<END REQUIRED>>>

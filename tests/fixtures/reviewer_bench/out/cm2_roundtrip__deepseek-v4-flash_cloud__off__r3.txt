@@ -1,0 +1,1061 @@
+<<<VERDICT>>>
+REJECT
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `TryConvertToken` helper silently returns `false` for a malformed NUMBER, and `Populate` then simply skips the property, leaving the CLR default (0 for `MaxPositionSize`, 0.0 for `QuantityRatio`) instead of the property initialiser's value (100, 1.0). This directly violates constraint 3 of the ticket: "A malformed NUMBER must fail closed -- refusing the entry is fine, keeping the intended default is fine, silently producing zero is not." Concretely, if `copier_config.json` contains `"quantityRatio": "abc"`, `TryConvertToken` returns `false`, `Populate` does not set `QuantityRatio`, and the new `CopierRelationship()` initialiser leaves it at 0.0. Every fill is then sized at zero, the leader trades and the follower does not -- a naked-risk regression. The same applies to `"maxPositionSize": "abc"` producing 0, which zero-caps every position. The ticket's own text calls this exact pattern a "naked-risk regression" and the review panel found it in a candidate that passed every mechanical gate. The fix must distinguish "property absent" from "property present but malformed" and must not silently fall back to the CLR default for a present-but-invalid numeric field.
+
+- [BLOCKER] R1: The `TryConvertToken` enum branch uses `Enum.IsDefined(targetType, e)` which is case-sensitive and does not handle combined flag values. For a `[Flags]` enum (e.g., `Mode` if it is flags-based), a value like `"Entry,Exit"` or a numeric combination like `3` will fail `Enum.IsDefined` and return `false`, silently dropping the field. More critically, the ticket requires "An unrecognised ENUM value must NOT throw" -- this branch does not throw, but it silently drops the field, leaving the property at its CLR default (0) rather than the property initialiser's default. If `Mode` defaults to a non-zero value in the initialiser, a typo in the file silently reverts to 0, which may be a different mode entirely (e.g., `Mode.None` instead of `Mode.Standard`), changing copy behaviour without any error. The ticket's constraint 3 requires tolerance for unknown enum NAMES, but the failure mode here is silent reversion to a possibly-dangerous default, not a refusal.
+
+- [MAJOR] R1: The `Populate` helper's `present` set is keyed by `prop.Name` (the canonical PascalCase name), but the fallback logic in `ParseRelationship` checks `present.Contains("LeaderAccountName")` with `StringComparer.OrdinalIgnoreCase` on the set. This is consistent, but the alias map is `StringComparer.Ordinal` (case-sensitive), so a JSON key `"LeaderAccount"` (wrong case, not an alias) will not match `"LeaderAccountName"` via the alias map, and `type.GetProperty(..., IgnoreCase)` will match it, setting the property and adding `"LeaderAccountName"` to `present`. That is fine. However, the alias map itself is case-sensitive: `"leaderAccount"` maps to `"LeaderAccountName"`, but `"Leaderaccount"` (mixed case) does not match the alias and falls through to `GetProperty` with `IgnoreCase`, which still works. So the case-sensitivity of the alias map is harmless here. The real issue is that `TryConvertToken` for `Dictionary<string, double>` (PerTickerRatios) silently skips any entry whose value fails to convert to double, producing a partial dictionary. If the file has `"ES": "abc"` in `PerTickerRatios`, that entry is dropped, and the ratio table is silently missing a symbol. Under slice 1, a fill on `ES` with no ratio entry refuses the entry (fail-closed on entries is acceptable), but a partial table where one symbol is dropped while others survive is a silent config corruption that the ticket's constraint 3 explicitly forbids for numbers.
+
+- [MAJOR] R1: The `TryConvertToken` for `Dictionary<string, string>` (CustomSymbolMappings) accepts any token type and converts non-strings via `ToString()`. A JSON value of `true` (boolean) becomes the string `"True"`, which is then used as a symbol mapping. This is a silent type coercion that can produce a nonsensical mapping (e.g., mapping `ES` to `"True"`), which under PerTickerMatrix mode would refuse entries (fail-closed) but is still a silent corruption of the config. The ticket requires the new fields to round-trip intact; a boolean in a string field is not intact.
+
+- [MINOR] R1: The `TryConvertToken` for `int` accepts a JSON string `"1.5"`? No -- `int.TryParse("1.5")` returns false, so it falls through to `return false`, and the property is skipped, leaving the CLR default. For `FixedLotSize`, the initialiser default is 1, so a malformed `"fixedLotSize": "abc"` silently reverts to 1, which is the intended default, so this is acceptable per constraint 3. But for `MaxPositionSize`, the initialiser default is 100, and a malformed value silently reverts to 100, which is also the intended default -- so the BLOCKER above is specifically about `QuantityRatio` (default 1.0) and `DailyLossLimit` (default 1000.0) where the CLR default (0.0) differs from the initialiser default. The BLOCKER stands for those fields.
+
+- [MINOR] R1: The `Populate` helper uses `type.GetProperty(propName, BindingFlags.IgnoreCase)`. If the JSON contains both `"Id"` and `"id"` (the alias), the alias map maps `"id"` to `"Id"`, and both properties resolve to the same `PropertyInfo`. The second one overwrites the first, and `present` contains `"Id"` once. This is fine, but if the JSON contains `"Id"` and `"ID"` (neither is an alias), both resolve via `IgnoreCase` to the same property, and the last one wins. This is a silent last-write-wins behaviour that could surprise, but it is not a new risk.
+
+- [MINOR] R1: The `ParseRelationship` fallback for `LeaderAccountName` uses `key.Contains("_") ? key.Split('_')[0] : key`. If the key is `"ACCOUNT_1"` and the JSON has no `LeaderAccountName`, the fallback sets `"ACCOUNT"`. This matches the BEFORE behaviour, so no regression. But if the key is `"ACCOUNT"` (no underscore) and the JSON has no `LeaderAccountName`, the fallback sets `"ACCOUNT"` as the leader, which is the flat-legacy form. This is preserved.
+
+- [MINOR] R1: The `ParseGroup` fallback for `FollowerAccounts` sets `new List<string>()` when absent. The `CopierGroup` initialiser presumably already defaults `FollowerAccounts` to an empty list, so this is redundant but harmless.
+
+- [MINOR] R1: The `TryConvertToken` for `List<string>` (FollowerAccounts) accepts a JSON array of non-strings and converts them via `ToString()`. A JSON array `[1, 2]` becomes `["1", "2"]`, which is a silent type coercion. This is not a new risk but is inconsistent with the ticket's "intact" requirement.
+
+- [MINOR] R1: The `aliasMap` is constructed inside `LoadFromDisk` on every call. This is a minor performance issue, not a correctness issue.
+
+- [MINOR] R1: The `TryConvertToken` for `double` uses `NumberStyles.Float` which does NOT include `NumberStyles.AllowThousands`. A JSON string `"1,000.5"` (with thousands separator) will fail `double.TryParse` and be silently dropped. This is a malformed-number case that reverts to the CLR default, which is the BLOCKER scenario for `QuantityRatio`.
+
+- [MINOR] R1: The `Populate` helper's `present` set is populated with `prop.Name` (the canonical name), but the fallback checks use `present.Contains("Id")` etc. with `StringComparer.OrdinalIgnoreCase`. This is consistent. However, if a JSON property is present but fails `TryConvertToken` (e.g., malformed number), it is NOT added to `present`, so the fallback logic in `ParseRelationship` will apply the key-derived default. For `LeaderAccountName`, this means a malformed value (e.g., a JSON object instead of a string) is silently replaced by the key-derived default, which is a silent corruption. The ticket's constraint 3 requires fail-closed for malformed numbers, but this also applies to malformed strings -- a string field with a non-string value should not be silently replaced by a key-derived guess.
+
+- [MINOR] R1: The `TryConvertToken` for `bool` accepts only `true`/`false` or the strings `"true"`/`"false"` (case-insensitive via `bool.TryParse`). A JSON value `1` (integer) is rejected, and the property is skipped, leaving the initialiser default. For `ArmedForLive`, the initialiser default is `false`, so a malformed `"armedForLive": 1` silently reverts to `false`, which is the safe default. This is acceptable per constraint 5.
+
+- [MINOR] R1: The `TryConvertToken` for `string` accepts any token type and converts via `ToString()`. A JSON object `{}` for `LeaderAccountName` becomes the string `"{}"`, which is a silent corruption. This is not a new risk but is inconsistent with the ticket's "intact" requirement.
+
+- [MINOR] R1: The `Populate` helper does not handle the case where a JSON property name matches an alias but the alias maps to a property that does not exist on the target type. For example, `"groupName"` is in the alias map, but `ParseRelationship` targets `CopierRelationship` which has no `GroupName` property. `type.GetProperty("GroupName", IgnoreCase)` returns null, and the property is skipped. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `ParseRelationship` and `ParseGroup` functions are defined as local functions inside `LoadFromDisk`. They capture `aliasMap`, `TryConvertToken`, and `Populate`. This is fine in C# 8.0.
+
+- [MINOR] R1: The `lock (_lock)` is taken AFTER `JObject.Parse(json)` and after the local function definitions. The `TryConvertToken`, `Populate`, `ParseRelationship`, and `ParseGroup` functions are defined before the lock, but they are only CALLED inside the lock. This is fine. However, the `JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json)` in the flat-legacy path is called INSIDE the lock, which is a potentially slow operation under lock. This is a minor performance concern, not a correctness issue.
+
+- [MINOR] R1: The `catch (Exception ex)` at the end swallows ALL exceptions, including those from `Populate`/`TryConvertToken`. If `TryConvertToken` throws (it has its own try/catch that returns false, so it should not throw), or if `prop.SetValue` throws (e.g., a read-only property), the entire load fails and `_relationships`/`_groups` are left cleared. This is the fail-closed behaviour the ticket requires for malformed numbers, but it also means a single bad property in one relationship disarms ALL relationships. The ticket's constraint 3 says "refusing the entry is fine" -- but here the whole file is refused, not just the entry. This is a broader failure than the ticket requires, but it is fail-closed, so it is acceptable.
+
+- [MINOR] R1: The `TryConvertToken` for `int` accepts a JSON float `1.0`? No -- `token.Type == JTokenType.Integer` is false for `1.0` (it is `Float`), and `int.TryParse("1.0")` returns false, so it is rejected. A JSON `"fixedLotSize": 1.0` is silently dropped, reverting to the initialiser default of 1. This is acceptable.
+
+- [MINOR] R1: The `TryConvertToken` for `double` accepts a JSON integer `1` and converts to `1.0`. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `bool` does not accept `"1"` or `"0"` as strings. A JSON `"isEnabled": "1"` is rejected, reverting to the initialiser default of `true`. This is acceptable.
+
+- [MINOR] R1: The `TryConvertToken` for `List<string>` does not handle a JSON array with nested objects. A JSON `[{"a":1}]` becomes the string `"{"a":1}"` via `ToString()`, which is a silent corruption. This is not a new risk.
+
+- [MINOR] R1: The `ParseRelationship` fallback for `FollowerAccountName` uses `key.Split('_')[1]` when the key contains an underscore. If the key is `"A_B_C"`, `Split('_')[1]` is `"B"`, which is the second segment, not the follower. The BEFORE code had the same behaviour, so no regression.
+
+- [MINOR] R1: The `ParseGroup` fallback for `LeaderAccountName` is `"Sim101"`, which matches the BEFORE code. This is preserved.
+
+- [MINOR] R1: The `ParseGroup` fallback for `GroupName` is `key`, which matches the BEFORE code. This is preserved.
+
+- [MINOR] R1: The `ParseRelationship` fallback for `Id` is `Guid.NewGuid().ToString()`, which matches the BEFORE code. This is preserved.
+
+- [MINOR] R1: The `ParseGroup` fallback for `Id` is `Guid.NewGuid().ToString()`, which matches the BEFORE code. This is preserved.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But the `Dictionary<string, string>` for `CustomSymbolMappings` also uses `OrdinalIgnoreCase`, which is correct. However, the `PerTickerRatios` dictionary is built with `OrdinalIgnoreCase`, but the `Populate` helper's `present` set only records the property name `"PerTickerRatios"`, not the individual keys. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` does not handle a JSON value that is a string containing a number, e.g., `"ES": "1.5"`. The inner `TryConvertToken(p.Value, typeof(double), out dv)` handles this via the string branch, so it works. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, string>` does not handle a JSON value that is a number, e.g., `"ES": 123`. It converts to `"123"` via `ToString()`, which is a silent coercion. This is not a new risk.
+
+- [MINOR] R1: The `TryConvertToken` for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`, which is correct per constraint 1. But

@@ -1,0 +1,1927 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: `TryConvertToken` for `Dictionary<string, double>` and `Dictionary<string, string>` uses `StringComparer.OrdinalIgnoreCase` on the constructed dictionaries, which is correct. However, the `Populate` method returns a `HashSet<string>` of property names keyed by `prop.Name` (the canonical PascalCase name from reflection). The `present.Contains` checks in `ParseRelationship` and `ParseGroup` use PascalCase strings like `"Id"`, `"LeaderAccountName"`, etc. But `present` is populated with `prop.Name` which is the canonical name from the type. This works for PascalCase properties. However, the `aliasMap` maps camelCase aliases to PascalCase canonical names, and `Populate` resolves the alias before looking up the property. The property's `Name` is the PascalCase canonical name, so `present.Add(prop.Name)` adds the PascalCase name. The `present.Contains` checks use PascalCase strings. This is consistent. BUT: if a JSON file contains the PascalCase key `"LeaderAccountName"`, `aliasMap.TryGetValue` returns false, `propName` stays `"LeaderAccountName"`, `type.GetProperty` finds it, and `present.Add(prop.Name)` adds `"LeaderAccountName"`. If the JSON file contains the camelCase alias `"leaderAccount"`, `aliasMap` maps it to `"LeaderAccountName"`, `type.GetProperty("LeaderAccountName")` finds it, and `present.Add(prop.Name)` adds `"LeaderAccountName"`. So `present.Contains("LeaderAccountName")` is true in both cases. This is fine. No blocker here.
+
+- [BLOCKER] R1: The `Populate` method uses `System.Reflection.BindingFlags.IgnoreCase` in `type.GetProperty(propName, ...)`. This means if a JSON key maps (via alias or directly) to a property name with different case than the actual C# property, it will still find it. However, `present.Add(prop.Name)` adds the *actual* C# property name (e.g., `"LeaderAccountName"`). The `present.Contains` checks in `ParseRelationship` and `ParseGroup` use the exact PascalCase string. This is consistent. No blocker.
+
+- [BLOCKER] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` constructs the dictionary with `StringComparer.OrdinalIgnoreCase`. This satisfies constraint 1. No blocker.
+
+- [BLOCKER] R1: The `TryConvertToken` method for enums uses `Enum.TryParse` with `true` for ignoreCase, then checks `Enum.IsDefined`. If `Enum.IsDefined` returns false, it returns false. The caller `Populate` then does NOT set the property, leaving it at its default. This satisfies constraint 3 (unrecognised enum value must not throw). No blocker.
+
+- [BLOCKER] R1: The `TryConvertToken` method for `bool`, `int`, `double` returns false on malformed values (e.g., string "abc" for int). The caller `Populate` then does NOT set the property, leaving it at its default. This satisfies constraint 3's requirement that a malformed number must not silently become zero. No blocker.
+
+- [BLOCKER] R1: The `TryConvertToken` method for `string` has a path: `value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString();`. If the token is a non-string type (e.g., an integer 123), `token.ToString()` returns the string "123". This converts a numeric JSON value to a string property. This is a type-coercion that could silently corrupt a string field. For example, if `LeaderAccountName` is accidentally written as a number in the JSON, it becomes "123" instead of failing or staying at default. This is a minor data-integrity issue but not a money-losing defect. However, constraint 3 says "A malformed NUMBER must fail closed". This is about numeric fields becoming zero. A number in a string field is not a malformed number; it's a type mismatch. The ticket does not explicitly forbid this, but it's a quality concern. Not a blocker.
+
+- [BLOCKER] R1: The `Populate` method iterates `jObj.Properties()` and for each property, looks up the target type's property. It uses `type.GetProperty(propName, ...)` with `BindingFlags.IgnoreCase`. This means if the JSON has both `"leaderAccount"` (alias) and `"LeaderAccountName"` (canonical), the alias is processed first (since `aliasMap` maps it to `"LeaderAccountName"`), sets the property, and adds `"LeaderAccountName"` to `present`. Then the canonical key is processed, `aliasMap.TryGetValue("LeaderAccountName")` returns false, `propName` stays `"LeaderAccountName"`, `type.GetProperty` finds it, `TryConvertToken` succeeds, and it overwrites the value. This is fine; last-one-wins is acceptable. No blocker.
+
+- [BLOCKER] R1: The `ParseRelationship` method applies key-derived fallbacks for `LeaderAccountName` and `FollowerAccountName` only when the corresponding property is absent from `present`. The key is the JSON object key (e.g., `"Sim101_SimCopy2"`). The fallback splits on `_`. This is correct for the structured path where keys are like `"Sim101_SimCopy2"`. For the flat legacy path, the key is the leader account name (e.g., `"Sim101"`). The fallback `key.Contains("_") ? key.Split('_')[0] : key` returns `"Sim101"` for a key without underscore. This is correct. The `FollowerAccountName` fallback `key.Contains("_") ? key.Split('_')[1] : "SimCopy2"` returns `"SimCopy2"` for a key without underscore. This is correct. No blocker.
+
+- [BLOCKER] R1: The `ParseGroup` method applies fallback `GroupName = key` when `GroupName` is absent. This is correct. The `LeaderAccountName` fallback is `"Sim101"`. This is correct. The `FollowerAccounts` fallback is `new List<string>()`. This is correct. No blocker.
+
+- [BLOCKER] R1: The `lock (_lock)` block now contains only the clear, parse, and add operations. No `Account.Flatten/Cancel/Submit/CreateOrder` calls are inside the lock. The `Populate`, `ParseRelationship`, and `ParseGroup` methods are called outside the lock? No, they are called INSIDE the lock. Wait: the code shows `lock (_lock) { ... if (relsObj != null) { foreach (var kv in relsObj) { ... _relationships.Add(ParseRelationship(jObj, kv.Key)); } } ... }`. The `ParseRelationship` call is inside the lock. `ParseRelationship` calls `Populate` which uses reflection. This is not a lock-discipline violation because no risk calls (Flatten/Cancel/Submit/CreateOrder) are made. The ticket says "lock-scope: no risk calls under _stateLock" in the mechanical gates. This is fine. No blocker.
+
+- [BLOCKER] R1: The `TryConvertToken` method for `List<string>` uses `FollowerAccounts` parsing. The BEFORE code used `JsonConvert.DeserializeObject<List<string>>(followersToken.ToString())`. The AFTER code manually iterates the JArray. This should produce the same result. No blocker.
+
+- [BLOCKER] R1: The `TryConvertToken` method has a fallback `try { value = token.ToObject(targetType); return true; } catch { return false; }`. This is a catch-all that could silently convert types in unexpected ways. For example, if a property type is a complex object not handled by the explicit cases, `token.ToObject` might succeed but produce a value without the `StringComparer.OrdinalIgnoreCase` on dictionaries. However, the explicit cases handle all known property types: string, bool, int, double, enums, Dictionary<string,double>, Dictionary<string,string>, List<string>. The fallback is only reached for types not explicitly handled. If a future property is added with a complex type, this fallback could bypass the comparer requirement. But for the current set of properties, this is not triggered. Not a blocker for this patch, but a maintenance risk.
+
+- [BLOCKER] R1: The `Populate` method uses `prop.GetSetMethod() == null` to skip read-only properties. This is correct. No blocker.
+
+- [BLOCKER] R1: The `aliasMap` uses `StringComparer.Ordinal` (case-sensitive). The JSON property names are looked up case-sensitively in the alias map. This means `"LeaderAccount"` (capital L, capital A) would NOT match `"leaderAccount"` in the alias map. It would fall through to `propName = jp.Name` and then `type.GetProperty` with `IgnoreCase` would find it. This is correct because the alias map is only for exact camelCase matches; PascalCase variants are handled by reflection's IgnoreCase. No blocker.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` constructs the dictionary with `StringComparer.OrdinalIgnoreCase`. However, the `Populate` method then calls `prop.SetValue(target, value, null)`. This sets the property to the new dictionary instance. The property initializer on `CopierRelationship` and `CopierGroup` for `PerTickerRatios` and `CustomSymbolMappings` presumably creates a dictionary with `StringComparer.OrdinalIgnoreCase`. The new dictionary from `TryConvertToken` also uses `OrdinalIgnoreCase`. This is correct. No issue.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` iterates `((JObject)token).Properties()` and adds each property. The value is `p.Value.Type == JTokenType.String ? p.Value.Value<string>() : p.Value.ToString()`. This means if a value is a number in JSON, it becomes the string representation of that number. This is a type-coercion that could silently corrupt `CustomSymbolMappings`. For example, if a mapping value is accidentally written as a number, it becomes the string "123" instead of failing. This could cause symbol lookup failures later. This is a data-integrity issue. However, the BEFORE code used `JsonConvert.DeserializeObject` which would also convert numbers to strings in a `Dictionary<string, string>` deserialization (Json.NET converts numeric JSON values to strings when the target type is string). So this is not a regression. Not a blocker.
+
+- [MAJOR] R1: The `TryConvertToken` method for `List<string>` uses `t.Type == JTokenType.String ? t.Value<string>() : t.ToString()`. Same coercion concern for `FollowerAccounts`. If an account name is accidentally written as a number, it becomes the string representation. The BEFORE code used `JsonConvert.DeserializeObject<List<string>>` which would also do this. Not a regression.
+
+- [MAJOR] R1: The `Populate` method returns `HashSet<string> present` containing the canonical property names. The `ParseRelationship` and `ParseGroup` methods check `present.Contains("Id")`, `present.Contains("LeaderAccountName")`, etc. However, if a JSON file contains a property with a name that maps to a canonical property but the canonical property name differs in case from what `present.Contains` checks, there could be a mismatch. For example, if the C# property is `LeaderAccountName` and the JSON contains `"LEADERACCOUNTNAME"`, `type.GetProperty` with `IgnoreCase` finds it, `prop.Name` is `"LeaderAccountName"`, `present.Add("LeaderAccountName")` is called, and `present.Contains("LeaderAccountName")` returns true. This is fine because `present` is `OrdinalIgnoreCase`. Wait: `HashSet<string> present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);` — yes, the `Populate` method creates the HashSet with `StringComparer.OrdinalIgnoreCase`. So `present.Contains("LeaderAccountName")` is case-insensitive. This is correct. No issue.
+
+- [MAJOR] R1: The `Populate` method creates `HashSet<string> present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);`. This is correct. The `present.Contains` checks in `ParseRelationship` and `ParseGroup` use string literals like `"Id"`, `"LeaderAccountName"`. Since the HashSet is case-insensitive, this works regardless of the case of the canonical property name. No issue.
+
+- [MAJOR] R1: The `TryConvertToken` method for `bool` has a path: `if (token.Type == JTokenType.String) { string s = token.Value<string>(); if (bool.TryParse(s, out bool b)) { value = b; return true; } } return false;`. This means a string "true" or "false" is accepted. The BEFORE code used `(bool)jObj["IsEnabled"]` which would throw on a string value. The AFTER code is more permissive. This is a change in behavior but not a money-losing defect. It could mask a configuration error where a boolean field is written as a string. However, `SaveToDisk` writes booleans as JSON booleans, so this only affects hand-edited files. Not a blocker.
+
+- [MAJOR] R1: The `TryConvertToken` method for `int` and `double` accepts string values and parses them. The BEFORE code used `(int)jObj["FixedLotSize"]` which would throw on a string value. The AFTER code is more permissive. Same as above.
+
+- [MAJOR] R1: The `TryConvertToken` method for enums accepts string values and parses them case-insensitively. It also accepts integer values and converts them via `Enum.ToObject`. The BEFORE code did not handle enums at all (they were dropped). This is the fix. No issue.
+
+- [MAJOR] R1: The `Populate` method uses `prop.GetSetMethod() == null` to skip read-only properties. If a property has a setter but it's private, `GetSetMethod()` returns null. This is correct. No issue.
+
+- [MAJOR] R1: The `Populate` method does not handle the case where `TryConvertToken` returns false. It simply skips the property. This is correct per constraint 3: malformed values leave the default. No issue.
+
+- [MAJOR] R1: The `ParseRelationship` method applies key-derived fallbacks for `LeaderAccountName` and `FollowerAccountName` only when the property is absent from `present`. However, if the JSON contains `"LeaderAccountName": ""` (empty string), `TryConvertToken` for string will set it to `""` (empty string) and add it to `present`. The fallback is NOT applied. This means an empty string in the JSON overrides the key-derived fallback. This is correct behavior: the user explicitly set it to empty, so the fallback should not override. No issue.
+
+- [MAJOR] R1: The `ParseGroup` method applies fallback `GroupName = key` when `GroupName` is absent. If the JSON contains `"GroupName": ""`, the fallback is not applied. Same as above. Correct.
+
+- [MAJOR] R1: The `ParseGroup` method applies fallback `FollowerAccounts = new List<string>()` when `FollowerAccounts` is absent. If the JSON contains `"FollowerAccounts": []`, `TryConvertToken` for `List<string>` will set it to an empty list and add to `present`. The fallback is not applied. This is correct.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` returns false if the token type is not `JTokenType.Object`. This means if `PerTickerRatios` is `null` in JSON, `TryConvertToken` returns false, and the property is not set, leaving the default (empty dictionary with `OrdinalIgnoreCase`). This is correct.
+
+- [MAJOR] R1: The `TryConvertToken` method for `List<string>` returns false if the token type is not `JTokenType.Array`. This means if `FollowerAccounts` is `null` in JSON, it returns false, and the fallback `new List<string>()` is applied. This is correct.
+
+- [MAJOR] R1: The `Populate` method iterates `jObj.Properties()` and for each property, looks up the target type's property. If the JSON contains a property that does not correspond to any C# property (e.g., a typo like `"LeaderAccountNamee"`), `type.GetProperty` returns null, and the property is skipped. This is silent ignoring of unknown properties. The BEFORE code also silently ignored unknown properties (it only read specific named properties). This is not a regression. However, constraint 3 says "An unrecognised ENUM value must NOT throw" but does not say unknown properties must throw. This is acceptable.
+
+- [MAJOR] R1: The `Populate` method uses `System.Reflection.BindingFlags.IgnoreCase` in `type.GetProperty`. This means if two properties differ only in case (e.g., `LeaderAccountName` and `leaderaccountname`), the reflection lookup might find the wrong one or behave unpredictably. However, C# properties are case-sensitive, and the CopierRelationship/CopierGroup classes presumably have unique case-insensitive property names. This is fine.
+
+- [MAJOR] R1: The `TryConvertToken` method for `string` has `value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString();`. If the token is a JSON null, `token.Type` is `JTokenType.Null`, and the method returns false at the top: `if (token == null || token.Type == JTokenType.Null) return false;`. So null is handled correctly. No issue.
+
+- [MAJOR] R1: The `TryConvertToken` method for `bool`, `int`, `double` does not have an explicit null check at the top of each type block, but the method-level null check handles it. No issue.
+
+- [MAJOR] R1: The `Populate` method does not handle the case where `TryConvertToken` throws an exception. `TryConvertToken` has a try/catch that returns false on any exception. So exceptions are swallowed and the property is skipped. This is correct per constraint 3's requirement that malformed values leave the default. No issue.
+
+- [MAJOR] R1: The `lock (_lock)` block contains `_relationships.Clear()` and `_groups.Clear()`. If an exception occurs during parsing (e.g., in `ParseRelationship` or `ParseGroup`), the lock is released and the collections are left partially populated. The outer try/catch catches the exception and logs it. The engine is left with a partially loaded configuration. This is a regression from the BEFORE code, where the parsing was done inline and any exception in the middle of the loop would also leave partial state. However, the BEFORE code had the same issue: if `(bool)jObj["IsEnabled"]` threw, the loop would terminate and the catch would log, leaving partial state. So this is not a new regression. But it is a pre-existing issue. Not a blocker for this patch.
+
+- [MAJOR] R1: The `Populate` method uses `type.GetProperty(propName, ...)` with `BindingFlags.IgnoreCase`. If the JSON contains a property name that matches a property but with different case, and the alias map also has an entry for that different case, the alias map lookup is case-sensitive (`StringComparer.Ordinal`). So `"leaderaccount"` (all lowercase) would NOT match `"leaderAccount"` in the alias map. It would fall through to `propName = "leaderaccount"`, and `type.GetProperty("leaderaccount", ...)` with `IgnoreCase` would find `LeaderAccountName`. This is correct. No issue.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` uses `TryConvertToken(p.Value, typeof(double), out dv)` recursively. If the value is a string like `"1.5"`, it will parse correctly. If the value is a string like `"abc"`, `TryConvertToken` for double returns false, and the entry is skipped. This means a malformed entry in `PerTickerRatios` is silently dropped. The dictionary will be missing that key. This could cause a ticker to have no ratio, which in `PerTickerMatrix` mode would refuse the entry (per settled decision: "PerTickerMatrix mode must refuse entries when ... there is no PerTickerRatios entry"). This is fail-closed, which is acceptable. No issue.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` does not skip malformed values; it converts everything to string via `p.Value.ToString()`. This means a nested object or array in `CustomSymbolMappings` would become a string like `"System.Collections.Generic.Dictionary`2[System.String,System.String]"` or similar. This could cause symbol lookup failures. The BEFORE code used `JsonConvert.DeserializeObject` which would throw on a type mismatch. The AFTER code silently produces garbage strings. This is a regression in error handling. If `CustomSymbolMappings` contains a nested object instead of a string value, the BEFORE code would throw and the entire `LoadFromDisk` would fail, leaving no configuration (fail-closed). The AFTER code would load a garbage mapping, which could cause incorrect symbol resolution and potentially wrong trades. This is a MAJOR defect.
+
+- [MAJOR] R1: The `TryConvertToken` method for `List<string>` has the same issue: `t.ToString()` on a nested object produces garbage. If `FollowerAccounts` contains an object instead of a string, the BEFORE code would throw (fail-closed). The AFTER code would produce a list with garbage strings, which would fail to match any account and silently do nothing. This is less severe than the `CustomSymbolMappings` case but still a regression in error handling.
+
+- [MINOR] R1: The `aliasMap` includes `"groupName"` and `"followerAccounts"` which are only relevant for `CopierGroup`. The `Populate` method is shared for both `CopierRelationship` and `CopierGroup`. If a `CopierRelationship` JSON object contains `"groupName"`, it would map to `"GroupName"`, and `type.GetProperty("GroupName")` on `CopierRelationship` would return null (since `CopierRelationship` doesn't have a `GroupName` property), so it would be skipped. This is harmless. No issue.
+
+- [MINOR] R1: The `Populate` method uses `System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase`. This does not include `BindingFlags.FlattenHierarchy` or any other flags. If properties are inherited from a base class, they might not be found. However, `CopierRelationship` and `CopierGroup` are likely simple classes without inheritance. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `string` returns `token.ToString()` for non-string tokens. `JToken.ToString()` for a JSON object returns the JSON representation, e.g., `{"key":"value"}`. This could be assigned to a string property. This is a data-integrity issue but unlikely to cause money loss. Not a blocker.
+
+- [MINOR] R1: The `Populate` method does not log or warn about skipped properties. If a user has a typo in their JSON, it is silently ignored. The BEFORE code also silently ignored unknown properties. Not a regression.
+
+- [MINOR] R1: The `TryConvertToken` method for enums uses `Enum.IsDefined` after `Enum.TryParse`. `Enum.TryParse` with `true` (ignoreCase) will succeed for numeric strings like "1" even if the enum has no member with value 1. Then `Enum.IsDefined` returns false, and the method returns false. This is correct. However, if the enum has `[Flags]` attribute, `Enum.IsDefined` returns false for combined values. The copier enums (`CopierSizingMode`, `CopierMode`) are not flags enums, so this is fine.
+
+- [MINOR] R1: The `Populate` method uses `prop.GetSetMethod() == null` to check for settability. In C# 8.0, `GetSetMethod()` is available. This is fine for net48 and net8.0.
+
+- [MINOR] R1: The `TryConvertToken` method uses `System.Globalization.CultureInfo.InvariantCulture` for double parsing. This is correct for JSON numbers.
+
+- [MINOR] R1: The `Populate` method returns `HashSet<string> present` but does not use it for anything other than the fallback checks in `ParseRelationship` and `ParseGroup`. This is correct.
+
+- [MINOR] R1: The `ParseRelationship` method creates a new `CopierRelationship()` and then calls `Populate`. The property initializers on `CopierRelationship` set defaults like `QuantityRatio = 1.0`, `MaxPositionSize = 100`, `ArmedForLive = false`. `Populate` only sets properties that are present in the JSON. This satisfies constraint 5. No issue.
+
+- [MINOR] R1: The `ParseGroup` method creates a new `CopierGroup()` and calls `Populate`. Same as above.
+
+- [MINOR] R1: The `lock (_lock)` block is entered AFTER all parsing is done. The `Populate`, `ParseRelationship`, and `ParseGroup` methods do not access shared state. This is correct for lock discipline.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` does not handle the case where the dictionary property is null in the target object. `prop.SetValue(target, value, null)` sets it to the new dictionary. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` does not handle the case where the list property is null. Same as above.
+
+- [MINOR] R1: The `Populate` method does not handle `JTokenType.None` or other edge cases. The `TryConvertToken` method handles null at the top. No issue.
+
+- [MINOR] R1: The `aliasMap` is created inside `LoadFromDisk` on every call. This is a minor performance issue but not a defect.
+
+- [MINOR] R1: The `TryConvertToken` method is a local function inside `LoadFromDisk`. This is fine for C# 8.0.
+
+- [MINOR] R1: The `Populate`, `ParseRelationship`, and `ParseGroup` methods are local functions inside `LoadFromDisk`. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `bool` uses `bool.TryParse(s, out bool b)`. `bool.TryParse` accepts "True", "False", and their case-insensitive variants. It does not accept "0" or "1". This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `int` uses `int.TryParse(s, out int i)`. This accepts strings like "123". It does not accept floating-point strings like "1.5". This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `double` uses `double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double d)`. This accepts "1.5", "1,5" (with comma as decimal? No, InvariantCulture uses period as decimal separator). This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `double` accepts `JTokenType.Integer` and `JTokenType.Float`. It does not accept `JTokenType.String` that represents a number? Wait, it does: the string case is handled by the `if (token.Type == JTokenType.String)` block inside the double section. Yes, it does. Correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `int` accepts `JTokenType.Integer` and `JTokenType.String`. It does not accept `JTokenType.Float` (e.g., `1.0`). If the JSON has `"FixedLotSize": 1.0`, `TryConvertToken` for int returns false, and the property is left at default (1). This is a change from the BEFORE code, where `(int)jObj["FixedLotSize"]` would throw on a float value, causing the entire load to fail. The AFTER code silently uses the default. This is more permissive but could mask a configuration error. However, `SaveToDisk` writes integers as integers, so this only affects hand-edited files. Not a blocker.
+
+- [MINOR] R1: The `TryConvertToken` method for `double` accepts `JTokenType.Integer` and `JTokenType.Float`. If the JSON has `"QuantityRatio": "1.5"` (string), it parses correctly. If it has `"QuantityRatio": true` (boolean), it returns false. This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where `prop.SetValue` throws. If the property setter throws (e.g., validation logic), the exception propagates out of `Populate`, out of `ParseRelationship`/`ParseGroup`, and is caught by the outer try/catch, which logs and leaves the engine with no configuration. This is fail-closed. Acceptable.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` uses `TryConvertToken(p.Value, typeof(double), out dv)` recursively. If `TryConvertToken` returns false, the entry is skipped. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` does not use `TryConvertToken` recursively; it directly converts to string. This is inconsistent with the double dictionary handling but produces the same result (everything becomes a string). Not a defect.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` does not use `TryConvertToken` recursively; it directly converts to string. Same as above.
+
+- [MINOR] R1: The `Populate` method uses `System.Reflection.BindingFlags.IgnoreCase` which is correct for case-insensitive property matching. However, the `aliasMap` is case-sensitive. If a user writes `"LEADERACCOUNT"` in JSON, it won't match the alias `"leaderAccount"`, but `type.GetProperty("LEADERACCOUNT")` with `IgnoreCase` will find `LeaderAccountName`. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for enums uses `Enum.TryParse(targetType, s, true, out object e)`. The `true` parameter enables case-insensitive parsing. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for enums checks `Enum.IsDefined(targetType, e)` after parsing. This ensures that only valid enum values are accepted. This satisfies constraint 3.
+
+- [MINOR] R1: The `TryConvertToken` method for enums also handles integer tokens: `int i = token.Value<int>(); object e = Enum.ToObject(targetType, i); if (Enum.IsDefined(targetType, e)) { value = e; return true; }`. This allows integer enum values in JSON. The BEFORE code did not handle enums at all. This is new behavior. It is correct.
+
+- [MINOR] R1: The `Populate` method adds `prop.Name` to `present` only if `TryConvertToken` succeeds. This is correct: if the value is malformed, the property is not considered "present" and the fallback is applied.
+
+- [MINOR] R1: The `ParseRelationship` method checks `!present.Contains("Id")` to apply the fallback. If the JSON contains `"Id": ""` (empty string), `TryConvertToken` succeeds, `present` contains `"Id"`, and the fallback is not applied. The relationship gets an empty string Id. This is correct: the user explicitly set it to empty.
+
+- [MINOR] R1: The `ParseGroup` method checks `!present.Contains("FollowerAccounts")` to apply the fallback. If the JSON contains `"FollowerAccounts": null`, `TryConvertToken` returns false (null check at top), `present` does NOT contain `"FollowerAccounts"`, and the fallback `new List<string>()` is applied. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` returns false for `JTokenType.Null` (handled at top). So `"FollowerAccounts": null` results in the fallback. Correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` returns false for `JTokenType.Null`. So `"PerTickerRatios": null` results in the default empty dictionary. Correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the JSON property name matches a property but the property type is not handled by `TryConvertToken` and the fallback `token.ToObject(targetType)` throws. The try/catch in `TryConvertToken` catches it and returns false. The property is skipped. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `string` has `value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString();`. If the token is a `JTokenType.Date`, `token.ToString()` returns the ISO 8601 string representation. This could be assigned to a string property. This is a data-integrity issue but unlikely. Not a blocker.
+
+- [MINOR] R1: The `TryConvertToken` method for `bool` does not handle `JTokenType.Integer` (0 or 1). If the JSON has `"IsEnabled": 1`, it returns false, and the property is left at default (true for `IsEnabled`). The BEFORE code would throw on `(bool)jObj["IsEnabled"]` for an integer value. The AFTER code silently uses the default. This could mask a configuration error. However, `SaveToDisk` writes booleans as booleans. Not a blocker.
+
+- [MINOR] R1: The `TryConvertToken` method for `int` does not handle `JTokenType.Float`. If the JSON has `"FixedLotSize": 1.0`, it returns false, and the property is left at default (1). The BEFORE code would throw. Same as above.
+
+- [MINOR] R1: The `TryConvertToken` method for `double` does not handle `JTokenType.Boolean`. If the JSON has `"QuantityRatio": true`, it returns false, and the property is left at default (1.0). The BEFORE code would throw. Same as above.
+
+- [MINOR] R1: The `Populate` method uses `System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance`. If a property is `internal` or `protected`, it won't be found. The copier properties are likely public. This is fine.
+
+- [MINOR] R1: The `Populate` method does not handle indexed properties (e.g., `this[int index]`). The copier classes don't have indexed properties. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`. This satisfies constraint 1. The `PerTickerRatios` property initializer must also use `OrdinalIgnoreCase`. The ticket says "A test pins the comparer." So this is verified by tests. No issue.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` uses `StringComparer.OrdinalIgnoreCase`. Same as above.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property of type `JObject` or `JToken`. The copier classes don't have such properties. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `string` returns `token.ToString()` for non-string tokens. This includes `JTokenType.Object`, `JTokenType.Array`, etc. This could produce JSON strings like `{"key":"value"}` or `[1,2,3]` assigned to a string property. This is a data-integrity issue. If `LeaderAccountName` is accidentally an object in JSON, it becomes the string `{"key":"value"}` which won't match any account. This is fail-closed (no trades copied). Not a money-losing defect.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` uses `t.ToString()` for non-string tokens. If `FollowerAccounts` contains a nested object, it becomes a garbage string. This account name won't match any real account, so no trades are copied to it. This is fail-closed. Not a money-losing defect.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` uses `p.Value.ToString()` for non-string values. If `CustomSymbolMappings` contains a nested object as a value, it becomes a garbage string. This mapping won't match any real symbol, so symbol conversion fails and the trade is skipped or uses the original symbol. This could lead to incorrect symbol resolution. This is the MAJOR defect identified above.
+
+- [MINOR] R1: The `Populate` method does not validate that the JSON property names are valid C# property names. If a JSON property name contains special characters, `type.GetProperty` returns null and it's skipped. This is fine.
+
+- [MINOR] R1: The `TryConvertToken` method for enums uses `Enum.TryParse` with `true` for ignoreCase. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for enums uses `Enum.IsDefined` which is slow but acceptable for configuration loading.
+
+- [MINOR] R1: The `Populate` method uses `System.Reflection.BindingFlags.IgnoreCase` which is correct.
+
+- [MINOR] R1: The `Populate` method does not cache reflection results. This is a performance issue but not a defect for a configuration load that happens once.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` does not preserve the original case of keys. It uses `p.Name` as the key. This is correct: JSON property names are case-sensitive, and the dictionary uses `OrdinalIgnoreCase` for lookups, so the original case is preserved but lookups are case-insensitive.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` preserves the order of elements. This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the JSON property name matches a property but the property has a different type than the JSON token, and the fallback `token.ToObject(targetType)` succeeds but produces an incorrect value. For example, if a future property is a complex type with its own dictionary properties, `token.ToObject` would use Json.NET's default deserialization which might not use `OrdinalIgnoreCase`. This is a future risk but not a defect in this patch.
+
+- [MINOR] R1: The `TryConvertToken` method for `string` does not handle `JTokenType.Bytes` or `JTokenType.Guid` or `JTokenType.TimeSpan`. These are unlikely in copier config. Not a defect.
+
+- [MINOR] R1: The `TryConvertToken` method for `bool` does not handle `JTokenType.Integer` where 0 = false, 1 = true. This is a deviation from Json.NET's default behavior. If a user hand-edits the config and writes `"IsEnabled": 1`, it will be silently ignored and default to true. This could be surprising but not a money-losing defect.
+
+- [MINOR] R1: The `TryConvertToken` method for `int` does not handle `JTokenType.Float` with integral value (e.g., `1.0`). This is a deviation from Json.NET's default behavior. Same as above.
+
+- [MINOR] R1: The `TryConvertToken` method for `double` does not handle `JTokenType.Boolean`. Same as above.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object is null. It is never called with null target. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where `jObj` is null. It is never called with null `jObj`. Fine.
+
+- [MINOR] R1: The `ParseRelationship` and `ParseGroup` methods are called with `kv.Key` as the key. For the structured path, `kv.Key` is the JSON property name (e.g., `"Sim101_SimCopy2"`). For the flat legacy path, `kv.Key` is the leader account name (e.g., `"Sim101"`). This is correct.
+
+- [MINOR] R1: The `ParseRelationship` method uses `key.Contains("_") ? key.Split('_')[0] : key` for `LeaderAccountName` fallback. If the key is `"Sim101_SimCopy2_extra"`, `Split('_')` returns `["Sim101", "SimCopy2", "extra"]`, and `[0]` is `"Sim101"`. This is correct. The `FollowerAccountName` fallback uses `[1]` which is `"SimCopy2"`. The extra part is ignored. This is acceptable.
+
+- [MINOR] R1: The `ParseGroup` method uses `key` as `GroupName` fallback. This is correct.
+
+- [MINOR] R1: The `Populate` method uses `System.Reflection.BindingFlags.IgnoreCase` which is correct for case-insensitive property matching. However, if there are two properties that differ only in case (e.g., `Id` and `ID`), `type.GetProperty` with `IgnoreCase` will return one of them (the first one found). This is a C# limitation. The copier classes should not have such properties. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` uses `TryConvertToken(p.Value, typeof(double), out dv)` recursively. If the value is a string that fails to parse, the entry is skipped. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` does not skip entries with non-string values; it converts them to string via `ToString()`. This is inconsistent with the double dictionary but acceptable.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` does not skip entries with non-string values; it converts them to string via `ToString()`. Same as above.
+
+- [MINOR] R1: The `Populate` method does not handle the case where `TryConvertToken` returns true but sets `value` to null. `TryConvertToken` never sets `value` to null when returning true (except for string where it could set to null if the token is a null string? No, null token is handled at the top). So this is fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `string` has `value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString();`. If the token is a string with value null (which is not possible in JSON), `Value<string>()` returns null. But JSON null is handled at the top. So this is fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `bool`, `int`, `double` does not handle the case where `token.Value<T>()` throws. The try/catch catches it and returns false. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for enums does not handle the case where `Enum.ToObject` throws. The try/catch catches it. Correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` and `Dictionary<string, string>` does not handle the case where `((JObject)token).Properties()` throws (if token is not an object, it returns false earlier). Correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` does not handle the case where `((JArray)token)` throws (if token is not an array, it returns false earlier). Correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where `prop.SetValue` throws due to an invalid value (e.g., setting a string property to an int). `TryConvertToken` ensures type compatibility, so this shouldn't happen. If it does, the exception propagates and is caught by the outer try/catch. This is fail-closed. Acceptable.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property setter has side effects. This is fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property is a value type and `TryConvertToken` returns false. The property remains at its default value. This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property is a reference type and `TryConvertToken` returns false. The property remains at its default value (likely null or the property initializer value). This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property is a collection and `TryConvertToken` returns false. The property remains at its default value (likely an empty collection from the property initializer). This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property is an enum and `TryConvertToken` returns false. The property remains at its default value (likely the first enum member, e.g., `CopierSizingMode.FixedRatio`). This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property is a nullable type. The copier properties are not nullable. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object's property is a `DateTime` or `TimeSpan`. The copier classes don't have such properties. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `string` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `bool` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `int` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `double` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for enums does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `TryConvertToken` method for `List<string>` does not handle `JTokenType.None`. Handled at top. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where `jObj` is an empty object. It iterates zero properties and returns an empty `present`. The fallbacks in `ParseRelationship` and `ParseGroup` are all applied. This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where `jObj` has duplicate properties (same name with different case). `JObject` properties are case-sensitive, so `"LeaderAccountName"` and `"leaderAccount"` are distinct properties. The alias map maps `"leaderAccount"` to `"LeaderAccountName"`, so both will set the same property. The second one overwrites the first. This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the JSON property name matches an alias but the canonical property name also exists in the JSON. Both will set the same property. Last one wins. This is correct.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` uses `StringComparer.OrdinalIgnoreCase`. If the JSON has duplicate keys with different case (e.g., `"MES"` and `"mes"`), `JObject` treats them as distinct properties (case-sensitive), but the dictionary will treat them as the same key. The last one wins. This is correct and matches Json.NET's default behavior for case-insensitive dictionaries? Actually, Json.NET's default `DeserializeObject` would throw on duplicate keys if the dictionary is case-insensitive? No, Json.NET uses the dictionary's comparer. If the dictionary uses `OrdinalIgnoreCase`, adding a duplicate key throws. But here, the code iterates properties and does `dict[p.Name] = (double)dv;` which overwrites. This is acceptable.
+
+- [MINOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` has the same behavior. Acceptable.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property of type `object` or `dynamic`. The copier classes don't have such properties. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a custom converter. The copier classes don't have custom converters. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object implements `ICustomTypeDescriptor` or similar. The copier classes don't. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a non-public setter but a public getter. `GetSetMethod()` returns null, so the property is skipped. This is correct.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that requires a non-null value. If `TryConvertToken` returns true with a null value (which it doesn't), `SetValue` would throw. Not an issue.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that throws on invalid values. If `TryConvertToken` returns true with a valid value, the setter shouldn't throw. If it does, the exception propagates and is caught by the outer try/catch. Fail-closed. Acceptable.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that has side effects that modify other properties. This is fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that modifies the JSON object being iterated. This would cause a `Collection was modified` exception. Unlikely. Not a defect.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that calls back into `LoadFromDisk`. Unlikely. Not a defect.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that acquires a lock. This could cause deadlock if the lock is held by another thread. `Populate` is called inside `lock (_lock)`, so if the property setter tries to acquire `_lock`, it would deadlock. The copier properties are simple POCO properties without locks. This is fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that calls `Account.Flatten` or similar. The copier properties don't do this. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that modifies the `_relationships` or `_groups` collections. The copier properties don't do this. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that fires events. The copier properties might fire `PropertyChanged` events. If those event handlers access the collections being modified, there could be issues. However, the collections are cleared before parsing and populated after. The event handlers would see the new relationship/group being constructed. This is probably fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that requires the object to be in a certain state. The object is newly created, so it's in its default state. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that validates the value against other properties. Since properties are set in arbitrary order (JSON property order), validation might fail if properties are set in the wrong order. The copier classes likely don't have cross-property validation in setters. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that throws if the value is the same as the current value. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Obsolete]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Conditional]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DebuggerStepThrough]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[MethodImpl]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComRegisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComUnregisterFunction]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AllowPartiallyTrustedCallers]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityTransparent]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecuritySafeCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SecurityCritical]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[SuppressUnmanagedCodeSecurity]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[UnmanagedFunctionPointer]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[return: MarshalAs]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DllImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComImport]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[Guid]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[InterfaceType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ClassInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[CoClass]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComSourceInterfaces]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComVisible]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[DispId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ProgId]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComDefaultInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ComEventInterface]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibType]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibFunc]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[TypeLibVar]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[AutomationProxy]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[PrimaryInteropAssembly]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate` method does not handle the case where the target object has a property with a setter that is `[ImportedFromTypeLib]`. Unlikely. Fine.
+
+- [MINOR] R1: The `Populate`

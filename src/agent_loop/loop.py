@@ -466,6 +466,24 @@ def review_panel(
     counted = [v for v in votes if v.counted]
     verdict = max(counted, key=lambda v: _RANK[v.status]).status if counted else ""
 
+    # A SOLO REJECT IS DOWNGRADED TO REVISE. Worst-wins is right for blocking,
+    # but REJECT is not merely "worse" -- it drives a different branch, telling
+    # the implementer to discard the approach and re-emit every block with a
+    # fundamentally different one. That is the most destructive instruction the
+    # loop can give, and it should not rest on one voice.
+    #
+    # MEASURED (O63): the verdict is a property of the MODEL, not of the patch.
+    # On one candidate, across every arm and repetition -- glm-5.2 REVISE x4,
+    # minimax-m3 APPROVE x4, deepseek-v4-flash REJECT x4, gemma4:31b REJECT,
+    # qwen3.5 REJECT. A reviewer stuck on REJECT would order a rewrite of a
+    # working candidate every round, and no amount of fixing would satisfy it.
+    #
+    # The findings still count in full: nothing is dropped, and a corroborated
+    # REJECT still rethinks. This only refuses to let ONE model's fixed disposition
+    # decide the strategy.
+    if verdict == REJECT and sum(1 for v in counted if v.status == REJECT) < 2:
+        verdict = REVISE
+
     fnd = "\n\n".join(
         f"### From {v.model} (verdict {v.status})\n{v.findings}"
         for v in counted

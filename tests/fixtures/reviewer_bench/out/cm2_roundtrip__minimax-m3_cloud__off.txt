@@ -1,0 +1,39 @@
+Looking at this patch, I need to verify it correctly addresses the lossy round-trip defect while honoring all six constraints and settled decisions.
+
+**Tracing the logic carefully:**
+
+1. **Shared parse path (constraint 6):** The patch collapses three hand-typed property lists into one `Populate` helper using reflection + aliasMap. New fields like `SizingMode`, `Mode`, `PerTickerRatios`, `CustomSymbolMappings`, `StealthMode`, `MaxSlippageTicks` are all in the aliasMap and will be set on any object that exposes them.
+
+2. **`present` set for fallback gating:** `Populate` adds `prop.Name` (the canonical .NET name) to a `HashSet<string>` with `StringComparer.OrdinalIgnoreCase` only when `TryConvertToken` returns true. `ParseRelationship` and `ParseGroup` check `!present.Contains("Id"/...)` before applying key-derived fallbacks. This correctly handles the flat-legacy case where a property-initializer default like `LeaderAccountName = ""` would have blocked a `??` fallback.
+
+3. **No `ObjectCreationHandling.Replace` (constraint 1):** `Populate` uses `new CopierRelationship()` / `new CopierGroup()` first, then assigns via `prop.SetValue`. Property initializers (including `StringComparer.OrdinalIgnoreCase`) are preserved. The dictionary comparers are also explicitly set inside `TryConvertToken`.
+
+4. **camelCase aliases (constraint 2):** The aliasMap maps `leaderAccount`→`LeaderAccountName`, `quantityRatio`→`QuantityRatio`, `maxPositionSize`→`MaxPositionSize`, etc. These are distinct keys in the aliasMap, not relying on case-insensitive CLR matching.
+
+5. **Enum tolerance (constraint 3a):** `TryConvertToken` for enums uses `Enum.TryParse(..., true, ...) && Enum.IsDefined(...)`. Unknown names return false, property is not set, `present` does not contain it, default is retained, no throw. The outer try/catch is never reached for an unknown enum.
+
+6. **Malformed-number fail-closed (constraint 3b):** For `int`/`double`/`bool`, if conversion fails, `TryConvertToken` returns false, property is not set, default from property initializer is retained (e.g., `MaxPositionSize` stays 100, `QuantityRatio` stays 1.0). Never silently zero.
+
+7. **Flat legacy (constraint 4):** The `else` branch deserializes the bare object as `Dictionary<string, JObject>`, then calls `ParseRelationship(kv.Value, kv.Key)`. The key feeds the `LeaderAccountName`/`FollowerAccountName` fallback when absent. New fields flow through `Populate` like any other.
+
+8. **Defaults preserved (constraint 5):** Absent fields are never set, so property-initializer defaults apply. `ArmedForLive` defaults to false because the initializer is false; it is never coerced to true by this path.
+
+9. **Lock discipline:** Lock is held only around collection mutation and population. No `Account.Flatten/Cancel/Submit/CreateOrder` reachable under `_stateLock`. No lock-ordering change. Local functions don't capture shared state.
+
+10. **No new naked-risk paths:** Failures in `TryConvertToken` preserve defaults rather than zeroing caps/ratios. The `present` set correctly gates the key-derived fallbacks so an explicit `null` in JSON does not leak the initializer.
+
+11. **Compile compatibility:** Local functions, `out` variables, and pattern matching are C# 7.0+ features supported on both net48 and net8.0. No new dependencies.
+
+12. **Regressions:** The original three hand-typed lists are replaced by one reflection-driven path. The per-site fallback sets (`Id`, `LeaderAccountName`, `FollowerAccountName`, `GroupName`, `FollowerAccounts`) match the original code's behavior, gated on presence rather than null.
+
+The mechanical gates (830 passed, 0 failed, 10 expected-failures-now-green, all 10 acceptance green) align with the constraints called out as test-pinned.
+
+<<<VERDICT>>>
+APPROVE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- NONE
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- NONE
+<<<END REQUIRED>>>

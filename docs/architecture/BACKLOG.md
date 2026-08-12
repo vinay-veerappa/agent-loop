@@ -2644,3 +2644,109 @@ mutations killed — one of which appeared to survive until I noticed my own
 mutation script had mangled `\Z` and never applied.
 
 ---
+
+#### O62. Six catalogue models could never be dispatched — CLOSED
+
+Found by the reviewer sweep, not by reading. `gemini-3.6-flash`,
+`gemini-3.5-flash`, `gemini-3.1-pro-preview`, `claude-opus-5`, `claude-sonnet-5`
+and `claude-haiku-4-5` all answered `HTTPError 404: Not Found` — an OLLAMA
+error. `split_model` treats any spec without a known backend prefix as ollama,
+so all six were being asked of the local ollama host. The `agy:` entries in the
+same dict already carry their prefix, so the convention existed and these broke
+it.
+
+The cost was not the failure but its message: *the model does not exist*, which
+reads as a stale id and hides the real cause. Fixed in the key, not the
+dispatcher — a name stem cannot imply a backend, since `agy:claude-sonnet-4-6`
+and `anthropic:claude-sonnet-5` are one vendor reached two ways.
+
+Red→green verified (7 failures before). The first draft of the test read the
+`note` field for API-key names and MISSED all three gemini entries, whose key
+requirement lives in a `#` comment; replaced with a vendor-stem rule, not kept
+alongside. `test_model_catalog`'s cost guard keyed on `startswith("claude-")`
+and had to move to the prefix — its own comment already said costs are "keyed by
+how the model is REACHED, not by family".
+
+---
+
+#### O63. The reviewer panel was one reviewer and a rubber stamp — MEASUREMENT
+
+The first labelled measurement of the REVIEWER role (the arbiter had 18
+configurations; the reviewer had none). One review prompt — CM2 round 2, a
+candidate that passed every mechanical gate — against every reachable model.
+
+**Verdicts are a property of the MODEL, not of the patch.** Across every arm and
+repetition, on the same candidate:
+
+| model | verdicts |
+|---|---|
+| `glm-5.2` | REVISE ×4 |
+| `minimax-m3` | APPROVE ×4 |
+| `deepseek-v4-flash` | REJECT ×4, REVISE ×1 |
+| `gemma4:31b`, `qwen3.5` | REJECT |
+
+The panel takes the WORST verdict, so panel composition — not the code — decides
+it. Two consequences:
+
+* `minimax-m3` can never change a verdict, because APPROVE is the best rank under
+  worst-wins. Its only possible contribution is findings, and it filed **0 on
+  six recorded occasions** (O3 patch, CM2 rounds 2/3/4, two bench draws) at
+  ~197s and ~22k tokens each, of which 91559 characters were reasoning it
+  discarded to return a 129-byte `APPROVE / NONE / NONE`. It is not a pure zero
+  — on the O29 review it raised the point that became O35 — so the rate is
+  1-in-7, not 0-in-7.
+* `deepseek-v4-flash` cannot simply replace it. A REJECT triggers the loop's most
+  destructive branch (`RETHINK THE APPROACH — do not just tweak these lines`),
+  so a reviewer stuck on REJECT would order a rewrite of a working candidate
+  every round.
+
+**Review quality is a per-call LOTTERY, not a model property.** `glm-5.2` on five
+byte-identical draws found the case's strongest defect (`null-section-wipes-
+config`) on rep 2 and not on reps 1 or 5. `deepseek-v4-flash` never found it,
+0-for-4. Cause is not context — every call is a stateless two-message request
+and `_fit_num_ctx` sends 73728 for an 8119-token prompt, so nothing is
+truncated — it is sampling at `temperature=0.1` over a long generation whose
+content is a search over what to examine.
+
+This undercuts the panel's stated rationale. Two families addresses SYSTEMATIC
+blind spots; the dominant failure mode measured here is STOCHASTIC OMISSION,
+which is bought off by independent draws instead.
+
+⚠️ ONE CASE. O28's lesson stands: the bottleneck is the corpus, not the pool. The
+`minimax` result is the exception — six independent zeroes is an absence, not a
+ranking.
+
+---
+
+#### O63 (resolution). Panel = glm-5.2 + deepseek-v4-flash, solo REJECT downgraded — CLOSED
+
+Decided by the user from the measurement above: keep two families (the stated
+policy), replace the seat, and make the hair trigger safe.
+
+* `roles.reviewer.extra_members` is now `deepseek-v4-flash:cloud`. Different
+  family from glm, files findings on every draw, ~20s against minimax's ~197s.
+* `review_panel` DOWNGRADES AN UNCORROBORATED REJECT TO REVISE. Worst-wins is
+  kept everywhere else, and every finding from every counted reviewer still
+  reaches the arbiter — only the "rethink the approach, re-emit every block"
+  branch now needs two voices.
+
+Verified red→green against the real `review_panel` with `chat` stubbed at the
+seam: 4 failures before, 7 passing after, and the 3 that pass both ways are the
+controls (a corroborated REJECT still rejects; nothing below REJECT moves). The
+first draft of that test recomputed the aggregation in a helper and would have
+passed with or without the production rule — rewritten, not kept.
+
+**`kimi-k2.7-code` was evaluated for the seat and rejected on two grounds.** Six
+arms: 3 returned nothing at all (two exhausted the budget on 200k+ chars of
+reasoning, one HTTP 500), one returned APPROVE/0, and its best draw took 545s
+and 166,890 chars of reasoning to find only the weaker defect. Structurally it is
+also the IMPLEMENTER, so seating it would have the model that wrote the patch
+review the patch. `kimi-k3` is HTTP 402 — not covered by the subscription.
+
+Known cost of the new seat: 1 of 5 draws degenerated to 48000 tokens and
+UNPARSEABLE, which makes the panel INVALID and retries the round. That is the
+designed response, but expect it at roughly that rate.
+
+⚠️ STILL ONE CASE. Nothing here ranks models in general.
+
+---

@@ -1,0 +1,1273 @@
+I need to review this patch carefully against the constraints, focusing on the six required constraints and the known real defects.
+
+Let me analyze the proposed code:
+
+1. **No ObjectCreationHandling.Replace** - The code uses `Populate` with reflection, not `JsonConvert.DeserializeObject` with `ObjectCreationHandling.Replace`. Good.
+
+2. **camelCase aliases preserved** - The aliasMap includes `leaderAccount`, `followerAccount`, `quantityRatio`, `maxPositionSize`, etc. Good.
+
+3. **Unrecognised enum value must NOT throw** - `TryConvertToken` for enums uses `Enum.TryParse` and `Enum.IsDefined`. If not defined, it returns false, so the property isn't set. This means the property initialiser/default remains. Good - it doesn't throw.
+
+   BUT: malformed numbers must fail closed, not silently become zero. `TryConvertToken` for `int` and `double` returns false on malformed values, so the property isn't set and the initialiser/default remains. Good.
+
+4. **Flat legacy form must keep working and carry new fields** - The flat path now uses `ParseRelationship`. Good.
+
+5. **Fields absent get existing defaults, ArmedForLive defaults false** - Since `Populate` only sets properties that successfully convert, absent fields keep their property initialiser values. Need to verify `ArmedForLive` initialises to false.
+
+6. **Three sites, one behaviour** - All three use `ParseRelationship`/`ParseGroup` which use `Populate`. Good.
+
+Now let me look for issues:
+
+**Issue 1: Enum handling for `Mode` property**
+`CopierRelationship` likely has a `Mode` property of some enum type. `Enum.TryParse` with `ignoreCase: true` and `Enum.IsDefined` will reject unknown enum names. But what about integer values that are out of range? `Enum.ToObject` then `Enum.IsDefined` handles that. Good.
+
+**Issue 2: `PerTickerRatios` type**
+The ticket says `PerTickerRatios` is one of the fields. The implementer notes mention `Dictionary<string, double>`. The `TryConvertToken` handles `Dictionary<string, double>` with `StringComparer.OrdinalIgnoreCase`. Good.
+
+**Issue 3: `CustomSymbolMappings` type**
+The implementer notes mention `Dictionary<string, string>`. The `TryConvertToken` handles `Dictionary<string, string>` with `StringComparer.OrdinalIgnoreCase`. Good.
+
+**Issue 4: Property initialisers**
+The key question: do `CopierRelationship` and `CopierGroup` have property initialisers that set the correct defaults? The `Populate` method uses `prop.SetValue(target, value, null)`. If a field is absent, the property isn't set, so the initialiser/default remains. This relies on the class having proper defaults.
+
+But wait - the implementer notes say: "This prevents a non-null property-initializer default (e.g., `LeaderAccountName = ""`) from blocking the fallback to the dictionary key." This suggests the classes DO have property initialisers. The `Populate` returns `present` set of property names that were successfully resolved. Then `ParseRelationship` checks if `LeaderAccountName` was present; if not, it applies the key-derived fallback.
+
+**Issue 5: What about `FollowerAccounts` for groups?**
+In `ParseGroup`, if `FollowerAccounts` is absent, it sets to `new List<string>()`. But what if `FollowerAccounts` is present but malformed? `TryConvertToken` returns false, so it's not in `present`, and `ParseGroup` sets it to empty list. The ticket says "numeric/bool defaults retained on malformed values instead of silently becoming zero" - but for a list, empty list is probably acceptable. However, the ticket constraint 3 says "A malformed NUMBER must fail closed -- refusing the entry is fine, keeping the intended default is fine, silently producing zero is not." For lists, the default is empty list, so that's fine.
+
+**Issue 6: The `present` HashSet uses `prop.Name`**
+`present.Add(prop.Name)` adds the canonical property name. Then checks like `!present.Contains("Id")` work. Good.
+
+**Issue 7: Reflection binding flags**
+`type.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)` - this will find the property case-insensitively. But what if there are multiple properties with the same name different case? Unlikely. The `IgnoreCase` flag means it will match `leaderAccountName` to `LeaderAccountName`. But the aliasMap already maps aliases, so this is mostly for direct canonical names.
+
+**Issue 8: What about the `Mode` property?**
+The aliasMap has `"mode", "Mode"`. But what is the actual enum type? If `Mode` is an enum, `TryConvertToken` handles it. If it's a string, it handles strings. Good.
+
+**Issue 9: `StealthMode`**
+AliasMap has it. Good.
+
+**Issue 10: `SizingMode`**
+AliasMap has it. Good.
+
+**Issue 11: `MaxSlippageTicks`**
+AliasMap has it. Good.
+
+**Issue 12: What about the `PerTickerRatios` and `CustomSymbolMappings` being complex objects?**
+`TryConvertToken` handles `Dictionary<string, double>` and `Dictionary<string, string>`. But what if the JSON has nested objects with non-string keys or values? For `PerTickerRatios`, if a value is malformed, it's skipped. For `CustomSymbolMappings`, all values are converted to strings. Good.
+
+**Issue 13: The flat legacy path**
+`var dict = JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json);` - this deserializes the entire JSON. If the JSON is a bare object with leader account names as keys, this works. But what if the JSON has `Relationships`/`Groups` wrapper and we reach the else branch? The `hasStructuredSections` check should catch that. But what if only `Relationships` exists and not `Groups`? `hasStructuredSections` is true. Good.
+
+Wait - what if `jRoot["Relationships"]` exists but is not a JObject? The code does `jRoot["Relationships"] as JObject ?? jRoot["relationships"] as JObject;`. If it's a JArray or JValue, it becomes null. Then if neither Relationships nor Groups exist as JObject, `hasStructuredSections` is false and it tries to parse as flat legacy. That could misparse a malformed structured file. But the original code had the same behavior.
+
+**Issue 14: The `Populate` method and property initialisers**
+The implementer notes mention: "applying key-derived fallbacks only when the corresponding property was absent. This prevents a non-null property-initializer default (e.g., `LeaderAccountName = ""`) from blocking the fallback to the dictionary key."
+
+But wait - in `Populate`, `present.Add(prop.Name)` is only called when `TryConvertToken` succeeds. If `LeaderAccountName` is present in JSON as `""` (empty string), `TryConvertToken` for string will succeed (empty string is valid), so `LeaderAccountName` will be in `present`. Then `ParseRelationship` won't apply the key-derived fallback. This is correct behavior - if the file explicitly sets empty string, we should respect it.
+
+But what if the JSON has `"LeaderAccountName": null`? `TryConvertToken` returns false for null, so it's not in `present`, and fallback applies. Good.
+
+**Issue 15: What about `FollowerAccountName` fallback?**
+`rel.FollowerAccountName = key.Contains("_") ? key.Split('_')[1] : "SimCopy2";` - same as original. Good.
+
+**Issue 16: What about `GroupName` fallback?**
+`grp.GroupName = key;` - same as original. Good.
+
+**Issue 17: What about `LeaderAccountName` for groups?**
+`grp.LeaderAccountName = "Sim101";` - same as original. Good.
+
+**Issue 18: The `aliasMap` uses `StringComparer.Ordinal`**
+This means alias lookup is case-sensitive. The aliases are all lowercase camelCase. If someone writes `LeaderAccount` (PascalCase but not exact canonical), it won't match the alias. But `GetProperty` with `IgnoreCase` will match the canonical name directly. So `LeaderAccount` would be found as property `LeaderAccountName` and set. Good.
+
+But what about `leaderaccount` (all lowercase)? It won't match alias (case-sensitive), and `GetProperty` with `IgnoreCase` will match `LeaderAccountName`. So it works. Good.
+
+What about `leaderAccountName`? Alias map doesn't have it, but `GetProperty` with `IgnoreCase` matches `LeaderAccountName`. Good.
+
+So the aliasMap is mainly for the explicitly different camelCase names.
+
+**Issue 19: What about properties not in aliasMap?**
+`propName = jp.Name` and then `GetProperty` with `IgnoreCase`. So any canonical or case-insensitive canonical name works. Good.
+
+**Issue 20: The `present` set and defaults**
+The ticket constraint 5 says "Fields absent from the file must still get their existing defaults. ArmedForLive in particular defaults to FALSE."
+
+Since `Populate` only sets successfully converted properties, absent fields keep their initial values. This relies on `CopierRelationship.ArmedForLive` and `CopierGroup.ArmedForLive` defaulting to false. We can't see the class definition in the patch, but the original code explicitly defaulted to false. If the class has `public bool ArmedForLive { get; set; } = false;`, good. If not, this could be a problem. But we have to assume the class definitions are unchanged and correct.
+
+**Issue 21: Malformed values fail closed vs. keep default**
+Constraint 3 says: "A malformed NUMBER must fail closed -- refusing the entry is fine, keeping the intended default is fine, silently producing zero is not."
+
+The current code "keeps the intended default" by not setting the property when conversion fails. This is acceptable per the constraint. "Refusing the entry" would mean not adding the relationship/group. The code adds it with defaults. Both are allowed.
+
+But wait - is there a case where a malformed value for a critical field like `ArmedForLive` could cause a problem? If `ArmedForLive` is malformed (e.g., `"armedForLive": "maybe"`), `TryConvertToken` returns false, so it keeps the default false. Good - it doesn't become true.
+
+**Issue 22: What about `IsEnabled`?**
+If `IsEnabled` is malformed, it keeps default. What's the default? Likely true. If someone explicitly sets `"isEnabled": "bad"`, it defaults to true (enabled). That's probably acceptable.
+
+**Issue 23: The `try/catch` around the whole body**
+The original code wraps everything in try/catch. The new code does too. If anything throws, `_relationships` and `_groups` are cleared and empty. This matches constraint 3's "silently disarm" concern, but the constraint says this is existing behavior and a test pins it. The new code maintains this.
+
+**Issue 24: What could throw?**
+- `JObject.Parse(json)` could throw - caught.
+- `Populate` uses reflection - `prop.SetValue` could throw? It's wrapped in try/catch inside `TryConvertToken`, but `Populate` itself doesn't catch. However, `TryConvertToken` catches exceptions and returns false. `prop.SetValue` is inside the `if (TryConvertToken(...))` block. If `SetValue` throws, `Populate` would propagate. But `SetValue` shouldn't throw if `value` is correctly typed.
+- `JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json)` could throw - caught.
+
+**Issue 25: `Enum.IsDefined` behavior**
+For flags enums, `Enum.IsDefined` returns false for combined values. If `Mode` or `SizingMode` are flags enums, this could reject valid combined values. But they're likely not flags enums.
+
+**Issue 26: `Enum.ToObject` for negative integers**
+If an enum has negative values, `Enum.ToObject` works. `Enum.IsDefined` checks. Good.
+
+**Issue 27: What about `PerTickerRatios` values that are integers?**
+`TryConvertToken` for `double` handles `JTokenType.Integer` and `JTokenType.Float`. Good.
+
+**Issue 28: What about `PerTickerRatios` with string values?**
+`TryConvertToken` for `Dictionary<string, double>` calls `TryConvertToken(p.Value, typeof(double), out dv)`. The double handler accepts strings that parse as doubles. Good.
+
+**Issue 29: What about `CustomSymbolMappings` with non-string values?**
+`TryConvertToken` for `Dictionary<string, string>` converts any value to string via `p.Value.ToString()`. Good.
+
+**Issue 30: The `present` set and `FollowerAccounts`**
+For groups, if `FollowerAccounts` is present and valid, it's in `present`. If absent or invalid, `ParseGroup` sets it to empty list. The original code also defaulted to empty list if absent. Good.
+
+**Issue 31: What about the `Id` fallback?**
+`Guid.NewGuid().ToString()` - same as original. Good.
+
+**Issue 32: The `aliasMap` is missing some aliases?**
+Original code had aliases for: `leaderAccount`, `followerAccount`, `isEnabled`, `armedForLive`, `quantityRatio`, `fixedLotMode`, `fixedLotSize`, `autoSymbolConversion`, `maxPositionSize`, `dailyLossLimit`, `isQuarantined`, `maxSlippageTicks`.
+
+New aliasMap adds: `sizingMode`, `mode`, `stealthMode`, `perTickerRatios`, `customSymbolMappings`, `groupName`, `followerAccounts`, `id`.
+
+What about `groupName`? Original group code had `GroupName = jObj["GroupName"]?.ToString() ?? kv.Key;` - no camelCase alias. New code adds `groupName` alias. Good.
+
+What about `followerAccounts`? Original had `jObj["FollowerAccounts"] ?? jObj["followerAccounts"];`. New code adds alias. Good.
+
+What about `id`? Original had `jObj["Id"]?.ToString() ?? Guid.NewGuid().ToString();` - no camelCase alias. New code adds `id`. Good.
+
+Are there any other fields in `CopierRelationship` or `CopierGroup` not covered? We can't see the full class definitions. The ticket mentions: SizingMode, Mode, PerTickerRatios, CustomSymbolMappings, StealthMode, MaxSlippageTicks. All in aliasMap.
+
+**Issue 33: What if a property is read-only?**
+`prop.GetSetMethod() == null` check skips read-only properties. Good.
+
+**Issue 34: What about `CoveredQuantity` and `RecognizedStopOrder`?**
+These are from settled decisions, not directly relevant to this config loading patch.
+
+**Issue 35: Known real defects to keep flagging**
+- UPHELD: R1: The `Error` handler in `loadSettings` swallows ALL deserialisation errors silently. This patch doesn't use `loadSettings` or `JsonSerializerSettings` with an Error handler. It uses custom `TryConvertToken`. So this specific defect isn't present.
+- UPHELD: R1: `ApplyRelationshipDefaults` is called AFTER `JsonConvert.DeserializeObject`. Not present in this patch.
+- UPHELD: R1: `NormalizeAliases` drops every alias property from the output when the canonical name is already present. Not present - this patch doesn't use `NormalizeAliases`.
+- UPHELD: R1/R2: The patch allows cross-instrument sizing in PerTickerMatrix mode when `CustomSymbolMappings` maps the leader root to a different root. This is about sizing logic, not config loading. The config loading now preserves `CustomSymbolMappings`, but the sizing logic isn't in this patch. We should check if the patch touches sizing logic - it doesn't appear to. So we shouldn't flag this unless the patch changes sizing logic.
+- UPHELD: R1: When `CustomSymbolMappings` maps to a different root and there is no `PerTickerRatios` entry for the mapped symbol. Again, sizing logic, not in this patch.
+
+So the known real defects about sizing logic with `CustomSymbolMappings` are not introduced by this patch. This patch only changes `LoadFromDisk`.
+
+**Issue 36: Compile breaks?**
+The code uses C# features compatible with C# 8.0 / .NET 4.8:
+- Local functions (`TryConvertToken`, `Populate`, `ParseRelationship`, `ParseGroup`) - C# 7.0+.
+- `out var` not used; uses `out object value` etc.
+- `HashSet<string>` with comparer.
+- Reflection APIs available.
+- `Enum.TryParse` with `ignoreCase` overload - available in .NET 4.8? Yes, `Enum.TryParse(Type, String, Boolean, Object)` was added in .NET 4.0? Let me check. Actually `Enum.TryParse(Type, Object, Object)` might not exist. The code uses `Enum.TryParse(targetType, s, true, out object e)`. This overload exists in .NET Framework? 
+
+Let me think: `Enum.TryParse` generic overloads exist. Non-generic `Enum.TryParse(Type, String, Boolean, Object)` - I believe this was added in .NET Core / .NET 5? Actually, the non-generic `Enum.TryParse` overloads:
+- `public static bool TryParse(Type enumType, string? value, out object? result)` - .NET 5?
+- `public static bool TryParse(Type enumType, string? value, bool ignoreCase, out object? result)` - .NET 5?
+
+Wait, the code uses `Enum.TryParse(targetType, s, true, out object e)`. In .NET Framework 4.8, the non-generic `Enum.TryParse` overloads might not exist. Let me verify.
+
+Actually, looking at .NET Framework 4.8 docs, `Enum.TryParse` has generic overloads but I don't think it has the non-generic `Type` overload. The non-generic `Enum.TryParse(Type, string, bool, out object)` was introduced in .NET Core 1.0 or .NET 5.
+
+If this is the case, the code won't compile on .NET 4.8. This is a compile break!
+
+Let me double-check. In .NET Framework 4.8, `Enum` class methods:
+- `public static bool TryParse<TEnum>(string value, out TEnum result) where TEnum : struct;`
+- `public static bool TryParse<TEnum>(string value, bool ignoreCase, out TEnum result) where TEnum : struct;`
+
+There is no non-generic `TryParse(Type, ...)` overload in .NET Framework 4.8. The non-generic overloads were added later.
+
+So `Enum.TryParse(targetType, s, true, out object e)` will not compile on .NET 4.8.
+
+This is a compile break (severity: BLOCKER or MAJOR).
+
+Wait, but the mechanical gates say "compile: build succeeded". Maybe the build environment is .NET 8.0 with stubs? The ticket says "C# 8.0 / net48 + net8.0-with-stubs compatibility". So it needs to compile on both.
+
+If it compiles on net8.0 but not net48, that's a compile break.
+
+Actually, let me reconsider. Maybe the project uses a polyfill or the non-generic overload does exist? Let me think again.
+
+In .NET Framework 4.8, `System.Enum` does NOT have:
+- `TryParse(Type, string, out object)`
+- `TryParse(Type, string, bool, out object)`
+
+These were added in .NET 5. So yes, compile break on net48.
+
+But wait, the code also uses `Enum.IsDefined(targetType, e)` and `Enum.ToObject(targetType, i)` - these exist in .NET 4.8.
+
+So the `Enum.TryParse(targetType, s, true, out object e)` line is problematic.
+
+How to fix? Use the generic overload with reflection, or use `Enum.Parse` with try/catch.
+
+Actually, there's another issue: `Enum.TryParse(targetType, s, true, out object e)` - even if it compiles on net8.0, on net48 it won't.
+
+**Issue 37: Another potential compile issue**
+`type.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase)` - this overload exists in .NET 4.8. Good.
+
+**Issue 38: `JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json)`**
+This works on both. Good.
+
+**Issue 39: `JObject.Parse(json)`**
+Works on both. Good.
+
+**Issue 40: `HashSet<string>(StringComparer.OrdinalIgnoreCase)`**
+Works. Good.
+
+**Issue 41: `Enum.IsDefined(targetType, e)`**
+Works. Good.
+
+**Issue 42: `Enum.ToObject(targetType, i)`**
+Works. Good.
+
+So the main compile issue is `Enum.TryParse(Type, string, bool, out object)`.
+
+**Issue 43: What about `Enum.TryParse` generic alternative?**
+We could do:
+```csharp
+MethodInfo tryParseMethod = typeof(Enum).GetMethod("TryParse", new[] { typeof(string), typeof(bool), typeof(Type).MakeByRefType() });
+// Actually generic TryParse
+MethodInfo tryParseGeneric = typeof(Enum).GetMethod("TryParse", 1, new[] { typeof(string), typeof(bool), Type.MakeByRefType() });
+tryParseGeneric = tryParseGeneric.MakeGenericMethod(targetType);
+object[] args = new object[] { s, true, null };
+bool success = (bool)tryParseGeneric.Invoke(null, args);
+if (success) value = args[2];
+```
+
+Or simpler, use `Enum.Parse` with try/catch:
+```csharp
+try
+{
+    value = Enum.Parse(targetType, s, true);
+    if (Enum.IsDefined(targetType, value))
+        return true;
+}
+catch { }
+return false;
+```
+
+But `Enum.Parse` throws on unknown names, so the try/catch would handle it. However, the constraint says "An unrecognised ENUM value must NOT throw" - but this is about the overall `LoadFromDisk` not throwing. Using try/catch inside `TryConvertToken` is fine as long as it doesn't propagate.
+
+Actually, using `Enum.Parse` with try/catch would be acceptable because the exception is caught locally.
+
+But there's a subtlety: `Enum.Parse` will parse integer strings too? Yes, `Enum.Parse("1", true)` works for int-backed enums. And `Enum.IsDefined` checks.
+
+**Issue 44: Another issue with enum handling**
+The current code for integer tokens:
+```csharp
+int i = token.Value<int>();
+object e = Enum.ToObject(targetType, i);
+if (Enum.IsDefined(targetType, e))
+{
+    value = e;
+    return true;
+}
+```
+
+What if the enum underlying type is not `int`? `Enum.ToObject(Type, int)` works and converts to the correct underlying type. Good.
+
+What if the token is a float like `1.5`? `token.Value<int>()` would truncate or throw? For `JTokenType.Float`, `Value<int>()` might throw or truncate. Actually `JToken.Value<int>()` for a float will convert if it's a whole number, but might throw for non-whole. This is inside a try/catch in `TryConvertToken`, so it returns false. Good.
+
+**Issue 45: What about `JTokenType.String` for enum where the string is a number?**
+`Enum.TryParse("1", true, out object e)` - if this works, then `Enum.IsDefined` checks. Good.
+
+**Issue 46: The `present` set and property names**
+`present.Add(prop.Name)` uses the actual property name from reflection. Since `GetProperty` uses `IgnoreCase`, `prop.Name` is the canonical name. Good.
+
+**Issue 47: What about properties with private setters?**
+`prop.GetSetMethod() == null` - `GetSetMethod()` returns the public setter. If the setter is private, it's skipped. But all properties in `CopierRelationship`/`CopierGroup` likely have public setters.
+
+**Issue 48: What about `FollowerAccounts` being null after Populate?**
+If `FollowerAccounts` is present and valid, `Populate` sets it. If the JSON has `"followerAccounts": null`, `TryConvertToken` returns false, so not in `present`, and `ParseGroup` sets to empty list. Good.
+
+**Issue 49: What about `PerTickerRatios` being null?**
+`TryConvertToken` returns false for null, so the property keeps its initialiser. If the initialiser is null, it stays null. If it's an empty dictionary, it stays empty. Good.
+
+**Issue 50: What about `CustomSymbolMappings` being null?**
+Same as above.
+
+**Issue 51: The `Mode` property**
+What is `Mode`? The ticket mentions it. If it's an enum, handled. If it's a string, handled. If it's an int, handled by the fallback `token.ToObject(targetType)`. Good.
+
+**Issue 52: The `StealthMode` property**
+If it's bool, handled. If it's enum, handled. Good.
+
+**Issue 53: What about the `SizingMode` property**
+If it's enum, handled. Good.
+
+**Issue 54: The `aliasMap` doesn't include `relationships`/`groups` wrapper names**
+That's fine because those are handled separately.
+
+**Issue 55: What if the JSON has both canonical and alias for the same property?**
+E.g., `"LeaderAccountName": "A", "leaderAccount": "B"`. The `Populate` loop iterates properties in JSON order. If `leaderAccount` comes first, it sets `LeaderAccountName` to "B" and adds to `present`. Then `LeaderAccountName` comes, `GetProperty` finds it, sets to "A" and adds to `present` (already there). Final value "A". If `LeaderAccountName` comes first, then `leaderAccount` sets to "B". Final value "B".
+
+This is non-deterministic based on JSON property order. Json.NET preserves property order as in the file. This could be confusing but not necessarily wrong. The original code explicitly preferred canonical over alias (e.g., `jObj["LeaderAccountName"]?.ToString() ?? jObj["leaderAccount"]?.ToString()`). The new code's behavior depends on order.
+
+Is this a problem? The ticket constraint 2 says "Keep the camelCase ALIASES" - it doesn't specify precedence. But the original code preferred canonical. The new code might prefer whichever comes last in the JSON file. This is a minor behavioral change.
+
+However, the implementer notes say "All other behavior from the previous patch is preserved: one shared parse path for all three construction sites, camelCase aliases..." - but this is a subtle difference. Is it worth flagging? Probably MINOR.
+
+Actually, wait. The aliasMap maps `leaderAccount` to `LeaderAccountName`. When iterating JSON properties:
+1. If JSON has `"leaderAccount": "B"` first, aliasMap maps to `LeaderAccountName`, property found, set to "B", present contains "LeaderAccountName".
+2. Then JSON has `"LeaderAccountName": "A"`, `GetProperty` finds `LeaderAccountName` (already present), sets to "A". Final "A".
+
+Wait, both map to the same property. The order in the JSON file determines which wins. In the original code, canonical always won. In the new code, the last one in JSON wins.
+
+This is a regression in behavior. If a file has both (which is weird but possible), the original would use canonical, new uses last. Minor issue.
+
+But more importantly, is there a case where this causes data loss? If the file has only alias, it works. If only canonical, works. If both, last wins. Not a blocker.
+
+**Issue 56: What about the `aliasMap` case-sensitivity and `GetProperty` IgnoreCase interaction?**
+The aliasMap uses `StringComparer.Ordinal` (case-sensitive). So `"leaderAccount"` maps to `"LeaderAccountName"`. `"LeaderAccount"` does not map. But `"LeaderAccount"` is then passed to `GetProperty` with `IgnoreCase`, which finds `LeaderAccountName`. So it works.
+
+But what about `"leaderaccount"`? Not in aliasMap. `GetProperty` with `IgnoreCase` finds `LeaderAccountName`. Works.
+
+What about `"LEADERACCOUNT"`? Same.
+
+So case-insensitive canonical matching works for any case variant of the canonical name. Only the specific camelCase aliases need the aliasMap.
+
+**Issue 57: What about a JSON property name that matches a property case-insensitively but is actually a different property?**
+E.g., if there's a property `LeaderAccountId` and JSON has `"leaderAccount"`, aliasMap maps to `LeaderAccountName`, not `LeaderAccountId`. Good.
+
+**Issue 58: What about `FollowerAccounts` vs `FollowerAccountName`?**
+`followerAccounts` maps to `FollowerAccounts` (list). `followerAccount` maps to `FollowerAccountName` (string). Good.
+
+**Issue 59: What about `GroupName` vs `Group`?**
+If there's a property `Group`, JSON `"group"` would match via `GetProperty` IgnoreCase. But aliasMap has `"groupName" -> "GroupName"`. No conflict.
+
+**Issue 60: The `present` set and defaults for absent fields**
+The ticket constraint 5 says "Fields absent from the file must still get their existing defaults. ArmedForLive in particular defaults to FALSE and must never be defaulted to true by a deserialisation path."
+
+The new code relies on property initialisers. If `ArmedForLive` has no property initialiser and the class default for bool is false, it's still false. But if the class has `public bool ArmedForLive { get; set; } = true;` (which would be wrong), the new code would keep true. But we assume the class is correct.
+
+However, the original code explicitly defaulted `ArmedForLive` to false regardless of class defaults. The new code relies on class defaults. If the class default is false, same behavior. If not, regression.
+
+This is worth checking but we can't see the class definition. The implementer notes mention "ArmedForLive in particular defaults to FALSE" implicitly by saying "This prevents a non-null property-initializer default... from blocking the fallback". They don't explicitly say ArmedForLive defaults to false in the class.
+
+Actually, the implementer notes say: "All other behavior from the previous patch is preserved: ... numeric/bool defaults retained on malformed values instead of silently becoming zero." This suggests they believe defaults are preserved.
+
+But the original code explicitly set `ArmedForLive = ... ?? false`. The new code doesn't explicitly set it; it relies on the class initialiser. If the class initialiser is false, fine. If not, bug.
+
+Given the ticket's emphasis on "ArmedForLive in particular defaults to FALSE and must never be defaulted to true", and the original code's explicit defaulting, I think the new code should explicitly ensure `ArmedForLive` is false if absent. But the implementer might rely on the class definition.
+
+This is a potential issue. Severity: MAJOR if the class default isn't false; otherwise fine. Since we can't verify, we might flag it as a risk.
+
+But wait - the mechanical gates say tests pass. If there's a test that checks ArmedForLive defaults to false, and it passes, then the class must default to false or the test is wrong. We should assume tests are correct.
+
+**Issue 61: What about `IsEnabled` default?**
+Original code: `true` if absent. New code relies on class initialiser. If class initialiser is true, fine.
+
+**Issue 62: What about `QuantityRatio` default?**
+Original: `1.0`. New: class initialiser. If `1.0`, fine.
+
+**Issue 63: What about `MaxPositionSize` default?**
+Original: `100`. New: class initialiser. If `100`, fine.
+
+**Issue 64: What about `DailyLossLimit` default?**
+Original: `1000.0`. New: class initialiser. If `1000.0`, fine.
+
+**Issue 65: What about `FixedLotSize` default?**
+Original: `1`. New: class initialiser. If `1`, fine.
+
+**Issue 66: What about `AutoSymbolConversion` default?**
+Original: `true`. New: class initialiser. If `true`, fine.
+
+**Issue 67: What about `FixedLotMode` default?**
+Original: `false`. New: class initialiser. If `false`, fine.
+
+**Issue 68: What about `IsQuarantined` default?**
+Original: `false`. New: class initialiser. If `false`, fine.
+
+**Issue 69: What about `MaxSlippageTicks` default?**
+Original: `0.0`. New: class initialiser. If `0.0`, fine.
+
+**Issue 70: What about `SizingMode` default?**
+Unknown. The ticket says it must round-trip. If absent, should use class default.
+
+**Issue 71: What about `Mode` default?**
+Unknown.
+
+**Issue 72: What about `StealthMode` default?**
+Unknown.
+
+**Issue 73: What about `PerTickerRatios` default?**
+Unknown. Likely empty dictionary or null.
+
+**Issue 74: What about `CustomSymbolMappings` default?**
+Unknown. Likely empty dictionary or null.
+
+**Issue 75: The `Populate` method doesn't handle nested objects for `PerTickerRatios` with non-double values**
+If `PerTickerRatios` has a nested object as value, `TryConvertToken(p.Value, typeof(double))` returns false, so that entry is skipped. The dictionary is still populated with other entries. This is "fail closed" for that entry but not the whole config. Acceptable.
+
+**Issue 76: What about `PerTickerRatios` with integer token?**
+Handled. Good.
+
+**Issue 77: What about `PerTickerRatios` with string token that parses as double?**
+Handled. Good.
+
+**Issue 78: What about `PerTickerRatios` with null value?**
+`TryConvertToken` returns false, entry skipped. Good.
+
+**Issue 79: What about `CustomSymbolMappings` with null value?**
+`p.Value.ToString()` returns "null" or ""? For `JTokenType.Null`, `ToString()` returns empty string? Actually `JToken.ToString()` for null returns... let me think. `JValue.ToString()` for null returns "". So the mapping value becomes empty string. This might be acceptable.
+
+**Issue 80: What about the `lock (_lock)` scope?**
+The local functions `TryConvertToken`, `Populate`, `ParseRelationship`, `ParseGroup` are defined outside the lock but called inside. They don't call any Account methods. Good - no risk calls under lock.
+
+**Issue 81: Race conditions?**
+No async submits. No timers. No event handlers in this code. Good.
+
+**Issue 82: Test adequacy?**
+We don't see the tests. The mechanical gates say tests pass. We can't review tests as they're not provided. So we can't flag test issues unless we infer them.
+
+**Issue 83: The `Enum.TryParse` compile break is the biggest issue**
+Let me verify once more. In .NET Framework 4.8, `Enum.TryParse` overloads:
+
+From docs:
+- `TryParse<TEnum>(ReadOnlySpan<Char>, TEnum)` - not in net48
+- `TryParse<TEnum>(ReadOnlySpan<Char>, Boolean, TEnum)` - not in net48
+- `TryParse<TEnum>(String, TEnum)` - yes
+- `TryParse<TEnum>(String, Boolean, TEnum)` - yes
+
+Non-generic:
+- `TryParse(Type, String, Object)` - I think this was added in .NET 5? Let me check.
+
+Actually, I recall that non-generic `Enum.TryParse` was added in .NET 5. So net48 doesn't have it.
+
+But wait, the code uses `Enum.TryParse(targetType, s, true, out object e)`. This is the 4-parameter non-generic overload. Definitely .NET 5+.
+
+So compile break on net48.
+
+How would the implementer fix this? They could use reflection to call the generic method, or use `Enum.Parse` with try/catch.
+
+Actually, there's another approach: since we know the enum type at runtime, we can use a helper:
+```csharp
+bool TryParseEnum(Type type, string value, bool ignoreCase, out object result)
+{
+    result = null;
+    try
+    {
+        result = Enum.Parse(type, value, ignoreCase);
+        return Enum.IsDefined(type, result);
+    }
+    catch
+    {
+        return false;
+    }
+}
+```
+
+This works on both net48 and net8.0.
+
+But `Enum.Parse` throws `ArgumentException` for unknown names, which is caught. Good.
+
+**Issue 84: Another potential compile issue - `out object e` with `Enum.TryParse`**
+Even on net8.0, the signature is `public static bool TryParse (Type enumType, string? value, bool ignoreCase, out object? result);`. The `out` parameter is `object?`, but `object e` is fine (nullable reference types are compile-time only).
+
+**Issue 85: What about `Enum.IsDefined(targetType, e)` on net8.0?**
+Works.
+
+**Issue 86: The `try/catch` in `TryConvertToken` for the generic `token.ToObject(targetType)`**
+```csharp
+try
+{
+    value = token.ToObject(targetType);
+    return true;
+}
+catch
+{
+    return false;
+}
+```
+This catches all exceptions. For types not explicitly handled, this is the fallback. This could swallow errors and leave defaults. But the constraint says "tolerating an unrecognised enum name is NOT the same as tolerating every deserialisation error". However, this fallback only applies to types not explicitly handled (e.g., complex types). For numeric/bool/enum types, explicit handlers return false on malformed values without setting the property. So the fallback doesn't affect those.
+
+But what if `token.ToObject(targetType)` succeeds for a malformed value and returns a default? E.g., for some custom type. Unlikely in this context.
+
+**Issue 87: What about `token.ToObject(targetType)` for `Dictionary<string, double>`?**
+Actually, the explicit handler for `Dictionary<string, double>` comes before the fallback, so it's used. Good.
+
+**Issue 88: What about `token.ToObject(targetType)` for `List<string>`?**
+Explicit handler used. Good.
+
+**Issue 89: What about `token.ToObject(targetType)` for `string[]`?**
+If `FollowerAccounts` is `string[]` instead of `List<string>`, the explicit `List<string>` handler won't match, and fallback `ToObject` will be used. But the class likely uses `List<string>`.
+
+**Issue 90: What about `Mode` if it's a string?**
+`TryConvertToken` for string: `value = token.Type == JTokenType.String ? token.Value<string>() : token.ToString();`. So even if token is number, it converts to string. This means `"mode": 123` would become "123". If `Mode` is enum, the enum handler would try to parse "123" as enum name (fails) or integer (succeeds if 123 is defined). Good.
+
+**Issue 91: What about `SizingMode` if it's enum and value is string?**
+Enum handler used. Good.
+
+**Issue 92: What about `StealthMode` if it's bool?**
+Bool handler used. Good.
+
+**Issue 93: What about `StealthMode` if it's enum?**
+Enum handler used. Good.
+
+**Issue 94: The `aliasMap` is defined inside `LoadFromDisk`**
+This is fine. It's a local variable.
+
+**Issue 95: Local functions inside `LoadFromDisk`**
+Fine.
+
+**Issue 96: The `present` HashSet is created per `Populate` call**
+Fine.
+
+**Issue 97: What about performance?**
+Not relevant for safety.
+
+**Issue 98: What about the `lock (_lock)` and local functions?**
+The local functions don't access `_lock` or call other locked methods. Good.
+
+**Issue 99: What about the `dict` deserialization in flat path?**
+`JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json)` - if the JSON is not a dictionary (e.g., array), this throws and is caught. Good.
+
+**Issue 100: What about `jRoot["Relationships"] as JObject`?**
+If `Relationships` is a JArray, `as JObject` returns null. Then it tries flat path. Could misparse. But original code had same issue. Not new.
+
+Now, the compile break is the main blocker. Are there any other issues?
+
+Let me re-read the implementer notes carefully:
+"Fixed the flat-legacy leader-key regression by tracking which JSON properties were actually present during `Populate` and applying key-derived fallbacks only when the corresponding property was absent. This prevents a non-null property-initializer default (e.g., `LeaderAccountName = ""`) from blocking the fallback to the dictionary key."
+
+This is good.
+
+"The shared `Populate` helper now returns a `HashSet<string>` of property names that were successfully resolved from the JSON (after alias mapping). `ParseRelationship` and `ParseGroup` use this set to decide whether to apply defaults for `Id`, `LeaderAccountName`, `FollowerAccountName`, `GroupName`, and `FollowerAccounts`."
+
+Good.
+
+"All other behavior from the previous patch is preserved: one shared parse path for all three construction sites, camelCase aliases, `StringComparer.OrdinalIgnoreCase` on the two dictionaries, enum tolerance for unknown names, and numeric/bool defaults retained on malformed values instead of silently becoming zero."
+
+Wait - "StringComparer.OrdinalIgnoreCase on the two dictionaries". Which two dictionaries? `PerTickerRatios` and `CustomSymbolMappings`. Yes, the code uses `StringComparer.OrdinalIgnoreCase` for both. Good.
+
+"No new config keys or persisted fields were added."
+
+Good.
+
+Now, the compile break on `Enum.TryParse(Type, ...)` is real. Let me also check if there are any other .NET 5+ APIs.
+
+`Enum.IsDefined(Type, object)` - exists in .NET 4.8. Yes.
+`Enum.ToObject(Type, int)` - exists. Yes.
+
+What about `HashSet<string>(StringComparer.OrdinalIgnoreCase)`? Yes.
+
+What about `JToken.Value<int>()`? Yes.
+
+What about `JToken.ToObject(Type)`? Yes.
+
+What about `type.GetProperty(string, BindingFlags)`? Yes.
+
+What about `prop.GetSetMethod()`? Yes.
+
+What about `prop.SetValue(object, object, object[])`? The 3-parameter `SetValue(object obj, object value, object[] index)` exists. Yes.
+
+So only `Enum.TryParse(Type, string, bool, out object)` is the compile issue.
+
+Wait, actually, I should double-check. Maybe .NET 4.8 DOES have non-generic `Enum.TryParse`? Let me think about the history.
+
+.NET Framework 4.8 was released in 2019. .NET 5 was released in 2020. The non-generic `Enum.TryParse` overloads were added in .NET 5? Or were they in .NET Core earlier?
+
+Looking at the .NET API browser, `Enum.TryParse(Type, String, Boolean, Object)` is documented as:
+- .NET 5, 6, 7, 8, 9
+- .NET Core 3.0, 3.1
+- .NET Standard 2.1
+
+Not in .NET Framework 4.8 or .NET Standard 2.0.
+
+So yes, compile break on net48.
+
+Now, is there a way the build succeeded? The mechanical gates say "compile: build succeeded". Maybe the project only targets net8.0? But the ticket says "C# 8.0 / net48 + net8.0-with-stubs compatibility". So it must compile on both.
+
+Maybe the build uses a stub or polyfill that adds the non-generic `Enum.TryParse`? The ticket says "net8.0-with-stubs", not "net48-with-stubs". So net48 is real.
+
+Therefore, this is a compile break.
+
+Are there any other issues I should flag?
+
+Let me think about the "new naked-risk paths" priority. This patch is about config loading. It doesn't directly affect position protection. But misloaded config could lead to wrong sizing or no copying. However, the ticket is about config round-trip, not about trading safety directly. The priorities say "any path where a position ends up with no covering stop, or a stop larger than the position". This patch doesn't touch stops. So no naked-risk paths from this patch.
+
+Lock discipline: no Account.Flatten/Cancel/Submit/CreateOrder reachable while `_stateLock` is held. The patch doesn't touch those. Good.
+
+Race conditions: no async submits, no timers. Good.
+
+Test adequacy: tests not shown. Can't review.
+
+Compile breaks: the `Enum.TryParse` issue.
+
+Regressions: 
+- The canonical-vs-alias precedence change (minor).
+- Reliance on class defaults instead of explicit defaults (potential, but tests likely cover).
+
+Actually, let me reconsider the "regressions" priority. The original code explicitly defaulted many fields. The new code relies on property initialisers. If the class definitions have the same defaults, no regression. If not, regression. Since tests pass, likely no regression. But the ticket explicitly says "ArmedForLive in particular defaults to FALSE and must never be defaulted to true by a deserialisation path." The new code doesn't enforce this; it trusts the class. This is a subtle regression risk.
+
+But the implementer notes say "numeric/bool defaults retained on malformed values instead of silently becoming zero". They don't say "explicitly defaulted to original values". They rely on class initialisers.
+
+Hmm. Should I flag this? The ticket constraint 5 says fields absent must get existing defaults. The new code achieves this IF the class has the right defaults. The original code achieved it regardless of class defaults. If the class defaults are correct, no issue. If a future change changes a class default, the loader would follow the new default, which might be intended or not.
+
+I think this is worth a MINOR finding, but not a BLOCKER, because tests pass and the class likely has correct defaults.
+
+Actually, wait. The implementer notes explicitly mention "a non-null property-initializer default (e.g., `LeaderAccountName = ""`)". This implies the classes DO have property initialisers. So the defaults are in the class. If `ArmedForLive` initialises to false, fine.
+
+But the ticket says "must never be defaulted to true by a deserialisation path". If the class initialiser is false, the deserialisation path can't default it to true. So it's fine.
+
+I'll focus on the compile break as the main issue.
+
+Let me also check: is there any issue with the `Enum.TryParse` line even on net8.0? The signature is `public static bool TryParse (Type enumType, string? value, bool ignoreCase, out object? result);`. The code passes `targetType`, `s`, `true`, `out object e`. This matches. Good.
+
+But wait - the `out object e` parameter: in C# 8.0 with nullable reference types enabled, this might warn because `result` is `object?` and `e` is `object`. But it should compile. The project might have nullable enabled. But the mechanical gates say compile succeeded, so no issue there.
+
+Actually, the compile break on net48 is enough to require revision.
+
+Are there any other compile breaks? Let me check `Enum.IsDefined(targetType, e)` - yes, exists. `Enum.ToObject(targetType, i)` - yes.
+
+What about `token.Value<int>()` for a `JTokenType.Integer`? Yes.
+
+What about `token.Value<double>()` for `JTokenType.Float`? Yes.
+
+What about `token.Value<string>()` for `JTokenType.String`? Yes.
+
+What about `bool.TryParse(s, out bool b)`? Yes.
+
+What about `int.TryParse(s, out int i)`? Yes.
+
+What about `double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double d)`? Yes.
+
+What about `NumberStyles.Float`? Yes.
+
+What about `CultureInfo.InvariantCulture`? Yes.
+
+What about `BindingFlags.IgnoreCase`? Yes.
+
+What about `StringComparer.OrdinalIgnoreCase`? Yes.
+
+What about `StringComparer.Ordinal`? Yes.
+
+What about `Guid.NewGuid().ToString()`? Yes.
+
+What about `JObject.Properties()`? Yes.
+
+What about `JProperty.Name`? Yes.
+
+What about `JProperty.Value`? Yes.
+
+What about `JObject.Parse`? Yes.
+
+What about `JsonConvert.DeserializeObject<T>`? Yes.
+
+What about `Console.WriteLine`? Yes.
+
+So only `Enum.TryParse(Type, string, bool, out object)`.
+
+Now, let me also think about whether the code correctly handles the "relationship that round trips through disk must size a fill from its ratio table" requirement. This is about the sizing logic, not just config loading. The patch only changes `LoadFromDisk`. If the sizing logic already uses `PerTickerRatios` when `SizingMode == PerTickerMatrix`, then loading the config correctly will enable this. The patch doesn't change sizing logic. So if the sizing logic is correct, this requirement is met. If not, it's a separate issue.
+
+But the ticket says "a relationship that round trips through disk must size a fill from its ratio table". This is an acceptance criterion. The tests presumably verify this. Since tests pass, likely the sizing logic is already correct and just needed the config to load properly.
+
+However, I should check if the patch touches sizing logic. Looking at the diff, only `LoadFromDisk` is changed. So sizing logic is unchanged. Good.
+
+Wait, but the known real defects include:
+- UPHELD: R1/R2: The patch allows cross-instrument sizing in PerTickerMatrix mode when `CustomSymbolMappings` maps the leader root to a different root.
+- UPHELD: R1: When `CustomSymbolMappings` maps to a different root and there is no `PerTickerRatios` entry for the mapped symbol.
+
+These are about sizing logic. Since this patch only changes `LoadFromDisk`, these defects are not introduced or fixed by this patch. We should not flag them unless the patch changes sizing logic. It doesn't.
+
+But wait - by preserving `CustomSymbolMappings` correctly, this patch might make an existing sizing bug more likely to trigger. But that's not a new defect introduced by this patch; it's an existing defect. The ticket is about config loading. We should focus on the patch's changes.
+
+Actually, the priority list says "REGRESSIONS: existing behaviour or existing tests that this would break." If preserving `CustomSymbolMappings` causes existing tests to fail due to a sizing bug, that would be a regression. But the mechanical gates say tests pass. So no.
+
+OK, I think the main finding is the compile break. Let me also consider if there are any MAJOR correctness issues.
+
+**Potential MAJOR: The `Populate` method doesn't validate that `PerTickerRatios` and `CustomSymbolMappings` use `StringComparer.OrdinalIgnoreCase`**
+
+Wait, it does:
+```csharp
+var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+```
+and
+```csharp
+var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+```
+Good.
+
+**Potential MAJOR: The `aliasMap` doesn't include `relationships`/`groups` case variants**
+The code checks `jRoot["Relationships"] as JObject ?? jRoot["relationships"] as JObject;`. So only PascalCase and camelCase. If someone writes `"RELATIONSHIPS"`, it's not recognized. But Json.NET is case-insensitive for property access? Actually `jRoot["Relationships"]` uses exact case? Or case-insensitive?
+
+In Json.NET, `JObject[string]` uses case-sensitive lookup by default? I think it's case-sensitive. But the original code only checked two cases. The new code does the same. Not a regression.
+
+**Potential MAJOR: The flat legacy path doesn't handle groups**
+The original flat path only created relationships. The new flat path only creates relationships. The ticket says "The flat legacy form -- a bare object with no Relationships/Groups wrapper, whose KEY is the leader account name -- must keep working, and must carry the new fields too." It doesn't say groups must be supported in flat form. So no issue.
+
+**Potential MAJOR: What if `jRoot` has both structured sections and flat keys?**
+The code uses structured if either Relationships or Groups exists. Otherwise flat. If both exist, flat is ignored. Original behavior. Good.
+
+**Potential MAJOR: What about duplicate keys in `relsObj` or `grpsObj`?**
+`JObject` doesn't allow duplicate keys. If JSON has duplicates, Json.NET might keep the last one. Not our concern.
+
+**Potential MAJOR: What about `null` values for string properties?**
+`TryConvertToken` for string: `token.Type == JTokenType.String ? token.Value<string>() : token.ToString();`. If token is null, it returns false before this. So null doesn't set the property. Good.
+
+**Potential MAJOR: What about empty string for `LeaderAccountName`?**
+It sets to empty string. Then `ParseRelationship` sees `LeaderAccountName` in `present`, so no fallback. This matches the implementer's intent: explicit empty string should be respected.
+
+**Potential MAJOR: What about `FollowerAccounts` being an empty array?**
+`TryConvertToken` returns true with empty list. `present` contains `FollowerAccounts`. `ParseGroup` doesn't override. Good.
+
+**Potential MAJOR: What about `FollowerAccounts` being a non-array like string?**
+`TryConvertToken` returns false. `ParseGroup` sets to empty list. This is "fail closed" for the list. Acceptable.
+
+**Potential MAJOR: What about `PerTickerRatios` being an empty object?**
+`TryConvertToken` returns true with empty dictionary. Good.
+
+**Potential MAJOR: What about `PerTickerRatios` being an array?**
+`TryConvertToken` returns false (token.Type != Object). Property not set. Keeps default. Acceptable.
+
+**Potential MAJOR: What about `CustomSymbolMappings` being an empty object?**
+Returns true with empty dictionary. Good.
+
+**Potential MAJOR: What about `CustomSymbolMappings` being an array?**
+Returns false. Keeps default. Acceptable.
+
+**Potential MAJOR: What about integer enum values that are out of range?**
+`Enum.ToObject` then `Enum.IsDefined` returns false. Property not set. Keeps default. Good.
+
+**Potential MAJOR: What about negative integer enum values that are defined?**
+`Enum.ToObject` works. `Enum.IsDefined` returns true. Good.
+
+**Potential MAJOR: What about `Mode` being a string that doesn't match any enum name?**
+`Enum.TryParse` returns false or `Enum.IsDefined` returns false. Property not set. Keeps default. Doesn't throw. Good.
+
+**Potential MAJOR: What about `SizingMode` being `PerTickerMatrix`?**
+If the enum value name is `PerTickerMatrix`, `Enum.TryParse` with ignoreCase true parses it. Good.
+
+**Potential MAJOR: What about `SizingMode` being an integer value for `PerTickerMatrix`?**
+If the enum underlying value matches, `Enum.TryParse` for string might parse "1" as value 1. Or the integer branch handles it. Good.
+
+OK, I think the only real issue is the compile break. Let me also check if there's a subtle issue with `Enum.TryParse` returning true for undefined names.
+
+Actually, `Enum.TryParse` with `ignoreCase: true` will parse any name that matches an enum member. But it also parses integer strings and combined flags (for flags enums). Then `Enum.IsDefined` filters out undefined values and combined flags. Good.
+
+But wait - for non-flags enums, `Enum.IsDefined` returns true for defined values. For integer strings that match defined values, true. For names that match defined values, true. For undefined names, false. Good.
+
+For flags enums, `Enum.IsDefined` returns false for combined values. If `Mode` or `SizingMode` are flags enums, this could reject valid combined values. But they're likely not flags enums.
+
+**Potential MINOR: `Enum.IsDefined` doesn't work well for flags enums**
+If any of the enum properties are flags enums, combined values would be rejected. But this is unlikely.
+
+**Potential MINOR: The `present` set uses `StringComparer.Ordinal`?**
+No, `new HashSet<string>(StringComparer.OrdinalIgnoreCase)`. Good.
+
+**Potential MINOR: The `aliasMap` uses `StringComparer.Ordinal`**
+This is intentional - aliases are exact camelCase. Good.
+
+**Potential MINOR: The `Populate` method doesn't handle `JTokenType.Date`**
+For string properties, `token.ToString()` would convert a date to string. For numeric, returns false. Not a big issue.
+
+**Potential MINOR: The `Populate` method doesn't handle `JTokenType.TimeSpan`**
+Not relevant.
+
+**Potential MINOR: The `Populate` method doesn't handle `JTokenType.Guid`**
+For string, `ToString()` works. Good.
+
+**Potential MINOR: The `Populate` method doesn't handle `JTokenType.Uri`**
+For string, `ToString()` works. Good.
+
+OK, I'm going to focus on the compile break and maybe one or two minor findings.
+
+Wait, I should also consider: is the code using `Enum.TryParse` correctly even if it compiled? The code:
+```csharp
+if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))
+{
+    value = e;
+    return true;
+}
+```
+
+If `Enum.TryParse` succeeds but `Enum.IsDefined` fails, it falls through to return false. Good.
+
+But what if `Enum.TryParse` succeeds with a combined flags value for a flags enum? `Enum.IsDefined` returns false, so it returns false. The property keeps default. For a flags enum, this might be wrong. But again, unlikely.
+
+Now, let me think about whether there are any issues with the `aliasMap` and the `present` set for the flat legacy path.
+
+In flat legacy, `key` is the leader account name. `ParseRelationship(jObj, kv.Key)`:
+- If `LeaderAccountName` not present, set to `key.Contains("_") ? key.Split('_')[0] : key`.
+- If `FollowerAccountName` not present, set to `key.Contains("_") ? key.Split('_')[1] : "SimCopy2"`.
+
+This matches original. Good.
+
+But what about `Id`? If not present, new GUID. Good.
+
+What about other defaults? Rely on class initialisers.
+
+OK, I think I've covered the main issues. Let me also verify the "three sites, one behaviour" constraint.
+
+Site 1: structured Relationships -> `ParseRelationship` -> `Populate`.
+Site 2: structured Groups -> `ParseGroup` -> `Populate`.
+Site 3: flat legacy -> `ParseRelationship` -> `Populate`.
+
+All use `Populate`. Good.
+
+But wait - the `Populate` method is generic and works on any object. It uses reflection to find properties. So `CopierRelationship` and `CopierGroup` must have the same property names as in the aliasMap. If a property exists in one but not the other, `Populate` will skip it for that type. Good.
+
+Now, the implementer notes say "one shared parse that all three use". This is satisfied.
+
+Let me also think about whether the code violates any settled decisions. The settled decisions are about trading behavior (CoveredQuantity, NT8 event order, fail closed on entries, etc.). This patch doesn't touch trading logic. So no violations.
+
+Now, let me formulate the findings.
+
+**BLOCKER: Compile break on .NET Framework 4.8**
+Line: `if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))`
+The non-generic `Enum.TryParse(Type, string, bool, out object)` overload does not exist in .NET Framework 4.8. It was introduced in .NET 5 / .NET Core 3.0. The project targets net48, so this will not compile.
+
+**MAJOR: Potential reliance on class defaults for safety-critical defaults**
+Line: `var rel = new CopierRelationship();` and `var grp = new CopierGroup();`
+The original code explicitly defaulted `ArmedForLive` to false, `IsEnabled` to true, etc. The new code relies on property initialisers in the classes. If a class initialiser changes or is missing, the loader could default `ArmedForLive` to true or other safety-critical defaults to wrong values. The ticket explicitly requires `ArmedForLive` to default to false. The code should explicitly enforce this after `Populate`.
+
+Actually, I'm not sure if this is MAJOR or MINOR. The tests pass, so likely the class defaults are correct. But the ticket's emphasis makes me think it's worth flagging. However, the implementer notes explicitly mention property initialisers, suggesting they intentionally rely on them. And the mechanical gates say tests pass.
+
+Hmm. Let me reconsider. The ticket says "Fields absent from the file must still get their existing defaults. ArmedForLive in particular defaults to FALSE and must never be defaulted to true by a deserialisation path."
+
+The new code does default absent fields to their class initialiser values. If `ArmedForLive` initialises to false, it meets the requirement. The "must never be defaulted to true by a deserialisation path" is satisfied because the deserialisation path doesn't set it to true.
+
+But the original code explicitly set it to false. The new code relies on the class. This is a design difference, not necessarily a bug. If the class is correct, no issue.
+
+I think this is a MINOR finding at most, or maybe not worth flagging since tests pass. Let me not flag it as MAJOR. Maybe MINOR.
+
+Actually, I want to be careful. The priority list says "CORRECTNESS OF THE FIX: does it actually close the described defect, in every path?" The defect is about fields being dropped. The fix preserves them. Good.
+
+"NEW NAKED-RISK PATHS" - none.
+
+"LOCK DISCIPLINE" - none.
+
+"RACE CONDITIONS" - none.
+
+"TEST ADEQUACY" - can't review.
+
+"COMPILE BREAKS" - the Enum.TryParse issue.
+
+"REGRESSIONS" - the canonical/alias precedence and reliance on class defaults.
+
+I think the compile break is the only BLOCKER. The regressions are MINOR.
+
+Wait, let me also check if there's a MAJOR issue with the `Populate` method and the `present` set for `FollowerAccounts`.
+
+In `ParseGroup`:
+```csharp
+if (!present.Contains("FollowerAccounts"))
+    grp.FollowerAccounts = new List<string>();
+```
+
+If `FollowerAccounts` is present but malformed (e.g., string "abc"), `Populate` doesn't add it to `present`, and `ParseGroup` sets it to empty list. The original code:
+```csharp
+var followers = new List<string>();
+var followersToken = jObj["FollowerAccounts"] ?? jObj["followerAccounts"];
+if (followersToken != null)
+{
+    var parsed = JsonConvert.DeserializeObject<List<string>>(followersToken.ToString());
+    if (parsed != null) followers = parsed;
+}
+```
+
+If `followersToken` is a string "abc", `JsonConvert.DeserializeObject<List<string>>("abc")` throws, caught by outer try/catch, and the whole load fails (relationships and groups cleared). Wait, no - the outer try/catch catches and prints, leaving `_relationships` and `_groups` empty. So malformed `FollowerAccounts` in original caused total config loss.
+
+In new code, malformed `FollowerAccounts` just sets that group to empty list, but other groups/relationships load. This is actually better behavior (less catastrophic). Not a regression.
+
+But wait - the constraint 3 says "An unrecognised ENUM value must NOT throw. LoadFromDisk clears _relationships and _groups before parsing and wraps the whole body in one try/catch, so anything that throws leaves the engine holding NO configuration -- one typo in copier_config.json would silently disarm every relationship. A green-at-baseline test pins this and the fix must not break it."
+
+The new code doesn't throw on unrecognised enum. Good. It also doesn't throw on malformed `FollowerAccounts`. Good.
+
+But the second part of constraint 3 says "BUT tolerating an unrecognised enum name is NOT the same as tolerating every deserialisation error, and widening it that far is a naked-risk regression. A blanket Json.NET Error handler that swallows everything leaves a type-mismatched field at the CLR default instead of its property initialiser's value: MaxPositionSize becomes 0 rather than 100, and QuantityRatio becomes 0.0 rather than 1.0."
+
+The new code doesn't use a blanket Json.NET Error handler. It uses `TryConvertToken` which returns false on malformed values, preserving property initialisers. Good.
+
+So no issue there.
+
+OK, let me also think about whether the code handles the case where `PerTickerRatios` has a value that's an integer but the dictionary value type is double. Yes, `TryConvertToken` for double handles integers. Good.
+
+What about `PerTickerRatios` with a value that's a string "1.5"? `double.TryParse` with InvariantCulture handles it. Good.
+
+What about `PerTickerRatios` with a value that's a string "1,5" (European comma)? `double.TryParse` with InvariantCulture expects dot. Returns false. Entry skipped. Acceptable.
+
+What about `QuantityRatio` as string "1.5"? `double.TryParse` handles it. Good.
+
+What about `QuantityRatio` as string "abc"? Returns false. Property not set. Keeps default 1.0. Good.
+
+What about `MaxPositionSize` as string "100"? `int.TryParse` handles it. Good.
+
+What about `MaxPositionSize` as string "100.5"? `int.TryParse` returns false. Property not set. Keeps default 100. Good - doesn't silently truncate.
+
+What about `MaxPositionSize` as string "abc"? Returns false. Keeps default 100. Good.
+
+What about `IsEnabled` as string "true"? `bool.TryParse` handles it. Good.
+
+What about `IsEnabled` as string "1"? `bool.TryParse` returns false. Property not set. Keeps default. Good - doesn't treat "1" as true.
+
+What about `ArmedForLive` as string "false"? `bool.TryParse` handles it. Good.
+
+What about `ArmedForLive` as string "0"? `bool.TryParse` returns false. Property not set. Keeps default false. Good.
+
+OK, the conversion logic is conservative and safe.
+
+Now, one more thing: the `TryConvertToken` method has a `try/catch` around the whole body. If any unexpected exception occurs, it returns false. This is safe.
+
+But the `Populate` method doesn't catch exceptions from `prop.SetValue`. However, `TryConvertToken` ensures `value` is of the correct type (or null, but null returns false). So `prop.SetValue` shouldn't throw. But what if the property setter throws? Unlikely.
+
+Actually, `prop.SetValue(target, value, null)` - the third parameter is index for indexed properties. For non-indexed properties, it should be null. Good.
+
+OK, I think I've thoroughly analyzed. The main finding is the compile break.
+
+Let me also double-check: is `Enum.TryParse(targetType, s, true, out object e)` definitely not in .NET 4.8?
+
+Yes, I'm confident. The non-generic overloads were added in .NET Core 3.0 and .NET 5, not in .NET Framework 4.8.
+
+Actually, wait. Let me reconsider. .NET Framework 4.8 might have some non-generic `Enum.TryParse` overloads? Let me think about the actual API surface.
+
+In .NET Framework 4.8, `System.Enum` has these `TryParse` methods (from memory):
+- `public static bool TryParse<TEnum>(string value, out TEnum result) where TEnum : struct;`
+- `public static bool TryParse<TEnum>(string value, bool ignoreCase, out TEnum result) where TEnum : struct;`
+
+That's it. No non-generic overloads.
+
+So yes, compile break.
+
+Now, how should the implementer fix it? They can replace the `Enum.TryParse` call with a try/catch around `Enum.Parse`:
+
+```csharp
+if (token.Type == JTokenType.String)
+{
+    string s = token.Value<string>();
+    try
+    {
+        object e = Enum.Parse(targetType, s, true);
+        if (Enum.IsDefined(targetType, e))
+        {
+            value = e;
+            return true;
+        }
+    }
+    catch { }
+}
+```
+
+This works on both net48 and net8.0.
+
+Alternatively, use reflection to invoke the generic `TryParse`:
+```csharp
+var tryParse = typeof(Enum).GetMethod("TryParse", new[] { typeof(string), typeof(bool), typeof(Type).MakeByRefType() });
+// This is tricky because it's generic
+```
+
+The try/catch with `Enum.Parse` is simpler.
+
+But wait - `Enum.Parse` for a flags enum with combined values like "A, B" will parse successfully. Then `Enum.IsDefined` returns false. So combined flags values are rejected. If the enums are not flags, fine.
+
+Also, `Enum.Parse` for integer strings works. Good.
+
+Also, `Enum.Parse` throws `ArgumentException` for unknown names. Caught. Good.
+
+So the fix is straightforward.
+
+Now, are there any other findings I should include?
+
+**MINOR: Alias/canonical precedence depends on JSON property order**
+Line: `foreach (JProperty jp in jObj.Properties())` and `prop.SetValue(target, value, null);`
+If a JSON object contains both a canonical property and its camelCase alias (e.g., both `"LeaderAccountName"` and `"leaderAccount"`), whichever appears last in the file wins, whereas the original code always preferred the canonical name. This is a behavioral change that could surprise users who have both forms in a hand-edited file.
+
+Is this worth flagging? It's a minor regression. I'll include it as MINOR.
+
+**MINOR: Reliance on class property initialisers for safety-critical defaults**
+Line: `var rel = new CopierRelationship();` and `var grp = new CopierGroup();`
+The loader now relies on the class's property initialisers for defaults such as `ArmedForLive=false`, `IsEnabled=true`, `QuantityRatio=1.0`, etc. The original code explicitly supplied these defaults. If a future refactor changes a class initialiser, the loader will follow the new default, potentially violating the ticket's requirement that `ArmedForLive` never default to true and that absent fields keep their existing defaults. The loader should explicitly enforce the documented defaults for safety-critical fields after `Populate`.
+
+Hmm, but this might be seen as speculative. The tests pass. The implementer intentionally relies on initialisers. I'll include it as MINOR but maybe not as strong.
+
+Actually, I think the compile break is sufficient for REVISE. The other findings are supporting.
+
+Wait, I want to make sure I'm not missing a bigger issue. Let me re-read the ticket constraints and check each one.
+
+Constraint 1: DO NOT set ObjectCreationHandling.Replace. ✓ Not used.
+
+Constraint 2: Keep camelCase aliases. ✓ aliasMap includes them.
+
+Constraint 3: Unrecognised enum must not throw; malformed number must not silently become zero. ✓ Enum returns false; malformed number returns false, preserving initialiser.
+
+Constraint 4: Flat legacy form must work and carry new fields. ✓ Uses `ParseRelationship` with `Populate`.
+
+Constraint 5: Fields absent get existing defaults; ArmedForLive defaults false. ✓ If class initialisers are correct.
+
+Constraint 6: Three sites, one behaviour. ✓ All use `Populate`.
+
+So the only constraint that might be violated is #5 if class initialisers are wrong. But tests pass.
+
+And compile break.
+
+OK, I'll write the findings.
+
+One more thing: the output format requires specific line text. I need to quote the offending line.
+
+For the compile break:
+Line: `if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))`
+
+For the alias precedence:
+Line: `prop.SetValue(target, value, null);` inside the `Populate` loop.
+
+For the class defaults:
+Line: `var rel = new CopierRelationship();` and `var grp = new CopierGroup();`
+
+Actually, I think the class defaults finding might be too speculative. Let me focus on the compile break and the alias precedence.
+
+Wait, I should also consider: is there a possibility that the `Enum.TryParse` issue is not a compile break because the project uses a compatibility shim? The ticket says "net8.0-with-stubs", which might mean the net8.0 build uses stubs for NT8 APIs, but net48 is the real target. If the build succeeded, maybe there's a polyfill. But the reviewer should assume the code must compile on net48 as stated.
+
+Given the mechanical gates say "compile: build succeeded", maybe I'm wrong about the API availability. Let me double-check by considering if there's a different overload.
+
+Could `Enum.TryParse(targetType, s, true, out object e)` resolve to a generic overload with `targetType` as a type parameter? No, `targetType` is a `Type` object, not a type parameter.
+
+Could it resolve to `Enum.TryParse<TEnum>(string, bool, out TEnum)` with `TEnum` inferred as `object`? No, `object` is not a struct and doesn't satisfy the constraint.
+
+So no, it must be the non-generic overload, which isn't in net48.
+
+Unless... the project targets net48 but uses the .NET 5+ reference assemblies? No, that doesn't make sense.
+
+Or unless the code is compiled with a newer compiler that emits a workaround? No, the compiler can't invent APIs.
+
+So compile break is real.
+
+But wait - the mechanical gates say "compile: build succeeded". How? Maybe the project only builds for net8.0 in the CI, and net48 is a future target? Or maybe the gate is wrong? As a reviewer, I should flag it.
+
+Actually, re-reading the prompt: "C# 8.0 / net48 + net8.0-with-stubs compatibility". This means the code must be compatible with both. If it doesn't compile on net48, it's not compatible.
+
+OK, I'll flag it.
+
+Now, let me also think about whether there are any issues with the `aliasMap` not being used for the wrapper keys. Not relevant.
+
+One more potential issue: the `Populate` method uses `prop.GetSetMethod() == null` to skip read-only properties. But what about properties with `private set`? `GetSetMethod()` without parameters returns the public setter. If private, returns null. So private setters are skipped. If any config property has a private setter, it can't be loaded. But likely all have public setters.
+
+Another potential issue: `GetProperty` with `IgnoreCase` might return a property from a base class. If `CopierRelationship` inherits from a base class with a property of the same name, it could set the wrong one. Unlikely.
+
+OK, I'm ready to write the response.
+
+Actually, one more thought: the `aliasMap` includes `"mode", "Mode"`. But what if `Mode` is a property of type `CopierMode` enum, and the JSON has `"mode": "Live"`? `Enum.TryParse` parses it. Good.
+
+What if `Mode` is a string property and JSON has `"mode": 123`? `TryConvertToken` for string converts 123 to "123". Good.
+
+What if `Mode` is an int property and JSON has `"mode": "Live"`? The int handler tries to parse "Live" as int, fails. Then fallback `token.ToObject(typeof(int))` for a string "Live" would throw, caught, returns false. Property not set. Keeps default. Good.
+
+OK.
+
+Final findings:
+1. BLOCKER: Compile break on net48 due to `Enum.TryParse(Type, string, bool, out object)`.
+2. MINOR: Alias/canonical precedence depends on JSON property order.
+
+I think that's it. The compile break alone warrants REVISE.
+
+Wait, I want to also consider if the code has a MAJOR issue with `Enum.TryParse` even on net8.0: it accepts integer strings and parses them to enum values. Then `Enum.IsDefined` checks. Good.
+
+But what if the enum has a member with value 0 named `Default`, and the JSON has `"mode": 0`? Integer branch: `Enum.ToObject(targetType, 0)` gives the value 0, `Enum.IsDefined` returns true if there's a member with value 0. Good.
+
+What if the JSON has `"mode": null`? `TryConvertToken` returns false at the top. Good.
+
+OK.
+
+Let me write the response now.
+
+Actually, I realize I should also check if there's an issue with the `Populate` method not adding the property to `present` when the value conversion fails. It only adds on success. Good.
+
+And the `present` set is used to decide fallbacks. Good.
+
+One more thing: the `aliasMap` maps `"id", "Id"`. But `Id` is a string property. `TryConvertToken` for string handles it. Good.
+
+What if `Id` is a `Guid`? `TryConvertToken` for string would convert it to string. If `Id` is actually `Guid`, the string conversion might not be desired. But the class likely has `string Id`.
+
+OK, final answer.
+
+Wait, I want to also mention the specific fix for the compile break in the REQUIRED section.
+
+REQUIRED:
+- Replace the non-generic `Enum.TryParse(Type, string, bool, out object)` call with a try/catch around `Enum.Parse(targetType, s, true)` followed by `Enum.IsDefined`, because the non-generic overload is unavailable on .NET Framework 4.8.
+
+Also for the MINOR alias precedence:
+- OPTIONAL: To preserve original canonical-over-alias precedence, iterate the JSON properties in an order that processes canonical names after aliases, or check `present` before overwriting.
+
+But the REQUIRED section should only have imperative instructions to reach APPROVE. The compile break fix is required. The alias precedence is optional (MINOR), so maybe not required. But if I include it as a finding, I should include a required fix? The instructions say "imperative instructions the implementer must apply verbatim to reach APPROVE". For MINOR findings, maybe not required. But to reach APPROVE, all findings should be addressed. Hmm.
+
+Actually, the format says "write '- NONE' if APPROVE". Since verdict is REVISE, I need to provide required instructions. I should include the compile break fix. For the MINOR alias precedence, I could include it as a required fix or leave it as a finding without required action. But the instructions say "imperative instructions the implementer must apply verbatim to reach APPROVE". So all findings should have corresponding required actions.
+
+I'll include both:
+1. Fix the compile break.
+2. Preserve canonical-over-alias precedence (or document the change).
+
+But actually, the alias precedence change might be acceptable if documented. The ticket doesn't specify precedence. So maybe I shouldn't make it required. But as a regression, it should be fixed.
+
+Hmm. Let me think. The original code preferred canonical. The new code might prefer alias if alias comes last. This is a regression. To reach APPROVE, the implementer should fix it.
+
+How to fix? One way: before iterating, normalize the JSON object so canonical properties are processed after aliases. Or, in `Populate`, don't overwrite a property that's already in `present` unless the new value is from a canonical name. But that's complex.
+
+Simpler: in the aliasMap, don't map aliases to canonical names; instead, build a normalized JObject where aliases are renamed to canonical, and canonical names take precedence. But that's what `NormalizeAliases` did in prior patches, and it had bugs.
+
+Actually, the simplest fix: when both canonical and alias are present, the canonical should win. In `Populate`, if a property is already in `present`, only overwrite if the current JSON property name exactly matches the canonical name (case-insensitive). This requires knowing the canonical name.
+
+Alternatively, process the JSON properties in two passes: first aliases, then canonical. But aliases and canonical both map to the same property, so if canonical is processed second, it wins.
+
+Or, simpler: in `Populate`, when setting a property, if it's already in `present`, check if the current JSON property name (after alias mapping) matches `prop.Name` exactly. If yes, overwrite (canonical exact match). If no, skip (alias). But this requires comparing the original `jp.Name` to `prop.Name`.
+
+Actually, the aliasMap maps `leaderAccount` to `LeaderAccountName`. The canonical name is `LeaderAccountName`. So if `jp.Name` equals `prop.Name` (case-insensitive), it's canonical. If it maps via aliasMap, it's alias.
+
+So in `Populate`:
+```csharp
+bool isCanonical = string.Equals(jp.Name, prop.Name, StringComparison.OrdinalIgnoreCase);
+if (!present.Contains(prop.Name) || isCanonical)
+{
+    prop.SetValue(target, value, null);
+    present.Add(prop.Name);
+}
+```
+
+This ensures canonical always wins over alias.
+
+But wait - what if the JSON has `"leaderAccount"` first and `"LeaderAccountName"` second? `isCanonical` for the second is true, so it overwrites. Good.
+
+What if JSON has `"LeaderAccountName"` first and `"leaderAccount"` second? `isCanonical` for the second is false, and `present` already contains it, so skip. Good.
+
+What if JSON has only `"leaderAccount"`? `present` doesn't contain it, set it. Good.
+
+This is a clean fix.
+
+But is this required? The ticket doesn't explicitly require canonical precedence. But it's existing behavior. As a regression, I think it should be fixed.
+
+OK, I'll include it as a required fix.
+
+Actually, let me reconsider whether this is really a regression worth requiring. The original code had explicit `??` chains that preferred canonical. The new code's behavior depends on order. In practice, JSON files rarely have both canonical and alias for the same property. So this is a corner case. But the ticket says "Keep the camelCase ALIASES" - it wants aliases to work, not necessarily to have precedence.
+
+I'll include it as MINOR and required, but maybe the implementer can argue it's acceptable. However, since I'm the adversarial reviewer, I'll flag it.
+
+Hmm, but the output format says "imperative instructions the implementer must apply verbatim to reach APPROVE". If I make the alias precedence required, and the implementer disagrees, they might appeal. But the arbiter can decide.
+
+Actually, I think the compile break is the only true blocker. The alias precedence is a minor regression. To be safe, I'll include it as a finding and required fix, but emphasize it's minor.
+
+Wait, I want to also check if there's a more serious issue I'm missing. Let me re-read the code one more time.
+
+```csharp
+HashSet<string> Populate(JObject jObj, object target)
+{
+    var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    Type type = target.GetType();
+    foreach (JProperty jp in jObj.Properties())
+    {
+        string propName;
+        if (!aliasMap.TryGetValue(jp.Name, out propName))
+            propName = jp.Name;
+
+        System.Reflection.PropertyInfo prop = type.GetProperty(propName,
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+        if (prop == null || prop.GetSetMethod() == null)
+            continue;
+
+        object value;
+        if (TryConvertToken(jp.Value, prop.PropertyType, out value))
+        {
+            prop.SetValue(target, value, null);
+            present.Add(prop.Name);
+        }
+    }
+    return present;
+}
+```
+
+One issue: `aliasMap.TryGetValue(jp.Name, out propName)` uses `StringComparer.Ordinal`. So `"leaderAccount"` maps, but `"LeaderAccount"` doesn't. Then `propName = "LeaderAccount"`, and `GetProperty` with `IgnoreCase` finds `LeaderAccountName`. So it works.
+
+But what if the JSON has `"leaderAccountName"`? Not in aliasMap. `propName = "leaderAccountName"`. `GetProperty` with `IgnoreCase` finds `LeaderAccountName`. Works.
+
+What if the JSON has `"leader_account"`? Not in aliasMap. `propName = "leader_account"`. `GetProperty` with `IgnoreCase` doesn't find it. Skipped. Original code also wouldn't find it. Good.
+
+OK.
+
+Another issue: the `aliasMap` doesn't include all possible historical aliases. The original code only had the aliases I listed. The new code has those plus new ones for new fields. Good.
+
+What about `maxSlippageTicks`? In aliasMap. Good.
+
+What about `stealthMode`? In aliasMap. Good.
+
+What about `perTickerRatios`? In aliasMap. Good.
+
+What about `customSymbolMappings`? In aliasMap. Good.
+
+What about `sizingMode`? In aliasMap. Good.
+
+What about `mode`? In aliasMap. Good.
+
+OK.
+
+Now, one more subtle issue: the `Populate` method uses `prop.PropertyType` to determine the target type. For nullable types, `prop.PropertyType` would be `Nullable<T>`. `TryConvertToken` doesn't handle nullable types explicitly. The fallback `token.ToObject(targetType)` would handle it. But for nullable enums, the enum handler checks `targetType.IsEnum`. `Nullable<T>.IsEnum` is false. So it falls through to `token.ToObject(targetType)`. This would work via Json.NET. But if the value is unrecognised enum name, `ToObject` throws, caught, returns false. Property not set. Keeps default. Good.
+
+But if the property is `CopierMode?` and the JSON has `"mode": "Unknown"`, it would throw and keep default. Doesn't throw out. Good.
+
+What if the property is `int?` and JSON has `"fixedLotSize": null`? `TryConvertToken` returns false at top. Property not set. Keeps default. Good.
+
+What if the property is `int?` and JSON has `"fixedLotSize": 5`? `targetType == typeof(int)` is false (it's `Nullable<int>`). Falls through to `token.ToObject(targetType)`, which works. Good.
+
+But the explicit int handler isn't used for nullable int. So a string "5" for `int?` would fall through to `ToObject`, which might or might not parse it. Json.NET's `ToObject(typeof(int?))` for a string "5" would parse it to 5. Good. For "abc", it would throw, caught, returns false. Good.
+
+So nullable types are handled by the fallback. OK.
+
+What about nullable bool? Same.
+
+What about nullable double? Same.
+
+OK.
+
+Now, I think I've been thorough. Let me write the final response.
+
+Actually, one more check: the `aliasMap` uses `out propName` without `var`. In C# 8.0, `out` variables can be declared inline as `out string propName` or `out var propName`. The code uses `out propName` with `propName` declared earlier as `string propName;`. This is valid C# 7.0+. Good.
+
+Also, `out object value` in `Populate` - `value` declared in `TryConvertToken` signature. Good.
+
+Wait, in `Populate`:
+```csharp
+object value;
+if (TryConvertToken(jp.Value, prop.PropertyType, out value))
+```
+`value` is declared before the call. Valid.
+
+In `TryConvertToken` signature:
+```csharp
+bool TryConvertToken(JToken token, Type targetType, out object value)
+```
+Valid.
+
+OK.
+
+Final answer coming up.
+
+Wait, I want to also consider: should the verdict be REJECT or REVISE? The compile break means it can't be approved as-is. REVISE is appropriate because the fix is straightforward. REJECT would be if the approach is fundamentally flawed. The approach is good; just needs the compile fix and maybe the precedence fix. So REVISE.
+
+OK, writing now.</think><<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: Non-generic Enum.TryParse overload is unavailable on .NET Framework 4.8. Line `if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))` uses `Enum.TryParse(Type, string, bool, out object)`, an API introduced in .NET Core 3.0 / .NET 5. The project must compile on net48, so this line will fail to build on that target.
+- [MINOR] R1: Canonical-name precedence over camelCase aliases is lost. Line `prop.SetValue(target, value, null);` overwrites whenever conversion succeeds. If a JSON object contains both `"LeaderAccountName"` and `"leaderAccount"`, whichever property appears last in the file wins, whereas the original hand-parser always preferred the canonical name. This is a behavioural regression for hand-edited files that contain both forms.
+- [MINOR] R1: Safety-critical defaults are now implicit rather than explicit. Lines `var rel = new CopierRelationship();` and `var grp = new CopierGroup();` rely entirely on the class property initialisers for `ArmedForLive=false`, `IsEnabled=true`, `QuantityRatio=1.0`, etc. The original loader explicitly supplied these defaults. A future refactor of the data class could silently change the effective default of an absent field, violating the ticket requirement that `ArmedForLive` never default to true and that absent fields keep their existing defaults.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- Replace the non-generic `Enum.TryParse(targetType, s, true, out object e)` call with a `try/catch` around `Enum.Parse(targetType, s, true)` followed by `Enum.IsDefined(targetType, e)`, because the non-generic overload does not exist on .NET Framework 4.8. Example:
+  ```csharp
+  try
+  {
+      object e = Enum.Parse(targetType, s, true);
+      if (Enum.IsDefined(targetType, e))
+      {
+          value = e;
+          return true;
+      }
+  }
+  catch { }
+  return false;
+  ```
+- In `Populate`, preserve the original canonical-over-alias precedence: only overwrite a property that is already in `present` when the current JSON property name matches the canonical property name (case-insensitive). If an alias arrives after the canonical name, skip it so the canonical value wins.
+- Explicitly enforce the documented defaults for safety-critical fields after `Populate` returns, at least for `ArmedForLive` (must remain false when absent), so the loader does not inherit a changed class initialiser as a silent default.
+<<<END REQUIRED>>>

@@ -1,0 +1,69 @@
+<<<VERDICT>>>
+REJECT
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `Populate` helper silently swallows type-mismatch errors for critical numeric fields, violating Constraint #3.
+  Quote: `if (TryConvertToken(jp.Value, prop.PropertyType, out value)) { prop.SetValue(target, value, null); ... }` inside `Populate`, where `TryConvertToken` returns `false` on any exception or parse failure.
+  Failure Case: If `QuantityRatio` is malformed in JSON (e.g., `"quantityRatio": "not-a-number"`), `TryConvertToken` returns `false`. The property setter is skipped. Because the target object (`new CopierRelationship()`) was instantiated with default initializers *before* population, and the code relies on those initializers for defaults, this seems safe. HOWEVER, if the class uses a parameterless constructor that does NOT initialize these fields to safe defaults (relying instead on property initializers which are bypassed if the serializer creates the object differently, though here we use `new()`), or worse: if the logic assumes that a missing field means "use default" but a *present but invalid* field means "keep default", it works. 
+  BUT the real blocker is here: `if (targetType == typeof(Dictionary<string, double>)) { ... if (TryConvertToken(p.Value, typeof(double), out dv)) dict[p.Name] = (double)dv; }`. If a ratio in `PerTickerRatios` is malformed, it is silently skipped. The dictionary ends up missing that ticker. If the copier logic requires an explicit entry for a ticker to trade it (or defaults to 0 if missing), this silent drop causes the follower to miss trades or size them at 0.
+  More critically, look at the `catch` blocks in `TryConvertToken`: `catch { return false; }`. This swallows `OverflowException`, `FormatException`, etc. If `MaxPositionSize` is `"99999999999999999999"`, it fails parsing, returns false, and the field remains at its CLR default (0) if the constructor didn't set it, or stays at the initializer value. Wait, `new CopierRelationship()` runs initializers. So `MaxPositionSize` would be 100. 
+  THE REAL BLOCKER: The `aliasMap` uses `StringComparer.Ordinal`. The JSON properties might be camelCase. The `Populate` method looks up the alias: `if (!aliasMap.TryGetValue(jp.Name, out propName))`. If the JSON has `"leaderAccount"` (camelCase), it maps to `"LeaderAccountName"`. Correct. But what if the JSON has `"LeaderAccount"` (Pascal)? It's not in the map. `propName` becomes `"LeaderAccount"`. Then `type.GetProperty("LeaderAccount", ...)` is called. The actual property is `LeaderAccountName`. `GetProperty` returns null. The field is ignored. The default stays. This is fine for known aliases. 
+  BUT: `TryConvertToken` for Enums: `if (Enum.TryParse(..., true, out object e) && Enum.IsDefined(targetType, e))`. If the enum value is unknown, it returns `false`. The field is not set. The default stays. This satisfies Constraint #3.
+  
+  THE ACTUAL BLOCKER IS IN `ParseRelationship` FALLBACK LOGIC VS SHARED STATE:
+  The `Populate` method adds to `present` only if `TryConvertToken` succeeds.
+  In `ParseRelationship`: `if (!present.Contains("LeaderAccountName")) rel.LeaderAccountName = key...`.
+  If the JSON contains `"leaderAccount": ""` (empty string). `TryConvertToken` sees a string, target is string. It returns `true` with value `""`. `prop.SetValue` sets it to `""`. `present` adds `"LeaderAccountName"`.
+  The fallback `if (!present.Contains(...))` is SKIPPED.
+  Result: `LeaderAccountName` is `""`.
+  Consequence: The relationship has an empty leader account. The copier likely filters this out or matches nothing. The configuration is effectively lost for this entry, but no error is raised. The user sees the config loaded, but the relationship is dead.
+  This violates the intent of "Fixed the flat-legacy leader-key regression by tracking which JSON properties were actually present...". An empty string IS present. The code treats it as valid data, overriding the fallback to the key.
+  
+- [MAJOR] R1: `Dictionary<string, double>` and `Dictionary<string, string>` creation in `TryConvertToken` ignores the `StringComparer.OrdinalIgnoreCase` requirement for the *keys* of the nested dictionaries if the source JSON keys have weird casing, although the code does use `StringComparer.OrdinalIgnoreCase` for the new dict. Wait, `var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);`. This is correct.
+  However, `CustomSymbolMappings` (Dict<string,string>) logic: `dict[p.Name] = p.Value.Type == JTokenType.String ? p.Value.Value<string>() : p.Value.ToString();`. It does NOT use `TryConvertToken` or handle potential nulls gracefully beyond the type check. If `p.Value` is null token? `p.Value.Type` is Null. It goes to `ToString()`, which returns `null` or empty? `JToken.ToString()` returns the string representation. If the token is `JValue(null)`, `ToString()` returns `""`? No, usually `null`. If it returns `null`, `dict[p.Name] = null` throws if the dict doesn't allow null values (reference types do). But if the target property expects a non-null dictionary, and we pass one with null values, downstream code might crash.
+  More importantly, `PerTickerRatios`: `if (TryConvertToken(p.Value, typeof(double), out dv))`. If the value is `null` in JSON, `TryConvertToken` returns `false` (first line: `if (token == null || token.Type == JTokenType.Null) return false;`). The key is skipped. The resulting dictionary is missing the entry. If the sizing logic iterates this dictionary to find ratios, missing entries might default to 0 or 1 depending on implementation. If it defaults to 0, trades are blocked. If the user intended a ratio of 0.5 but typed `"0.5a"`, it's dropped. Silent data loss.
+
+- [MAJOR] R1: Lock scope violation risk / Atomicity.
+  Quote: `lock (_lock) { _relationships.Clear(); _groups.Clear(); ... _relationships.Add(...) ... }`.
+  The parsing logic (`Populate`, `TryConvertToken`, `ParseRelationship`) happens OUTSIDE the lock in the `AFTER` code?
+  Let's trace:
+  `var relsObj = ...` (Outside lock? No, inside `try`, before `lock`).
+  `if (hasStructuredSections) { if (relsObj != null) { foreach ... _relationships.Add(ParseRelationship(...)); } }`
+  WAIT. The `lock (_lock)` block starts AFTER the definition of `Populate` and `ParseRelationship`.
+  Inside the lock: `_relationships.Clear(); _groups.Clear();`.
+  Then: `if (hasStructuredSections) { if (relsObj != null) { foreach ... _relationships.Add(ParseRelationship(jObj, kv.Key)); } }`.
+  `ParseRelationship` calls `Populate`. `Populate` uses Reflection (`prop.SetValue`).
+  Is `jObj` being modified elsewhere? No.
+  Is `rel` shared? No, `new CopierRelationship()`.
+  So the heavy lifting is inside the lock. This is slow (Reflection + File I/O already done, but still).
+  BUT: The `jRoot` parsing and `aliasMap` creation are outside. That's fine.
+  The issue is: If `ParseRelationship` throws (e.g. Reflection exception), it happens inside the lock. The `try/catch` wraps the whole method.
+  `catch (Exception ex) { Console.WriteLine... }`.
+  If an exception occurs INSIDE the lock during `Add` or `Populate`, the lock is released (by `finally` implicit in `lock`), but `_relationships` has been `.Clear()`ed and partially populated.
+  The state is now: Empty or Partially filled lists.
+  The exception is swallowed. The engine continues with NO configuration or PARTIAL configuration.
+  This is a "Fail Open" or "Fail Partial" scenario.
+  Constraint #3 says: "Anything that throws leaves the engine holding NO configuration".
+  Current behavior: Clears lists FIRST. Then parses. If parse fails halfway, you have half-config.
+  Fix required: Parse into temporary lists FIRST. Then lock, clear, and assign.
+  Current Code:
+  ```csharp
+  lock (_lock)
+  {
+      _relationships.Clear();
+      _groups.Clear();
+      // ... loop adding to _relationships directly ...
+  }
+  ```
+  If the 5th of 10 relationships throws, `_relationships` has 4 items. `_groups` might be empty or partial. The engine runs with incomplete config. This is dangerous.
+
+- [MINOR] R1: `aliasMap` uses `StringComparer.Ordinal`. If the JSON contains `"Leaderaccount"` (weird case), it won't match `"leaderAccount"` in the map. It falls through to `propName = jp.Name` ("Leaderaccount"). `GetProperty` with `IgnoreCase` finds `LeaderAccountName`. This works.
+  But if the JSON contains `"leaderAccount "` (trailing space)? `jp.Name` is `"leaderAccount "`. Map misses. `GetProperty` fails (no property with space). Field dropped. Silent failure.
+
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- Refactor `LoadFromDisk` to parse ALL relationships and groups into temporary local lists (`List<CopierRelationship> tempRels`, `List<CopierGroup> tempGrps`) BEFORE acquiring `_lock`. Only enter the `lock (_lock)` block to perform `_relationships = tempRels; _groups = tempGrps;` (or clear and add range) once validation and parsing are fully complete. This ensures atomicity: either the full config loads, or the old config remains intact (on exception).
+- Modify `Populate` or the fallback logic in `ParseRelationship`/`ParseGroup` to treat empty strings (`""`) for critical identifier fields (`LeaderAccountName`, `FollowerAccountName`, `GroupName`) as "absent". Specifically, after `prop.SetValue`, check if the value is a string and IsNullOrWhiteSpace. If so, do NOT add to the `present` set, allowing the fallback logic (key derivation) to trigger. Alternatively, adjust `TryConvertToken` to return `false` for whitespace-only strings when the target is a non-nullable identifier.
+- Ensure `TryConvertToken` for `Dictionary` types logs or handles missing/skipped entries more robustly if the business logic depends on their presence, or verify that the downstream sizing logic correctly handles missing ticker entries (defaulting to 1.0 or refusing trade) rather than 0.0. Given the "Fail Closed on Entries" rule, missing ratio data should ideally prevent the copy, not default to 0 (silent block) or 1 (unexpected exposure). If the current design defaults missing ratios to 1.0, document this; if it defaults to 0, this is a hidden blocker.
+- Add a sanity check: After parsing, if `_relationships.Count == 0` and the file existed and had content, log a WARNING indicating potential total config loss due to format errors, rather than silently continuing with an empty config.
+<<<END REQUIRED>>>

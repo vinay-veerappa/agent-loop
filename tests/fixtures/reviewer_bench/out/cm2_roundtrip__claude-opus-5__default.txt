@@ -1,0 +1,1 @@
+ERROR: claude-opus-5 failed after 1 attempt: HTTPError 404: Not Found -- {"error":"mode

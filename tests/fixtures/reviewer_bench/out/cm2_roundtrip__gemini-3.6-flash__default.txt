@@ -1,0 +1,1 @@
+ERROR: gemini-3.6-flash failed after 1 attempt: HTTPError 404: Not Found -- {"error":"m

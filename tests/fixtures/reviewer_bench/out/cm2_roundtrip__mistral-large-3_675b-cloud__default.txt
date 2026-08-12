@@ -1,0 +1,75 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: **Silent numeric/bool deserialization failure produces zero values instead of defaults**
+  Line: `if (TryConvertToken(jp.Value, prop.PropertyType, out value))`
+  The `TryConvertToken` helper returns `false` on any conversion failure (including malformed numbers/bools), but the calling `Populate` method does **not** apply the property's default value in this case. This violates constraint #3: a malformed `MaxPositionSize` or `QuantityRatio` will silently become `0` instead of the intended default (`100` or `1.0`), creating a naked-risk path where fills are sized at zero (leader trades, follower does not). The green-at-baseline test for this case is explicitly cited in the ticket and must not break.
+
+- [BLOCKER] R1: **Enum deserialization tolerance is overbroad**
+  Line: `if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))`
+  The `TryConvertToken` helper accepts **any** integer value for enums (via `Enum.ToObject`), even if it is not a defined value. This violates the requirement that unrecognized enum *names* are tolerated but unrecognized *values* must fail closed. A malformed `SizingMode = 999` (not a defined enum value) should not be silently accepted; it should either fail closed or default to the property initializer's value.
+
+- [MAJOR] R1: **`ArmedForLive` can be incorrectly defaulted to `true`**
+  Line: `if (!present.Contains("ArmedForLive"))` is missing in `ParseRelationship` and `ParseGroup`
+  The `Populate` helper does not track whether `ArmedForLive` was present in the JSON. If the field is absent, the property initializer (`false`) is used, but if the JSON contains a malformed value (e.g., `"ArmedForLive": "not-a-bool"`), `TryConvertToken` returns `false` and the property remains at its default (`false`). However, the `ParseRelationship`/`ParseGroup` methods do not explicitly set `ArmedForLive` when the field is missing, which is correct, but the lack of a `present.Contains` check means the code cannot distinguish between "field absent" and "field malformed". This is a latent risk: if the property initializer ever changes to `true`, the code will incorrectly default `ArmedForLive` to `true` for malformed values.
+
+- [MAJOR] R1: **`PerTickerRatios` and `CustomSymbolMappings` dictionaries lose case-insensitive comparison**
+  Line: `var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);`
+  The `TryConvertToken` helper creates dictionaries with `StringComparer.OrdinalIgnoreCase` for `PerTickerRatios` and `CustomSymbolMappings`, but the `Populate` method does not enforce this on the target object. If the target property (`PerTickerRatios` or `CustomSymbolMappings`) was initialized with `StringComparer.Ordinal`, the deserialized dictionary will overwrite it with a case-insensitive comparer, which is correct, but if the target property was already case-insensitive, this is redundant. More critically, if the target property's comparer is ever changed to `Ordinal`, this code will silently break case-insensitive lookups.
+
+- [MINOR] R1: **`TryConvertToken` swallows all exceptions, including `OutOfMemoryException` and `StackOverflowException`**
+  Line: `catch { return false; }`
+  The `TryConvertToken` helper catches all exceptions, including fatal ones like `OutOfMemoryException` or `StackOverflowException`. This violates fail-safe principles: the method should only catch `JsonException`, `FormatException`, `InvalidCastException`, and `ArgumentException`. Swallowing fatal exceptions could mask critical system failures.
+
+- [MINOR] R1: **`ParseRelationship` and `ParseGroup` do not validate required fields**
+  Lines: `ParseRelationship` and `ParseGroup` methods
+  The methods do not validate that required fields (e.g., `LeaderAccountName`, `FollowerAccountName`) are non-null/non-empty after applying defaults. While the defaults ensure these fields are never `null`, an empty string (e.g., `"LeaderAccountName": ""`) would pass through unchecked, leading to runtime errors when the copier attempts to use the account name.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- **Fix silent numeric/bool deserialization failure**:
+  In `Populate`, after the `TryConvertToken` call, if the conversion fails, explicitly set the property to its default value (e.g., `rel.MaxPositionSize = 100`). Do this for all numeric/bool fields with non-zero defaults (`MaxPositionSize`, `QuantityRatio`, `FixedLotSize`, `DailyLossLimit`, `MaxSlippageTicks`). Example:
+  ```csharp
+  if (TryConvertToken(jp.Value, prop.PropertyType, out value))
+  {
+      prop.SetValue(target, value, null);
+      present.Add(prop.Name);
+  }
+  else if (prop.Name == "MaxPositionSize")
+  {
+      prop.SetValue(target, 100, null);
+  }
+  // Repeat for other fields
+  ```
+
+- **Fix enum deserialization tolerance**:
+  In `TryConvertToken`, remove the `else if (token.Type == JTokenType.Integer)` branch for enums. Only allow string-based enum parsing. If the integer value is not a defined enum value, return `false`.
+
+- **Add `ArmedForLive` presence check**:
+  In `ParseRelationship` and `ParseGroup`, add explicit checks for `ArmedForLive` presence:
+  ```csharp
+  if (!present.Contains("ArmedForLive"))
+      rel.ArmedForLive = false; // Explicitly set to default
+  ```
+
+- **Enforce case-insensitive dictionaries**:
+  In `Populate`, after setting `PerTickerRatios` or `CustomSymbolMappings`, explicitly reassign the dictionary with `StringComparer.OrdinalIgnoreCase`:
+  ```csharp
+  if (prop.Name == "PerTickerRatios" && value is Dictionary<string, double> dict)
+  {
+      prop.SetValue(target, new Dictionary<string, double>(dict, StringComparer.OrdinalIgnoreCase), null);
+  }
+  // Repeat for CustomSymbolMappings
+  ```
+
+- **Narrow exception handling in `TryConvertToken`**:
+  Replace the catch-all `catch { return false; }` with specific exception handling for `JsonException`, `FormatException`, `InvalidCastException`, and `ArgumentException`.
+
+- **Validate required fields**:
+  In `ParseRelationship` and `ParseGroup`, add validation for non-empty `LeaderAccountName` and `FollowerAccountName`:
+  ```csharp
+  if (string.IsNullOrEmpty(rel.LeaderAccountName))
+      throw new InvalidOperationException("LeaderAccountName cannot be null or empty");
+  // Repeat for FollowerAccountName
+  ```
+<<<END REQUIRED>>>

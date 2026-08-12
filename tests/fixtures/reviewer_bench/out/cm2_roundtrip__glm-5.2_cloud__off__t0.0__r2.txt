@@ -1,0 +1,47 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `TryConvertToken` fallback for unhandled types silently swallows all exceptions and returns `false`, which causes the property to retain its C# initialiser default. This is the exact naked-risk regression the ticket prohibits. Quoting the code:
+  ```csharp
+  try
+  {
+      value = token.ToObject(targetType);
+      return true;
+  }
+  catch
+  {
+      return false;
+  }
+  ```
+  Concrete failure case: If a future property is added of a type not explicitly handled by `TryConvertToken` (e.g., a `TimeSpan`, a nested POCO, or any custom struct), and the JSON contains a malformed value for it, `token.ToObject(targetType)` throws. The catch swallows it, `Populate` sees `false`, skips the assignment, and the property keeps its initialiser default. If that property is a numeric cap or ratio, the engine silently sizes fills at zero or refuses entries, leaving the leader trading unprotected. The ticket explicitly states: "A malformed NUMBER must fail closed -- refusing the entry is fine, keeping the intended default is fine, silently producing zero is not." This catch block violates that constraint for any type not special-cased above it. Remove the blanket `try/catch` around `token.ToObject(targetType)` and let the exception propagate to the outer `LoadFromDisk` catch, which clears `_relationships` and `_groups` (fail-closed).
+
+- [MAJOR] R1: The `Populate` method uses `BindingFlags.IgnoreCase` in the `GetProperty` call, but this flag is **ignored by .NET reflection for property name lookup** — `GetProperty` with a string name always performs a case-sensitive match. Quoting:
+  ```csharp
+  System.Reflection.PropertyInfo prop = type.GetProperty(propName,
+      System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
+  ```
+  Concrete failure case: If the JSON file contains a PascalCase property name that is not in the `aliasMap` (e.g., a newly added property `NewField` that is written by `SaveToDisk` but not yet added to `aliasMap`), and the JSON key arrives as `newfield` or `NEWFIELD`, `GetProperty` returns `null` because `BindingFlags.IgnoreCase` has no effect. The property is silently dropped — the exact defect class being fixed. The `aliasMap` only covers camelCase aliases for known fields; any PascalCase variant in the file with different casing is lost. Use a case-insensitive lookup manually (e.g., `type.GetProperties().FirstOrDefault(p => string.Equals(p.Name, propName, StringComparison.OrdinalIgnoreCase))`) or ensure the alias map covers all needed variants.
+
+- [MAJOR] R1: The `TryConvertToken` enum path uses `Enum.TryParse` followed by `Enum.IsDefined`, but `Enum.TryParse` with `ignoreCase: true` will successfully parse a string like `"perTickerMatrix"` if the enum member is `PerTickerMatrix`, which is correct. However, for an **unrecognised** enum name, `Enum.TryParse` returns `false` and the method returns `false` — the property keeps its default. This is the intended tolerance. But the integer path has a subtle gap: `Enum.IsDefined` does not check `[Flags]` combinations. If any enum in `CopierRelationship` or `CopierGroup` is a `[Flags]` enum, a valid combined integer value (e.g., `3` for `FlagA | FlagB`) would be rejected by `Enum.IsDefined`, silently dropping a legitimate value. Quoting:
+  ```csharp
+  int i = token.Value<int>();
+  object e = Enum.ToObject(targetType, i);
+  if (Enum.IsDefined(targetType, e))
+  {
+      value = e;
+      return true;
+  }
+  return false;
+  ```
+  Concrete failure case: If `Mode` or `SizingMode` is ever changed to a `[Flags]` enum, a saved combined value is silently dropped on reload, reverting to the default mode. Verify no `[Flags]` enums are involved, or use `targetType.IsEnum && !targetType.GetCustomAttributes(typeof(FlagsAttribute), false).Any()` to guard the `Enum.IsDefined` check.
+
+- [MINOR] R1: The `Populate` method adds to the `present` set using `prop.Name` (the resolved canonical name), but `ParseRelationship` and `ParseGroup` check `present.Contains("Id")`, `present.Contains("LeaderAccountName")`, etc. with `StringComparer.OrdinalIgnoreCase`. This is correct. However, if `TryConvertToken` returns `false` for a property that IS present in the JSON (e.g., a malformed number), the property is NOT added to `present`, and the fallback logic in `ParseRelationship`/`ParseGroup` will apply the key-derived default. This means a malformed `LeaderAccountName` (e.g., a JSON null) would fall back to the dictionary key, which may be acceptable, but a malformed `MaxPositionSize` (e.g., `"abc"`) would NOT be added to `present`, would NOT get a key-derived fallback (there is none for `MaxPositionSize`), and would retain the C# initialiser default of 100. This is the correct behaviour per the ticket (keeping the intended default is fine). No action needed, but documenting for clarity.
+
+- [MINOR] R1: The `aliasMap` is allocated on every `LoadFromDisk` call. It could be a static readonly field. Not a correctness issue, but a minor allocation inefficiency in a method that reads from disk (already I/O-bound, so negligible). No action required.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- Remove the blanket `try { value = token.ToObject(targetType); return true; } catch { return false; }` fallback in `TryConvertToken`. Let exceptions from unhandled types propagate to the outer `LoadFromDisk` catch block so a malformed value fails closed (clearing all config) rather than silently reverting to a default that may be zero.
+- Replace the `GetProperty` call in `Populate` that relies on `BindingFlags.IgnoreCase` (which .NET ignores for string-based lookup) with an explicit case-insensitive property search, e.g., `type.GetProperties().FirstOrDefault(p => string.Equals(p.Name, propName, StringComparison.OrdinalIgnoreCase))`, so that PascalCase property names arriving in non-matching casing are not silently dropped.
+- If any enum used by `CopierRelationship` or `CopierGroup` (including `SizingMode` or `Mode`) carries `[Flags]`, replace the `Enum.IsDefined` check in the integer enum branch with a validation that allows valid flag combinations, or document that no `[Flags]` enums are used and add a regression test to pin it.
+<<<END REQUIRED>>>

@@ -1,0 +1,13 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [MAJOR] R1: TryConvertToken for Dictionary<string, double> silently skips entries with malformed values (e.g., `"MES": true`), returning a partially populated dictionary. This can cause PerTickerRatios to miss critical entries, leading to incorrect sizing or refusal behavior. The constraint requires malformed numbers to fail closed; silently omitting entries is not fail-closed. The method should return false if any value fails to convert, so the entire property is not set and the default (empty dictionary) is used.
+- [MINOR] R1: TryConvertToken for List<string> (used for FollowerAccounts) converts non-string elements to strings via ToString(), e.g., an array containing numbers becomes a list of stringified numbers. The original code would throw and discard the entire config; the new code silently accepts malformed lists, potentially causing runtime errors when the copier attempts to use invalid account names. Should return false if any element is not a string, preserving the original fail-closed behavior.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- In TryConvertToken, for Dictionary<string, double>, change the loop to track success: if any recursive TryConvertToken returns false, return false immediately instead of continuing. This ensures a malformed value in the dictionary causes the entire property load to fail, leaving the default empty dictionary.
+- In TryConvertToken, for List<string>, check each element's type: if any token is not JTokenType.String, return false. This prevents silent conversion of non-string data into invalid account names.
+- Add a test that saves a config with a malformed PerTickerRatios value (e.g., `"MES": "abc"`) and verifies that after LoadFromDisk the PerTickerRatios dictionary is empty (default), not partially populated.
+- Add a test that saves a config with a malformed FollowerAccounts (e.g., `[123, "Sim101"]`) and verifies that the group is either not loaded or has an empty FollowerAccounts list, matching the original strict behavior.
+<<<END REQUIRED>>>

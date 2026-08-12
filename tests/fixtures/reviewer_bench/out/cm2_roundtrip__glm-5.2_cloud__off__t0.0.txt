@@ -1,0 +1,29 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `TryConvertToken` fallback for unknown types swallows all exceptions and returns `false`, leaving the property at its initialiser default. This is the exact naked-risk regression the ticket warns about. The line `catch { return false; }` at the generic fallback means a malformed `PerTickerRatios` value (e.g., a string where a number is expected) silently leaves the ratio at 0.0 instead of failing closed. A zero ratio sizes every fill at nothing, so the leader trades and the follower does not. The same applies to any future complex type added to `CopierRelationship` or `CopierGroup`.
+
+- [BLOCKER] R1: The `Populate` method uses `BindingFlags.IgnoreCase` when resolving properties, which means a JSON key like `"leaderAccountName"` (note the extra "Name") would map to `LeaderAccountName` even though it is NOT in the alias map. This is not the same as the camelCase aliases the ticket requires. The ticket says the aliases are different NAMES, not different cases. Using `IgnoreCase` here is a latent bug that could map unintended fields and is inconsistent with the explicit alias map approach.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, double>` silently skips entries that fail to convert: `if (TryConvertToken(p.Value, typeof(double), out dv)) dict[p.Name] = (double)dv;`. If a single ratio value in `PerTickerRatios` is malformed, it is silently dropped, leaving the follower with no sizing for that ticker. This is a partial silent drop, which is the defect being fixed.
+
+- [MAJOR] R1: The `TryConvertToken` method for `Dictionary<string, string>` does not validate values at all: `dict[p.Name] = p.Value.Type == JTokenType.String ? p.Value.Value<string>() : p.Value.ToString();`. A null or malformed value in `CustomSymbolMappings` would be stored as a string representation of the token, potentially causing silent misrouting of orders to the wrong symbol.
+
+- [MINOR] R1: The `present` HashSet uses `StringComparer.OrdinalIgnoreCase`, but the alias map uses `StringComparer.Ordinal`. This means `present.Contains("Id")` would match even if the JSON key was `"id"` (via the alias map), but the alias map itself would not match `"ID"`. This inconsistency is not currently a bug but is fragile.
+
+- [MINOR] R1: The `ParseGroup` method does not apply a key-derived fallback for `FollowerAccountName` (it only checks `FollowerAccounts`), while `ParseRelationship` does. This is intentional for groups (which use a list), but the asymmetry is worth noting for maintainability.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+1. Remove the generic `catch { return false; }` fallback in `TryConvertToken`. For any type not explicitly handled, either add an explicit handler or let the exception propagate so `LoadFromDisk`'s outer try/catch catches it and fails closed (clearing all config). Do NOT silently leave properties at their default.
+
+2. Remove `System.Reflection.BindingFlags.IgnoreCase` from the `GetProperty` call in `Populate`. Property resolution must be case-sensitive after alias mapping. The alias map is the ONLY mechanism for mapping camelCase to PascalCase.
+
+3. In the `Dictionary<string, double>` handler in `TryConvertToken`, if `TryConvertToken` fails for any value, the entire dictionary parse must fail (return `false`), not silently skip the entry. A single bad ratio must not silently produce a zero-sizing configuration.
+
+4. In the `Dictionary<string, string>` handler in `TryConvertToken`, validate that `p.Value` is a string. If it is not, return `false` so the outer catch handles it. Do not call `.ToString()` on non-string tokens.
+
+5. Add a test that verifies a malformed number in `PerTickerRatios` causes `LoadFromDisk` to clear all relationships (fail closed), not silently produce a zero ratio.
+
+6. Add a test that verifies a JSON key like `"leaderAccountName"` (with the extra "Name") does NOT map to `LeaderAccountName` (since it is not in the alias map).
+<<<END REQUIRED>>>

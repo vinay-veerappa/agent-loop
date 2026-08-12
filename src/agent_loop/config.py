@@ -435,11 +435,32 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # same things -- which is the only thing that justifies the panel's cost.
     #
     # glm-5.2 is MEASURED good at generating findings (five correct ones on the O3
-    # patch). minimax-m3 is the second family: it is what every command in
-    # HANDOVER §5 has been pairing with glm, and on the O29 review it raised a
-    # correct point glm did not (that production profiles also hardcode `python`,
-    # which became O35) -- the marginal value a second viewpoint is supposed to
-    # provide, observed rather than assumed.
+    # patch, and the only model to find CM2's strongest defect at all).
+    #
+    # THE SECOND SEAT CHANGED 2026-08-11, from minimax-m3 to deepseek-v4-flash.
+    # O63 measured the reviewer role for the first time -- one labelled case,
+    # every reachable model, with repetitions. minimax-m3 filed 0 findings on six
+    # recorded occasions (O3 patch, CM2 rounds 2/3/4, two bench draws) at ~197s
+    # and ~22k tokens each, of which 91559 characters were reasoning it discarded
+    # to return a 129-byte APPROVE/NONE/NONE. It is not a pure zero -- the O29
+    # review gave us O35 -- so call it 1-in-7. And because APPROVE is the BEST
+    # rank under worst-wins, it could never change a verdict either: its entire
+    # possible contribution was that 1-in-7.
+    #
+    # deepseek-v4-flash is a different family from glm (so the two-viewpoint
+    # policy still holds) and files findings on every draw, in ~20s against
+    # minimax's ~197s. Two things to know about it:
+    #
+    #   * it returns REJECT on essentially every candidate (4 of 4 that parsed),
+    #     which is why review_panel now downgrades an UNCORROBORATED REJECT to
+    #     REVISE. Without that rule this seat would order a rewrite every round.
+    #   * 1 of 5 draws degenerated -- 48000 tokens, unparseable. The panel goes
+    #     INVALID and the round retries, which is the designed response, but
+    #     expect it at roughly that rate.
+    #
+    # It did NOT find CM2's strongest defect on any of 5 draws, where glm found
+    # it on 2 of 5. The second seat is breadth, not a second chance at the same
+    # finding -- see O63 on why that distinction is the whole panel question.
     #
     # `check_panel_policy` fails the build if this ever drops to one member or to
     # a single family.
@@ -460,7 +481,7 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # above the model's ceiling is refused at the API).
     "reviewer": RoleSettings(
         model="glm-5.2:cloud", max_tokens=48000, think=False, capability="fast",
-        extra_members=("minimax-m3:cloud",),
+        extra_members=("deepseek-v4-flash:cloud",),
     ),
     # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
     # glm-5.2 raised six findings on the O3 patch, five of them verified correct
