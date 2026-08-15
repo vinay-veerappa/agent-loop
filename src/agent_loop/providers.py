@@ -585,7 +585,7 @@ def _call_agy(model, messages, temperature, max_tokens, timeout, num_ctx, think=
     scratch = tempfile.mkdtemp(prefix="agy-")
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout + 30,
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout + 30,
             env=env, cwd=scratch,
         )
     except subprocess.TimeoutExpired:

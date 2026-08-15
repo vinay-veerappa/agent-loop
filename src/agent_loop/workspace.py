@@ -50,6 +50,10 @@ def _pid_alive(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
             capture_output=True,
             text=True,
+            # A liveness probe must not be able to throw. tasklist prints process names, and
+            # one non-ASCII name would otherwise take down the run on a cp1252 decode.
+            encoding="utf-8",
+            errors="replace",
         ).stdout
         return str(pid) in out
     try:
@@ -98,7 +102,7 @@ def run_lock(path: Path, holder: str = "", wait_secs: int = 0) -> Iterator[None]
 # --------------------------------------------------------------------------
 def _git(repo: Path, *args: str, check: bool = True, timeout: int = 300) -> str:
     proc = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=timeout
+        ["git", *args], cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
     )
     if check and proc.returncode != 0:
         raise WorkspaceError(f"git {' '.join(args)} failed: {proc.stderr.strip() or proc.stdout.strip()}")
@@ -119,7 +123,7 @@ class Workspace:
     def run(self, cmd: str, timeout: int = 900) -> Tuple[int, str]:
         """Run a shell command with the worktree as cwd."""
         proc = subprocess.run(
-            cmd, shell=True, cwd=str(self.root), capture_output=True, text=True, timeout=timeout
+            cmd, shell=True, cwd=str(self.root), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
         )
         return proc.returncode, (proc.stdout or "") + "\n" + (proc.stderr or "")
 

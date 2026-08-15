@@ -69,6 +69,9 @@ class MCPClient:
             stderr=subprocess.PIPE,
             env=full_env,
             text=True,
+            # errors='replace' as well as the encoding: an MCP server that emits one byte of
+            # invalid UTF-8 must not kill the reader thread, which fails as a silent None.
+            errors="replace",
             bufsize=1,
             encoding="utf-8",
         )

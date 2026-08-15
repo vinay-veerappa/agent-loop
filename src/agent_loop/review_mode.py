@@ -52,7 +52,7 @@ class ReviewError(RuntimeError):
 
 def _git(repo: Path, *args: str, timeout: int = 120) -> str:
     p = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, timeout=timeout
+        ["git", *args], cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
     )
     if p.returncode != 0:
         raise ReviewError(f"git {' '.join(args)} failed: {p.stderr.strip()[:300]}")

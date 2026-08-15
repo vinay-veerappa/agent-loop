@@ -179,8 +179,23 @@ _DIAG = re.compile(r"\b(error|warning)\s+[A-Z]{2}\d{3,}")
 
 
 def _run(cmd: str, cwd: Path, timeout: int) -> Tuple[int, str]:
+    # ⚠️ `text=True` WITHOUT AN EXPLICIT ENCODING DECODES AS cp1252 ON WINDOWS, and one
+    # non-ASCII byte in a build or test line kills the reader thread with UnicodeDecodeError.
+    # Every gate runs through here, so the whole ticket dies -- and it does NOT surface as an
+    # encoding problem. Measured 2026-08-15 on `nt8-mcp-bridge`, whose harness prints two
+    # assertion messages containing `⚠️`:
+    #
+    #   UnicodeDecodeError: 'charmap' codec can't decode byte 0x8f in position 19212
+    #   ERROR T1: baseline test run produced no parseable result summary
+    #
+    # The visible message blames the consumer's test output for being unparseable, so the repo
+    # looks misconfigured. That harness had never been runnable by this loop and nothing said so.
+    #
+    # `errors='replace'` as well as the encoding: a mojibake character in a diagnostic is worth
+    # infinitely more than losing the run, and a gate's product is the DIAGNOSTIC, not fidelity.
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
     )
     return proc.returncode, (proc.stdout or "") + "\n" + (proc.stderr or "")
 

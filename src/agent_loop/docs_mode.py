@@ -188,7 +188,7 @@ def _run_changelog(
     """diff → changelog entry."""
     diff_proc = subprocess.run(
         ["git", "diff", diff_ref], cwd=str(repo),
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
     )
     diff = diff_proc.stdout
     if not diff.strip():
@@ -231,14 +231,14 @@ def _run_handover(
     # Get git status
     status_proc = subprocess.run(
         ["git", "status", "--short"], cwd=str(repo),
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
     )
     git_status = status_proc.stdout or "(clean)"
 
     # Get recent diff (if any)
     diff_proc = subprocess.run(
         ["git", "diff", "--stat"], cwd=str(repo),
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
     )
     diff_stat = diff_proc.stdout or "(no uncommitted changes)"
 

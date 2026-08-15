@@ -230,7 +230,7 @@ def failures_in(output: str, header: str):
 
 
 def run_suite():
-    p = subprocess.run(TEST_CMD, cwd=REPO, capture_output=True, text=True, timeout=1800)
+    p = subprocess.run(TEST_CMD, cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     return p.stdout + p.stderr
 
 
