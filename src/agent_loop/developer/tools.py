@@ -378,6 +378,12 @@ def _run_build(repo: Path, profile: Profile, files: Optional[List[str]] = None) 
         proc = subprocess.run(
             cmd, shell=True, cwd=str(repo),
             capture_output=True, text=True, timeout=900,
+            # Pinned encoding: text=True without encoding= decodes as cp1252 on
+            # Windows, and one non-ASCII byte kills the reader thread. stdout
+            # is then None with returncode==0, so the slice below raises
+            # TypeError and a successful build is reported as FAIL. See
+            # AGENT_LOOP_THIRD_REVIEW.md R1 and the encoding gate.
+            encoding="utf-8", errors="replace",
         )
         if proc.returncode == 0:
             return f"OK: build succeeded\n{proc.stdout[-2000:]}"
@@ -397,6 +403,8 @@ def _run_tests(repo: Path, profile: Profile) -> str:
         proc = subprocess.run(
             profile.test_cmd, shell=True, cwd=str(repo),
             capture_output=True, text=True, timeout=900,
+            # Pinned encoding: see _build above.
+            encoding="utf-8", errors="replace",
         )
         output = proc.stdout + "\n" + proc.stderr
         # Parse with the loop's test parser

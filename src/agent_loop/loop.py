@@ -522,6 +522,15 @@ def review_panel(
 # --------------------------------------------------------------------------
 # Ledger
 # --------------------------------------------------------------------------
+# The set of stages that are actual mechanical gates, not pipeline phases.
+# "implement" and "review" are stages where a model call can fail, but they
+# are not gates -- a gate is a deterministic mechanical check (protected,
+# static, lint, compile, test, lock-scope). Labeling "implement" as a gate
+# failure in the ledger misled the report into counting a provider timeout
+# as a gate failure (N8).
+_GATE_NAMES = frozenset({"protected", "static", "lint", "compile", "test", "lock-scope"})
+
+
 def failed_gate_names(rounds: Sequence[Dict[str, Any]]) -> List[str]:
     """The distinct gates that blocked any round of a ticket, sorted.
 
@@ -535,10 +544,15 @@ def failed_gate_names(rounds: Sequence[Dict[str, Any]]) -> List[str]:
     carries one, but a ledger is append-only and long-lived, and a KeyError
     here would crash a completed ticket at the moment it records its result --
     losing the run's outcome over a malformed round.
+
+    Only mechanical gate names are returned, not pipeline stages like
+    "implement" or "review" (N8). A provider timeout in the implement stage
+    is not a gate failure -- it is an outage.
     """
     return sorted({
-        r.get("stage", "") for r in rounds if not r.get("ok", True)
-    } - {""})
+        r.get("stage", "") for r in rounds
+        if not r.get("ok", True) and r.get("stage", "") in _GATE_NAMES
+    })
 
 
 def terminal_ledger_record(tid: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -651,6 +665,34 @@ def run_ticket(
                               "applied_approved": False, "applied_unapproved": False,
                               "cost_usd": 0.0}
     convergence: List[Tuple[int, set]] = []
+
+    # ---- invariant checks: guard the architecture's central guarantees.
+    # The README states "the arbiter must not be the same model as any
+    # reviewer" and "different model families review concurrently." Neither
+    # was enforced in code -- a config setting arbiter==reviewer silently
+    # collapsed the separation of detection from adjudication, and duplicate
+    # reviewers provided zero additional signal. See N1, N6.
+    if arbiter_model and arbiter_model in reviewers:
+        result["final_verdict"] = "CONFIG_REJECTED"
+        result["detail"] = (
+            f"arbiter model ({arbiter_model}) is also a reviewer. The arbiter "
+            f"must be a different model from any reviewer -- separation of "
+            f"detection from adjudication is the loop's central thesis. "
+            f"Change roles.arbiter.model in agent_loop.config.json."
+        )
+        print(f"  REFUSED: {result['detail']}")
+        return result
+    if len(reviewers) != len(set(reviewers)):
+        dups = [m for m in reviewers if reviewers.count(m) > 1]
+        result["final_verdict"] = "CONFIG_REJECTED"
+        result["detail"] = (
+            f"duplicate reviewers: {dups}. Different model families review "
+            f"concurrently so the worst verdict wins; identical reviewers "
+            f"provide zero additional signal. Remove the duplicate from "
+            f"roles.reviewer.models in agent_loop.config.json."
+        )
+        print(f"  REFUSED: {result['detail']}")
+        return result
 
     region_files = sorted({r["file"] for r in ticket["regions"]})
     g0 = gates.check_protected_paths(region_files, profile.protected or gates.DEFAULT_PROTECTED)
@@ -1009,8 +1051,6 @@ def run_ticket(
 
             # ---- arbitration: which of these findings actually block?
             all_findings = [f for v in panel.votes if v.counted for f in v.finding_list]
-            blocking = [f for f in all_findings if f.blocking]
-            convergence.append((len(blocking), {f.signature for f in blocking}))
 
             adj = None
             if arbiter_model and all_findings:
@@ -1076,6 +1116,20 @@ def run_ticket(
                     break
 
             result["rounds"][-1]["arbiter"] = adj.summary() if adj and adj.ok else None
+
+            # Track convergence using ONLY the findings the arbiter UPHELD, not
+            # all blocking findings filed by reviewers. A reviewer that files
+            # repeated MAJORs the arbiter consistently REJECTS inflates the old
+            # count and can trigger a false NOT_CONVERGING stop on a ticket
+            # that is actually converging (the arbiter is rejecting the noise,
+            # the implementer is fixing the signal). The thrashing detector is
+            # "the arbiter cannot converge," so it should be keyed on what the
+            # arbiter upholds, not on what the reviewers file. See N4.
+            if adj and adj.ok and adj.upheld_indices:
+                upheld = [all_findings[i - 1] for i in adj.upheld_indices]
+            else:
+                upheld = []
+            convergence.append((len(upheld), {f.signature for f in upheld}))
 
             if adj and adj.ok and adj.recommendation == arbiter.ESCALATE:
                 final = "ESCALATED"

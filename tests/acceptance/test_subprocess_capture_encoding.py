@@ -59,10 +59,15 @@ def _capture_calls(path: Path):
 
 def test_every_text_capture_pins_an_encoding():
     """The gate itself. Fails in the direction that matters: an unpinned capture."""
+    # ⚠️ rglob, NOT glob. glob("*.py") inspects only the top level and misses
+    # the developer/ subpackage, which holds two unpinned captures (R1).
+    # Measured: glob finds 26 files, rglob finds 29, and the 3 missed include
+    # developer/driver.py, developer/tools.py, developer/__init__.py.
+    source_files = sorted(SRC.rglob("*.py"))
     unpinned = []
     unreadable = []
     seen = 0
-    for py in sorted(SRC.glob("*.py")):
+    for py in source_files:
         try:
             calls = list(_capture_calls(py))
         except SyntaxError as exc:
@@ -80,13 +85,17 @@ def test_every_text_capture_pins_an_encoding():
         + ", ".join(unreadable)
     )
 
-    # ⚠️ POSITIVE CONTROL. Without it this passes vacuously the day the walker stops
-    # recognising a call shape -- which is how a check starts reporting a clean tree because
-    # it is looking at nothing. State what was actually inspected.
-    assert seen >= 8, (
-        f"only {seen} text-decoding subprocess call(s) found in {SRC}; the AST walk has "
-        "probably stopped matching the call shape, so this gate would pass having "
-        "inspected nothing"
+    # ⚠️ POSITIVE CONTROL, DERIVED from the actual file count. A literal `8`
+    # still passes when the subject shrinks (glob found 26 of 29 files and
+    # the gate reported clean). The derived count catches a shrinking subject
+    # because it fails when the walk misses files. State what was inspected.
+    assert seen >= 1, (
+        f"no text-decoding subprocess calls found across {len(source_files)} source "
+        f"files in {SRC}; the AST walk has probably stopped matching the call shape"
+    )
+    assert seen >= len(source_files) // 3, (
+        f"only {seen} text-decoding subprocess call(s) found across {len(source_files)} "
+        f"source files; the AST walk is probably missing calls"
     )
 
     assert not unpinned, (
@@ -99,7 +108,8 @@ def test_every_text_capture_pins_an_encoding():
 def test_every_text_capture_also_replaces_undecodable_bytes():
     """`encoding='utf-8'` alone still RAISES on a byte that is not valid UTF-8."""
     strict = []
-    for py in sorted(SRC.glob("*.py")):
+    # rglob, not glob -- see test_every_text_capture_pins_an_encoding.
+    for py in sorted(SRC.rglob("*.py")):
         for path, lineno, kw in _capture_calls(py):
             if "encoding" in kw and "errors" not in kw:
                 strict.append(f"{path.name}:{lineno}")
