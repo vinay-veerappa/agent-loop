@@ -41,6 +41,42 @@ OUTPUT FORMAT - obey exactly:
 """
 
 
+# Path-isolated test system: the test writer sees the SPEC and the DEFECT, but
+# NOT the implementation code. This satisfies the independence property the
+# critical review (C-section 1) identified: a test generated from the
+# implementation can be tautological (it tests what the code does, not what the
+# spec says). A test generated from the spec alone is independent of the
+# implementation path -- even if the same model writes both, the test was
+# produced without sight of the code it will be tested against.
+PATH_ISOLATED_SYSTEM = """You are a senior software engineer writing acceptance tests.
+
+Your job is to write tests that FAIL at baseline (before the fix) and PASS
+after the fix is applied. You are given the DEFECT DESCRIPTION and the
+SPECIFICATION of the required behaviour. You are NOT given the implementation
+code -- this is deliberate: a test that is independent of the implementation
+is a test that validates the spec, not the code. A test generated from the
+implementation can be tautological.
+
+Write tests that assert the SPECIFIC BEHAVIOUR described in the specification.
+The tests must be real tests that fail because the behaviour is wrong, not
+because of a missing import or a syntax error.
+
+Write them in the LANGUAGE AND TEST STYLE named in the request, and match the
+conventions of the existing test sources you are shown. Do not import a testing
+framework the project does not use.
+
+OUTPUT FORMAT - obey exactly:
+<<<TESTS>>>
+```<language>
+// the complete contents of the test file, in the project's language
+```
+<<<END TESTS>>>
+<<<NOTES>>>
+- why these tests cover the defect, and why they are independent of the implementation
+<<<END NOTES>>>
+"""
+
+
 def default_test_path(profile: profiles.Profile, ticket_id: str) -> str:
     """Where generated tests go, derived from the PROFILE.
 
@@ -72,6 +108,7 @@ def run_test(
     profile: profiles.Profile,
     implementer: str,
     test_file: Optional[str] = None,
+    path_isolated: bool = False,
 ) -> Dict[str, Any]:
     """Run test mode: defect + ticket -> failing acceptance tests.
 
@@ -82,6 +119,11 @@ def run_test(
         profile: the language profile
         implementer: the model to use for writing tests
         test_file: where to write the generated tests
+        path_isolated: if True, generate tests from the SPEC ONLY, not from
+            the implementation code. This satisfies the independence property
+            (C-section 1): a test generated from the implementation can be
+            tautological. A test generated from the spec alone is independent
+            of the implementation path.
 
     Returns:
         a result dict with the test file path and whether tests fail at baseline
@@ -96,6 +138,7 @@ def run_test(
 
     # Build the prompt with the defect, the ticket, and the code under test
     prompt = f"# Defect to test\n\n{defect_description}\n\n"
+    prompt += f"## Specification\n{ticket.get('spec', '')}\n\n"
     prompt += f"## Ticket\n```json\n{json.dumps(ticket, indent=2)}\n```\n\n"
 
     # The code under test is the ticket's RESOLVED REGIONS -- not the head of the
@@ -104,19 +147,30 @@ def run_test(
     # never the method it had to test. It then invented a plausible name for it
     # (`CalculateCopyQuantity` for `CalculateFollowerQuantity`) -- the O39 failure
     # again, in a mode that had never been run.
-    try:
-        resolved = regions.extract(repo, ticket.get("regions", []), profile)
-    except regions.RegionError as exc:
-        result["error"] = f"cannot read the code under test: {exc}"
-        return result
+    #
+    # When path_isolated=True (C-section 1), the implementation code is NOT
+    # shown. The test is generated from the spec alone, making it independent of
+    # the implementation path. A test generated from the implementation can be
+    # tautological (it tests what the code does, not what the spec says).
+    if not path_isolated:
+        try:
+            resolved = regions.extract(repo, ticket.get("regions", []), profile)
+        except regions.RegionError as exc:
+            result["error"] = f"cannot read the code under test: {exc}"
+            return result
 
-    for r in resolved:
-        if r.op == regions.CREATE:
-            continue
-        prompt += (
-            f"## Code under test: {r.file} lines {r.lines_1based}\n"
-            f"```{profile.language}\n{r.text}\n```\n\n"
-        )
+        for r in resolved:
+            if r.op == regions.CREATE:
+                continue
+            prompt += (
+                f"## Code under test: {r.file} lines {r.lines_1based}\n"
+                f"```{profile.language}\n{r.text}\n```\n\n"
+            )
+    else:
+        # Path-isolated mode: the test writer gets the spec, the defect, the
+        # ticket (for expect_green and region file paths), and the existing
+        # test style -- but NOT the implementation code.
+        result["path_isolated"] = True
 
     # Existing tests, so the generated file matches the project's real harness
     # rather than a framework the model assumes.
@@ -153,7 +207,7 @@ def run_test(
     )
 
     history = [
-        {"role": "system", "content": TEST_SYSTEM},
+        {"role": "system", "content": PATH_ISOLATED_SYSTEM if path_isolated else TEST_SYSTEM},
         {"role": "user", "content": prompt},
     ]
 

@@ -132,6 +132,74 @@ class Vote:
         return self.status in _RANK
 
 
+def _parse_json_review(text: str, model: str) -> Optional[Vote]:
+    """Fallback: parse a reviewer response as JSON (C-4).
+
+    Some models emit structured JSON instead of the text protocol despite
+    being asked for `<<<VERDICT>>>` blocks. A model that returns
+    `{"verdict": "APPROVE", "findings": []}` is a valid review, not an
+    unparseable one. This does NOT replace the text protocol -- it is a
+    fallback that catches the case where a model emits JSON.
+
+    Returns a Vote if the JSON has a parseable verdict, None otherwise.
+    """
+    import json as _json
+    # Try to find a JSON object in the text. The model may wrap it in
+    # markdown fences or prose.
+    for candidate in _extract_json_objects(text):
+        try:
+            data = _json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        raw_verdict = str(data.get("verdict", data.get("Verdict", ""))).upper()
+        verdict = next((c for c in (REJECT, REVISE, APPROVE) if c in raw_verdict), "")
+        if not verdict:
+            continue
+        # Parse findings if present.
+        raw_findings = data.get("findings", data.get("Findings", []))
+        items: List[Finding] = []
+        if isinstance(raw_findings, list):
+            for f in raw_findings:
+                if not isinstance(f, dict):
+                    continue
+                sev = str(f.get("severity", f.get("Severity", "MINOR"))).upper()
+                ftext = str(f.get("text", f.get("description", f.get("finding", "")))).strip()
+                if ftext and ftext.upper() not in ("NONE", "- NONE"):
+                    items.append(Finding(model, sev, ftext))
+        blockers = sum(1 for f in items if f.blocking)
+        findings_str = "\n".join(f"- [{f.severity}] {f.text}" for f in items) if items else "- NONE"
+        required_str = ""
+        raw_required = data.get("required", data.get("Required", []))
+        if isinstance(raw_required, list):
+            required_str = "\n".join(f"- {r}" for r in raw_required) or "- NONE"
+        return Vote(model, verdict, findings_str or "- NONE", required_str or "- NONE",
+                    blockers, finding_list=items)
+    return None
+
+
+def _extract_json_objects(text: str) -> List[str]:
+    """Extract candidate JSON object strings from text.
+
+    Looks for `{...}` blocks, including those wrapped in markdown fences.
+    Returns the raw strings; the caller tries json.loads on each.
+    """
+    # Direct JSON: the whole text is a JSON object.
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return [stripped]
+    # JSON in a markdown fence.
+    import re as _re
+    results = []
+    for m in _re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL):
+        results.append(m.group(1))
+    # Bare JSON object in prose (greedy match for outermost braces).
+    for m in _re.finditer(r"(\{[^{}]*\})", text, _re.DOTALL):
+        results.append(m.group(1))
+    return results
+
+
 def parse_review(text: str, model: str) -> Vote:
     """Parse a reviewer response. An empty or structurally missing verdict is
     UNPARSEABLE, never a silent REVISE -- that conflation is what made the
@@ -173,6 +241,15 @@ def parse_review(text: str, model: str) -> Vote:
     raw = section("VERDICT").upper()
     verdict = next((c for c in (REJECT, REVISE, APPROVE) if c in raw), "")
     if not verdict:
+        # JSON fallback (C-4): some models emit structured JSON instead of the
+        # text protocol. Try to parse the response as JSON before declaring it
+        # unparseable. A model that returns {"verdict": "APPROVE", "findings": []}
+        # is a valid review, not an unparseable one. This does NOT replace the
+        # text protocol -- it is a fallback that catches the case where a model
+        # emits JSON despite being asked for text.
+        vote = _parse_json_review(text, model)
+        if vote:
+            return vote
         return Vote(model, UNPARSEABLE, error=f"no verdict marker in {len(text)} chars")
     findings = section("FINDINGS")
     items = [
@@ -567,6 +644,11 @@ def terminal_ledger_record(tid: str, result: Dict[str, Any]) -> Dict[str, Any]:
     the report counts once per distinct gate. `gate` is OMITTED rather than set
     empty when nothing failed: the report distinguishes "no gate failure" from
     "written before this field existed", and a falsy value would collapse them.
+
+    Evidence ledger (Wave 4.1, C-2): when the ticket is promotable, records the
+    acceptance criteria, the verification commands, and the gate summaries that
+    proved the patch. This turns the ledger from "the run finished" into "the
+    run proved the patch closes the defect, by this evidence."
     """
     record: Dict[str, Any] = {
         "ticket": tid,
@@ -578,6 +660,43 @@ def terminal_ledger_record(tid: str, result: Dict[str, Any]) -> Dict[str, Any]:
     failed = failed_gate_names(result["rounds"])
     if failed:
         record["gate"] = failed[0] if len(failed) == 1 else failed
+
+    # Evidence ledger: record what was proven, not just that the run finished.
+    # For a promotable ticket, this is the acceptance criteria + gate summaries
+    # from the round that cleared every gate. For a failed ticket, it is the
+    # gate that blocked and its summary.
+    evidence: Dict[str, Any] = {}
+    if result["final_verdict"] in PROMOTABLE:
+        evidence["verdict"] = result["final_verdict"]
+        evidence["rounds"] = len(result["rounds"])
+        evidence["exported_round"] = result.get("exported_round")
+        # The gate ladder results from the promotable round are in the round
+        # records. Record the final-round summaries as evidence.
+        green_rounds = [r for r in result["rounds"] if r.get("ok")]
+        if green_rounds:
+            last_green = green_rounds[-1]
+            evidence["final_gate"] = last_green.get("stage", "")
+            evidence["gate_summary"] = last_green.get("summary", "")
+    elif failed:
+        # Record which gate blocked and its summary.
+        blocking_rounds = [r for r in result["rounds"] if not r.get("ok", True)]
+        if blocking_rounds:
+            evidence["blocked_by"] = blocking_rounds[-1].get("stage", "")
+            evidence["block_summary"] = blocking_rounds[-1].get("summary", "")
+
+    # Token usage from the final round (if available).
+    if result["rounds"]:
+        last = result["rounds"][-1]
+        for key in ("impl_input_tokens", "impl_output_tokens",
+                     "reviewer_input_tokens", "reviewer_output_tokens",
+                     "arbiter_input_tokens", "arbiter_output_tokens"):
+            val = last.get(key, 0)
+            if val:
+                evidence.setdefault("tokens", {})[key] = val
+
+    if evidence:
+        record["evidence"] = evidence
+
     return record
 
 

@@ -291,6 +291,7 @@ def _test(args, profile, implementer) -> int:
         profile,
         implementer,
         test_file=args.test_file,
+        path_isolated=args.path_isolated,
     )
     print(f"\n==== TEST RESULT ====")
     if result.get("test_code"):
@@ -505,6 +506,12 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--test-file", default="",
         help="test mode: where to write tests (default: derived from the profile's test_sources)",
+    )
+    ap.add_argument(
+        "--path-isolated", action="store_true",
+        help="test mode: generate tests from the SPEC only, not from the implementation. "
+             "Satisfies the TDD independence property (C-section 1): a test generated "
+             "from the implementation can be tautological.",
     )
     ap.add_argument(
         "--docs-type", choices=("changelog", "handover", "design", "prd"),

@@ -649,6 +649,18 @@ def chat(
     Raises ProviderError if every attempt fails. Callers MUST distinguish this
     from a low-quality answer: a reviewer that could not be reached has not
     voted, and must not be counted as a dissent.
+
+    Pre-dispatch reasoning budget check (Wave 4.3, E-P1a): when think=True,
+    the model spends chain-of-thought tokens from the SAME budget as the
+    answer. A budget sized for the expected output becomes a budget shared
+    with an unbounded reasoning prefix, and the model can return EMPTY CONTENT
+    having spent the whole budget reasoning. This was measured on the
+    implementer: 125,070 chars of reasoning, empty content, the run died.
+    A warning is printed when think=True and max_tokens is below 32K (the
+    measured minimum for a reasoning model to produce both reasoning and a
+    non-trivial answer). This does not refuse the call -- the budget may be
+    intentionally small for a short task -- but it makes the hazard visible
+    before the call is spent, not after.
     """
     # None means "whatever config says", so the transport defaults live in one
     # place with the rest of the tunables instead of in this signature.
@@ -658,6 +670,22 @@ def chat(
     timeout = _p.timeout_secs if timeout is None else timeout
     num_ctx = _p.num_ctx if num_ctx is None else num_ctx
     max_retries = _p.max_retries if max_retries is None else max_retries
+
+    # Pre-dispatch reasoning budget check (E-P1a). Measured: the implementer
+    # spent 125,070 chars (~31K tokens) on reasoning and returned empty content
+    # with a 48K budget. A reasoning model needs headroom for BOTH reasoning
+    # and the answer; a budget that is tight for the answer alone will be
+    # consumed by reasoning. The warning makes the hazard visible before the
+    # call is spent, not after.
+    _REASONING_MIN_BUDGET = 32000
+    if think and max_tokens < _REASONING_MIN_BUDGET:
+        print(
+            f"  WARNING: {model_spec} think=True with max_tokens={max_tokens} "
+            f"(below {_REASONING_MIN_BUDGET}). On a reasoning model, chain-of-thought "
+            f"is spent from the same budget as the answer, so the model may spend "
+            f"the whole budget reasoning and return empty content. Raise max_tokens "
+            f"in the same edit you set think=True."
+        )
 
     backend, model = split_model(model_spec)
     fn = _BACKENDS[backend]
