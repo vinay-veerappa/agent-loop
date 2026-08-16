@@ -53,8 +53,10 @@ generated a fix, passed all gates, and both reviewers unanimously approved.
 | `developer` | defect → patched code (autonomous localize+edit) | `--mode developer --defect "..."` |
 | `brainstorm` | defect → candidate approaches + trade-offs | `--mode brainstorm --defect "..."` |
 | `docs` | codebase → documentation (4 sub-modes) | `--mode docs --docs-type changelog\|handover\|design\|prd` |
+| `run-plan` | plan JSON → executed chain | `--mode run-plan --plan plan.json` |
 
-See [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan,
+See [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) for the authoritative
+architecture reference, [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan,
 [IMPLEMENTATION_DECISIONS.md](docs/architecture/IMPLEMENTATION_DECISIONS.md) for the decision log,
 and [BACKLOG.md](docs/architecture/BACKLOG.md) for the status of all items.
 
