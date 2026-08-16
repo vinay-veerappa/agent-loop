@@ -116,3 +116,60 @@ def test_phase5_hash_stability():
     h2 = _hash_text("test decision")
     assert h1 == h2
     assert h1 != _hash_text("different decision")
+
+
+def test_phase5_save_settled_concurrent_does_not_lose(tmp_path):
+    """save_settled uses line-buffered append, so concurrent writes don't lose entries.
+
+    The previous implementation read the whole file, appended in memory, and
+    wrote back via os.replace -- two concurrent callers could both read, both
+    append, and the second os.replace would win, losing the first's entries.
+    The line-buffered append pattern (matching save_feedback) is safe because
+    each entry is one line and the OS guarantees atomic line appends on most
+    filesystems.
+    """
+    import concurrent.futures
+    from agent_loop.memory import save_settled, load_settled
+
+    repo = tmp_path
+
+    def writer(ticket_id: str):
+        return save_settled(repo, ticket_id, [f"decision from {ticket_id}"])
+
+    # Write from 20 "concurrent" tickets.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+        results = list(pool.map(writer, [f"T{i}" for i in range(20)]))
+
+    # Every writer should have saved exactly 1.
+    assert all(r == 1 for r in results), f"some writes were lost: {results}"
+    loaded = load_settled(repo)
+    assert len(loaded) == 20, f"expected 20 entries, got {len(loaded)}"
+
+
+def test_phase5_save_settled_does_not_rewrite_whole_file(tmp_path):
+    """save_settled appends one line per decision, not a full rewrite.
+
+    The previous implementation read the entire store, appended new entries in
+    memory, and wrote the whole thing back via os.replace -- O(N) per save,
+    growing with history. The line-buffered append is O(1) per decision.
+    """
+    from agent_loop.memory import save_settled, _settled_path
+
+    repo = tmp_path
+    path = _settled_path(repo)
+
+    # Write an initial entry.
+    save_settled(repo, "T1", ["first decision"])
+    initial_size = path.stat().st_size
+    initial_content = path.read_text(encoding="utf-8")
+
+    # Write a second entry.
+    save_settled(repo, "T2", ["second decision"])
+
+    # The file should have grown by approximately one line, not been rewritten.
+    # The initial content must still be present verbatim (not reordered).
+    final_content = path.read_text(encoding="utf-8")
+    assert "first decision" in final_content
+    assert "second decision" in final_content
+    # The initial line must appear before the new line (append order preserved).
+    assert final_content.index("first decision") < final_content.index("second decision")

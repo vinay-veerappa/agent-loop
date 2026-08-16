@@ -157,9 +157,16 @@ def parse_review(text: str, model: str) -> Vote:
 
         Stops at the next `<<<...>>>` marker rather than running to end of file,
         so a REQUIRED block is not swallowed into FINDINGS (O61).
+
+        Tolerates `>>` closers (not just `>>>`), matching the block parser's
+        `>{2,}` tolerance (BLOCK_RE, line 47). A model that drops one `>` from a
+        BLOCK closer (accepted by BLOCK_RE) may also drop one from a VERDICT
+        closer, producing UNPARSEABLE on the same model that successfully
+        emitted its blocks -- a parser inconsistency that punished one typo
+        twice. See AGENT_LOOP_THIRD_REVIEW.md N9.
         """
         m = re.search(
-            rf"<<<{name}>>>\r?\n(.*?)(?:<<<END {name}>>>|<<<|\Z)", text, re.DOTALL
+            rf"<<<{name}>{{2,}}\r?\n(.*?)(?:<<<END {name}>{{2,}}|<<<|\Z)", text, re.DOTALL
         )
         return m.group(1).strip() if m else ""
 
@@ -450,17 +457,32 @@ def review_panel(
         return v
 
     votes: List[Vote] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(reviewers))) as pool:
-        futures = {pool.submit(one, m): m for m in reviewers}
-        try:
-            for fut in concurrent.futures.as_completed(futures, timeout=deadline_secs):
-                votes.append(fut.result())
-        except concurrent.futures.TimeoutError:
-            # Bound the SET of calls, not just each one. T2 hung 2h03m here.
-            for fut, model in futures.items():
-                if not fut.done():
-                    fut.cancel()
-                    votes.append(Vote(model, UNREACHABLE, error=f"panel deadline {deadline_secs}s exceeded"))
+    # Deliberately NOT using a `with` block for the ThreadPoolExecutor. The
+    # `with` block's __exit__ calls pool.shutdown(wait=True), which blocks
+    # until ALL threads finish -- including a hung reviewer whose HTTP request
+    # is still waiting on its 900s provider timeout. The panel deadline
+    # (deadline_secs) bounds the wait for RESULTS, not the cleanup, so a hung
+    # member stalls the ticket past its own deadline (N7). We call shutdown
+    # manually with wait=False so the process does not join hung threads.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(reviewers)))
+    futures = {pool.submit(one, m): m for m in reviewers}
+    try:
+        for fut in concurrent.futures.as_completed(futures, timeout=deadline_secs):
+            votes.append(fut.result())
+    except concurrent.futures.TimeoutError:
+        # Bound the SET of calls, not just each one. T2 hung 2h03m here.
+        for fut, model in futures.items():
+            if not fut.done():
+                fut.cancel()
+                votes.append(Vote(model, UNREACHABLE, error=f"panel deadline {deadline_secs}s exceeded"))
+    finally:
+        # wait=False: do not block on hung threads. cancel_futures=True
+        # (Python 3.9+) cancels pending futures that have not started running.
+        # A future that is already running cannot be cancelled (Future.cancel
+        # returns False), but the daemon-like behavior of the thread pool
+        # means the process will exit without joining them. The votes list
+        # already carries UNREACHABLE for any that did not finish.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     valid = all(v.counted for v in votes) and len(votes) == len(reviewers)
     counted = [v for v in votes if v.counted]

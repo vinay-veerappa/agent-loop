@@ -36,6 +36,23 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .profiles import Profile
 
 
+class CompactionError(RuntimeError):
+    """Raised when the pinned head alone exceeds the round input budget.
+
+    The system prompt and the implement prompt (history[0] and history[1]) are
+    never compacted -- every round ends "re-emit ALL blocks in full", so an
+    implementer that has lost the ticket and the region source cannot comply.
+    If those two messages alone exceed the profile's round_input_token_budget,
+    no amount of compaction can make the prompt fit. The loop would proceed to
+    send an oversized prompt to the provider, resulting in a context_length
+    error AFTER preparation work and possibly paid calls.
+
+    Failing here, BEFORE the provider call, lets the caller refuse or split the
+    ticket rather than waste a round. The message names the actionable fix
+    (reduce region size / split the ticket), not "your ticket is too big."
+    """
+
+
 # Estimated tokens: ~4 chars per token
 _CHARS_PER_TOKEN = 4
 
@@ -83,6 +100,11 @@ def compact_history(
     replace the prior rounds with a single summary -- mechanical first, and an
     LLM summary only if the mechanical one is still too big to fit.
 
+    Admission check: if the pinned head (system + implement prompt) alone
+    exceeds the budget, raise CompactionError. No compaction can help -- the
+    pinned content is never removable -- and proceeding would send an oversized
+    prompt to the provider for a guaranteed context_length error.
+
     Args:
         history: the full message history (system + alternating user/assistant)
         current_round: the round about to start (1-based)
@@ -90,11 +112,33 @@ def compact_history(
 
     Returns:
         the compacted history (may be shorter than the input)
+
+    Raises:
+        CompactionError: if the pinned head alone exceeds the budget.
     """
     if current_round <= 1:
         return history  # nothing to compact on round 1
 
     pinned = pin_count(history)
+
+    # Admission check: if the pinned head alone exceeds the budget, no
+    # compaction can make the prompt fit. The pinned content is never removable
+    # (the system prompt and the implement prompt carry the ticket spec and
+    # verbatim region source that every round needs). Failing here, before the
+    # provider call, lets the caller refuse or split the ticket.
+    budget_chars = profile.round_input_token_budget * _CHARS_PER_TOKEN
+    pinned_chars = sum(len(history[i]["content"]) for i in range(min(pinned, len(history))))
+    if pinned_chars > budget_chars:
+        raise CompactionError(
+            f"the pinned head (system prompt + implement prompt) is "
+            f"{pinned_chars} chars (~{pinned_chars // _CHARS_PER_TOKEN} tokens), "
+            f"which alone exceeds the round input budget of "
+            f"{profile.round_input_token_budget} tokens "
+            f"({budget_chars} chars). No compaction can make this fit -- the "
+            f"pinned content is never removable. Reduce the region size or "
+            f"split the ticket into smaller regions."
+        )
+
     # The newest exchange is the candidate under revision plus the feedback
     # about it. Truncating that is self-defeating -- it is the text the next
     # round edits -- and the old loop truncated it because it walked every

@@ -165,7 +165,7 @@ class Adjudication:
         )
 
 
-_MARKER_RE = re.compile(r"<<<(?:END )?[A-Z_ ]+>>>")
+_MARKER_RE = re.compile(r"<<<(?:END )?[A-Z_ ]+>{2,}")
 
 
 def _section(text: str, name: str) -> str:
@@ -178,11 +178,16 @@ def _section(text: str, name: str) -> str:
     rationale and all six nominated settled decisions were discarded every time
     -- silently defeating the mechanism that exists to stop reviewers
     re-litigating known false positives.
+
+    Tolerates `>>` closers (not just `>>>`), matching the block parser's
+    `>{2,}` tolerance. A model that drops one `>` from a BLOCK closer may also
+    drop one from a RULING or RATIONALE closer, and the arbiter's unruled
+    findings were the cost on T3. See AGENT_LOOP_THIRD_REVIEW.md N9.
     """
-    open_m = re.search(rf"<<<{name}>>>\r?\n?", text)
+    open_m = re.search(rf"<<<{name}>{{2,}}\r?\n?", text)
     if open_m:
         rest = text[open_m.end():]
-        close_m = re.search(rf"<<<END {name}>>>", rest)
+        close_m = re.search(rf"<<<END {name}>{{2,}}", rest)
         if close_m:
             return rest[: close_m.start()].strip()
         # Terminator missing or misnamed: run to the next marker of any kind.
@@ -191,7 +196,7 @@ def _section(text: str, name: str) -> str:
 
     # No opener at all. If a closer exists, the body is whatever sits between it
     # and the marker before it -- recoverable, and better than dropping content.
-    closers = list(re.finditer(rf"<<<END {name}>>>", text))
+    closers = list(re.finditer(rf"<<<END {name}>{{2,}}", text))
     if not closers:
         return ""
     last = closers[-1]
@@ -238,7 +243,7 @@ def build_prompt(
     parts += [
         "## The patch under review (unified diff)",
         "```diff",
-        patch_diff[:60000] if patch_diff.strip() else "(no diff available)",
+        _truncate_diff(patch_diff, 60000),
         "```",
         "",
         f"Rule on all {len(findings)} findings by number, then recommend.",
@@ -271,6 +276,37 @@ def _blocker_indices(findings: Sequence[Any]) -> List[int]:
         for i, f in enumerate(findings, 1)
         if str(getattr(f, "severity", "")).upper() == "BLOCKER"
     ]
+
+
+# The maximum diff size sent to the arbiter. A multi-region ticket against a
+# large method can exceed this, and the truncation was SILENT -- no marker was
+# inserted, so the arbiter saw a partial diff with no indication it was
+# incomplete and could rule on findings about code it could not see. See
+# AGENT_LOOP_THIRD_REVIEW.md N5.
+_MAX_DIFF_CHARS = 60000
+
+
+def _truncate_diff(patch_diff: str, max_chars: int = _MAX_DIFF_CHARS) -> str:
+    """Truncate a diff to max_chars, inserting a visible marker at the cut.
+
+    A silent truncation is the one place where truncation can change a verdict:
+    the arbiter rules on findings about the diff, and a finding referencing code
+    past the cut point cannot be evaluated. The marker tells the arbiter the
+    diff is incomplete, and the instruction to ESCALATE if a finding references
+    code past the marker is added to the prompt by the caller.
+    """
+    diff = patch_diff.strip()
+    if not diff:
+        return "(no diff available)"
+    if len(diff) <= max_chars:
+        return diff
+    omitted = len(diff) - max_chars
+    return (
+        diff[:max_chars]
+        + f"\n\n... [DIFF TRUNCATED: {omitted} chars omitted -- "
+        f"the patch is larger than {max_chars} chars. If a finding references "
+        f"code past this point you cannot evaluate it; ESCALATE.] ..."
+    )
 
 
 def _arbiter_max_tokens(model: str, fallback: int) -> int:

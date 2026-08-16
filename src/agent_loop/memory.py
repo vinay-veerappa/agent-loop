@@ -27,8 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -36,6 +35,23 @@ from typing import Any, Dict, List, Optional, Sequence
 # Cap on settled decisions injected into the prompt (context bloat control).
 # Older decisions stay on disk for auditability but don't bloat the prompt.
 MAX_SETTLED_INJECTED = 20
+
+# Per-file lock for save_settled. On Windows, concurrent line-buffered appends
+# to the same file from multiple threads/processes are NOT atomic (NTFS does
+# not guarantee atomic appends), so a lock is needed. Named by the resolved
+# store path so different repos don't contend.
+_settled_locks: Dict[str, threading.Lock] = {}
+_settled_locks_guard = threading.Lock()
+
+
+def _get_settled_lock(path: Path) -> threading.Lock:
+    """Get or create a per-file lock for settled-decisions writes."""
+    key = str(path.resolve())
+    with _settled_locks_guard:
+        if key not in _settled_locks:
+            _settled_locks[key] = threading.Lock()
+        return _settled_locks[key]
+
 
 # Cap on learning feedback entries injected into the prompt.
 MAX_FEEDBACK_INJECTED = 10
@@ -64,7 +80,7 @@ def extract_settled(arbiter_raw: str) -> List[str]:
     """
     import re
     m = re.search(
-        r"<<<SETTLED>>>\r?\n(.*?)<<<END\s*SETTLED>>>",
+        r"<<<SETTLED>{2,}\r?\n(.*?)<<<END\s*SETTLED>{2,}",
         arbiter_raw,
         re.DOTALL,
     )
@@ -86,11 +102,18 @@ def save_settled(
 ) -> int:
     """Append settled decisions to the JSONL store.
 
-    Uses os.replace() for atomic file writes: reads all existing entries,
-    appends new ones, writes to a temp file, then atomically replaces the
-    target. This avoids corruption from concurrent appends.
+    Line-buffered append, matching save_feedback's pattern. The previous
+    implementation read the entire file, appended new entries, and wrote the
+    whole thing back via os.replace -- O(N) per save and not safe under
+    concurrent tickets (two processes can both read, both append, and the
+    second os.replace wins, losing the first's append). os.replace is atomic
+    per-rename, not per-append.
 
-    Returns the number of decisions saved (excluding duplicates).
+    Deduplication is on READ (load_settled already deduplicates by key), so
+    a duplicate append is harmless: it is filtered out at injection time.
+
+    Returns the number of decisions saved (excluding exact-key duplicates
+    already present in the file).
     """
     if not decisions:
         return 0
@@ -98,48 +121,42 @@ def save_settled(
     path = _settled_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load existing entries to check for duplicates
-    existing_lines: List[str] = []
-    existing_keys = set()
+    # Per-file lock: on Windows, concurrent line-buffered appends to the same
+    # file are NOT atomic, so without a lock 20 concurrent writers can lose 2
+    # entries. The lock is per-store-path so different repos don't contend.
+    lock = _get_settled_lock(path)
+
+    # Load existing keys to skip exact duplicates. This is a read, not a
+    # read-modify-write: the append below is line-buffered and independent of
+    # this read. A concurrent writer's entries may not be visible here, but
+    # they will be filtered by load_settled's dedup on read.
+    existing_keys: set = set()
     if path.exists():
-        existing_lines = path.read_text(encoding="utf-8").splitlines()
-        for line in existing_lines:
+        for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 entry = json.loads(line)
                 existing_keys.add(entry.get("key", ""))
             except json.JSONDecodeError:
                 continue
 
-    # Build new entries
-    new_lines = []
-    for decision in decisions:
-        key = f"{ticket_id}:{_hash_text(decision)}"
-        if key in existing_keys:
-            continue
-        entry = {
-            "ticket": ticket_id,
-            "key": key,
-            "decision": decision,
-        }
-        new_lines.append(json.dumps(entry, ensure_ascii=False))
-        existing_keys.add(key)
+    # Append new entries one line at a time under the per-file lock.
+    saved = 0
+    with lock:
+        with path.open("a", encoding="utf-8") as f:
+            for decision in decisions:
+                key = f"{ticket_id}:{_hash_text(decision)}"
+                if key in existing_keys:
+                    continue
+                entry = {
+                    "ticket": ticket_id,
+                    "key": key,
+                    "decision": decision,
+                }
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                existing_keys.add(key)
+                saved += 1
 
-    if not new_lines:
-        return 0
-
-    # Atomic write: write all lines (existing + new) to temp file, then replace
-    all_lines = existing_lines + new_lines
-    temp_fd, temp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix="settled_"
-    )
-    try:
-        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(all_lines) + "\n")
-        os.replace(temp_path, str(path))
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
-
-    return len(new_lines)
+    return saved
 
 
 def load_settled(repo: Path) -> List[str]:

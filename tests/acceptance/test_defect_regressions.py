@@ -166,7 +166,17 @@ def test_compaction_keeps_the_implement_prompt():
 
 def test_compaction_survives_phase4b_summarization():
     """Phase 4b replaced everything between the system message and the last
-    exchange with a summary -- including the implement prompt."""
+    exchange with a summary -- including the implement prompt.
+
+    With the admission check (T-REL3), a pinned head that alone exceeds the
+    budget now raises CompactionError instead of silently sending an oversized
+    prompt. This test now verifies that the admission check fires for an
+    oversized implement prompt, and that a FITTING implement prompt still gets
+    Phase 4b summarization for the prior rounds."""
+    import pytest
+    from agent_loop.compaction import CompactionError
+
+    # Oversized pinned head: 28K chars vs 100-token (400 char) budget.
     prompt = "# TICKET T1\n" + "REGION SOURCE\n" * 2000
     tight = Profile(
         name="test-tight-budget", language="python", file_suffixes=(".py",),
@@ -174,8 +184,14 @@ def test_compaction_survives_phase4b_summarization():
         round_input_token_budget=100,  # force 4b
         implementer_rules="t", reviewer_priorities="t",
     )
-    out = compaction.compact_history(_history(prompt, 3), 4, tight)
-    assert out[1]["content"] == prompt, "4b must not summarize away the ticket"
+    # The admission check must refuse: the pinned head alone exceeds the budget.
+    with pytest.raises(CompactionError, match="pinned head.*exceeds"):
+        compaction.compact_history(_history(prompt, 3), 4, tight)
+
+    # With a fitting implement prompt, Phase 4b still summarizes prior rounds.
+    fitting_prompt = "# TICKET T1\nsmall prompt"
+    out = compaction.compact_history(_history(fitting_prompt, 3), 4, tight)
+    assert out[1]["content"] == fitting_prompt, "4b must not summarize away the ticket"
     assert any("PRIOR ROUNDS SUMMARY" in m["content"] for m in out)
 
 

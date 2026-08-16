@@ -128,3 +128,40 @@ def test_phase4_history_token_count():
         {"role": "assistant", "content": "abcdefgh"},  # 2 tokens
     ]
     assert history_token_count(history) == 3
+
+
+def test_phase4_admission_check_refuses_oversized_pinned_head():
+    """When the pinned head alone exceeds the budget, CompactionError is raised.
+
+    The system prompt and implement prompt are never compacted. If they alone
+    exceed the round_input_token_budget, no compaction can make the prompt fit.
+    Without this check, the loop proceeds to send an oversized prompt to the
+    provider, resulting in a context_length error AFTER preparation work.
+    """
+    from agent_loop.compaction import CompactionError
+
+    # SMALL_PROFILE has round_input_token_budget=100 (400 chars).
+    # The pinned head (system + implement prompt) is 500 chars, which exceeds it.
+    history = [
+        {"role": "system", "content": "x" * 200},
+        {"role": "user", "content": "y" * 300},  # 500 chars total > 400
+        {"role": "assistant", "content": "x" * 100},
+        {"role": "user", "content": "latest impl"},
+    ]
+    with pytest.raises(CompactionError, match="pinned head.*exceeds"):
+        compact_history(history, 2, SMALL_PROFILE)
+
+
+def test_phase4_admission_check_passes_when_pinned_fits():
+    """When the pinned head fits within the budget, compaction proceeds normally."""
+    history = [
+        {"role": "system", "content": "x" * 100},  # 100 chars
+        {"role": "user", "content": "y" * 100},   # 200 chars total < 400
+        {"role": "assistant", "content": "x" * 10000},  # verbose, will be pruned
+        {"role": "user", "content": "latest impl"},
+    ]
+    result = compact_history(history, 2, SMALL_PROFILE)
+    # Should not raise; the pinned head fits.
+    assert result is not None
+    # The last user message must be preserved.
+    assert "latest impl" in result[-1]["content"]

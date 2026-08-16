@@ -57,6 +57,42 @@ class MCPClient:
     _next_id: int = 1
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _tools: List[Dict[str, Any]] = field(default_factory=list)
+    # stderr drain: a daemon thread continuously reads stderr so the OS pipe
+    # buffer (64KB on Windows/Linux) cannot fill and block the server process.
+    # Without this, a chatty MCP server fills its stderr pipe, blocks on its
+    # next stderr write, and the client blocks on stdout.readline() waiting for
+    # a JSON-RPC response that never arrives -- a classic subprocess pipe
+    # deadlock. The deadline check in _send never runs because readline() holds
+    # the thread. See AGENT_LOOP_THIRD_REVIEW.md E2 / N7.
+    _stderr_thread: Optional[threading.Thread] = None
+    _stderr_lines: list = field(default_factory=list)
+    _STDERR_CAP = 500  # keep last 500 lines for diagnostics
+
+    def _drain_stderr(self) -> None:
+        """Daemon thread: continuously read stderr so the pipe never fills.
+
+        Captures the last _STDERR_CAP lines for surfacing when context
+        acquisition fails. A daemon thread (not a regular thread) so it does
+        not block process exit -- the process can terminate without joining it.
+        """
+        assert self._proc is not None and self._proc.stderr is not None
+        try:
+            for line in self._proc.stderr:
+                self._stderr_lines.append(line.rstrip("\r\n"))
+                if len(self._stderr_lines) > self._STDERR_CAP:
+                    # Bounded: keep the tail, drop the head. The diagnostic value
+                    # of stderr is almost always in the last lines (the error
+                    # that caused the failure), not the first.
+                    del self._stderr_lines[: len(self._stderr_lines) - self._STDERR_CAP]
+        except (OSError, ValueError):
+            # Pipe closed or process exited -- thread exits silently.
+            pass
+
+    def stderr_tail(self, n: int = 20) -> str:
+        """The last n lines of captured stderr, for diagnostics."""
+        if n <= 0:
+            return ""
+        return "\n".join(self._stderr_lines[-n:])
 
     def start(self) -> None:
         """Spawn the MCP server process and perform the initialize handshake."""
@@ -75,6 +111,16 @@ class MCPClient:
             bufsize=1,
             encoding="utf-8",
         )
+        # Start the stderr drain daemon BEFORE the handshake. If the server
+        # emits diagnostics during initialization, those go to stderr; without
+        # the drain running, a verbose server can deadlock before the first
+        # response is read.
+        self._stderr_lines = []
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr, name=f"mcp-stderr-{self.server_name}",
+            daemon=True,
+        )
+        self._stderr_thread.start()
         # Initialize handshake
         resp = self._send("initialize", {
             "protocolVersion": "2024-11-05",
@@ -82,7 +128,11 @@ class MCPClient:
             "clientInfo": {"name": "agent-loop", "version": __version__},
         })
         if resp is None:
-            raise RuntimeError(f"MCP server {self.server_name} did not respond to initialize")
+            stderr = self.stderr_tail(20)
+            raise RuntimeError(
+                f"MCP server {self.server_name} did not respond to initialize"
+                + (f". Last stderr:\n{stderr}" if stderr else "")
+            )
 
         # Send initialized notification (no response expected)
         self._notify("notifications/initialized", {})
@@ -102,6 +152,11 @@ class MCPClient:
             except Exception:
                 self._proc.kill()
             self._proc = None
+        # The stderr thread is a daemon and exits on its own when the pipe
+        # closes. We do not join it -- joining a thread that may be blocked on
+        # a closed pipe is a second deadlock waiting to happen. Clearing the
+        # reference is enough; the GC will collect it.
+        self._stderr_thread = None
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[str]:
         """Call a tool on the MCP server and return the text result.
