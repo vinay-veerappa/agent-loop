@@ -7,12 +7,23 @@ section or decision log entry that motivates it.
 **Last updated**: 2026-08-11, session 4 (O7 modes, O14, O23, O29-O34).
 
 > 🆕 **[`CONSUMER_FINDINGS.md`](CONSUMER_FINDINGS.md)** — defects and rough edges found by *running*
-> the loop on a real consumer repo, rather than by review or by this repo's own suite. Five entries
-> as of 2026-08-16 (`nt8-riskguard`, at HEAD past `v0.6.7`); the two worth doing first are **CF-1**
-> (the unresolved-identifier warning fires on ordinary English words, so it says nothing) and
-> **CF-2** (the test-first gate cannot distinguish an assertion that PASSES from one that does not
-> EXIST — the worktree is built from HEAD, so an uncommitted acceptance test refuses with a message
-> describing the wrong problem).
+> the loop on a real consumer repo, rather than by review or by this repo's own suite. **CF-1
+> through CF-7 were fixed in `e2ed6bd` and every one was re-driven against the same consumer on
+> 2026-08-16**: CF-2, CF-3, CF-4, CF-6 and CF-7 are **closed on measurement**, and CF-7 was checked
+> with a negative control as well as the poisoned pair it was filed on. Two remain open and one is
+> re-opened:
+>
+> * **CF-5 — ❌ re-opened, and it is the one to do first.** The two new fields identify the wrong
+>   thing: `agent_loop_sha` runs `git rev-parse` in the **consumer** repo (measured `ce5fdc1`, where
+>   this repo's HEAD is `e2ed6bd`) and `agent_loop_version` is the packaging constant, frozen at
+>   `0.6.7` since the tag. A run at `v0.6.7` and a run at HEAD still record the same string, which
+>   is the exact thing CF-5 was filed to prevent. Sharper than when filed: the consumer's install is
+>   an **editable pointer** to a checkout thousands of insertions past the tag, and every version
+>   surface agrees with the tag.
+> * **CF-1 — ⚠️ partly fixed**, 20 warnings → 5. The ALL-CAPS prose filter is right but is ORed with
+>   two broader rules that overrule it, so `SCOPE` — the docstring's own exemplar — still warns.
+> * **CF-8 / CF-9** (new, both LOW): operator-facing em dashes do not survive a cp1252 console, and
+>   a refused run leaves the previous run's `result.json` in place.
 
 ## STATUS
 

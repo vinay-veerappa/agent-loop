@@ -216,3 +216,161 @@ but the arbiter mishandled the very finding it agreed with.
 * **`[protected] 1 region file(s) clear of verifier`** and **`[lock-scope] ok`** both ran without
   being asked for.
 * The consumer's `[memory] 48 settled decisions (20 from prior runs)` continues to load.
+
+---
+
+## Verification pass — `e2ed6bd` "fix: address 7 consumer findings", measured 2026-08-16
+
+Every fix was **driven**, not read. The consumer repo is `nt8-riskguard` at `ce5fdc17`
+(2034 tests green), the same repo and the same tickets the findings were filed from. Suite at
+`e2ed6bd`: **714 passed, 34 skipped, 0 failed**.
+
+| | verdict | how it was measured |
+|---|---|---|
+| CF-1 | ⚠️ **partly** — 20 warnings → **5**, all still prose | `--list` on the same ticket that filed it |
+| CF-2 | ✅ **verified** | one run driving **both** states at once |
+| CF-3 | ✅ **verified** | stdout 2 lines / stderr 11, split |
+| CF-4 | ✅ **verified** (`--version`); `--selftest` still absent | run |
+| CF-5 | ❌ **does not do what it was filed for** | computed both recorded fields |
+| CF-6 | ✅ **verified** | run, with an unresolvable region so it cost no model call |
+| CF-7 | ✅ **verified on the measured case**, with a good negative control | drove `validate_settled` |
+
+### CF-2 — verified, and by the right test
+
+The discriminator is not "does it print a better message", it is **do the two states produce
+DIFFERENT messages** — a single reworded string passes the first and fails the second. One run
+with one name of each kind:
+
+```
+[baseline] 2034 passed, 0 failed at ce5fdc17; 0 expected failure(s)
+REFUSED: expect_green test(s) not failing at baseline:
+  - present but passing (vacuous gate ... the test does not test the defect): ['P3-128: and it WARNS']
+  - not found in the baseline output at all (typo or uncommitted ... the worktree is built from
+    HEAD ce5fdc17 and your test file may have uncommitted changes): ['ZZZ-999: a test name that
+    has never existed in this suite']
+```
+
+Classified correctly both ways, and the not-found branch names the HEAD sha. This is closed.
+
+### CF-6 — verified
+
+`[test-first] SKIPPED - ticket declares no expect_green; only the no-regression gate applies`.
+Worth recording *how*, because it generalises: the probe ticket was given a deliberately
+unresolvable anchor, so the run reached the gate, printed the line, and died at region extraction
+**without spending a single model call**. That is a cheap way to test anything upstream of the
+first model call.
+
+### CF-7 — verified where it matters, and it is honest about being crude
+
+`validate_settled` drops the **verbatim** poisoned pair from the P1-130 run (`safe=0 dropped=1`),
+and — the part that matters more — leaves a *legitimate* settled decision containing the word
+"only" alone (`safe=1 dropped=0`). It is not an alarm that is always on.
+
+Three gaps, all consequences of keying on a literal word. Measured, not guessed:
+
+1. **The same contradiction with the word "only" removed passes** (`safe=1`). The check's power
+   comes from one token that a paraphrase deletes.
+2. **The negation pairs are a fixed table** of eight. A contradiction over any other axis passes.
+3. **`if not settled or not upheld_findings: return` — a ruling that upholds nothing can settle
+   anything.** Defensible (with no upheld finding there is no in-ruling contradiction to detect),
+   but it means the check's coverage depends on the arbiter having upheld something.
+
+None of these are worth chasing with a bigger word list. The useful move is the one this consumer
+has now learned four separate times about its own gates: **state the region the check inspected.**
+`validate_settled` should say what it examined — *"checked 2 settled decision(s) against 1 upheld
+finding(s); dropped 1"* — so a run where it inspected nothing is distinguishable from one where it
+found nothing. Right now both print nothing at all.
+
+### CF-1 — 75% of the way, and the residual has an exact cause
+
+Same ticket, same command: **~20 warnings → 5**. But all five are still prose, and two of them are
+`SCOPE` and `NOW` — **ALL-CAPS words, which the fix's own docstring names as the exemplar it
+eliminates** (*"ALL-CAPS with no lowercase = prose (CSS, DETAIL, SCOPE)"*). `SCOPE` still warns.
+
+The prose filter is correct in isolation; it is **ORed with two broader rules that overrule it**:
+
+```
+SCOPE      _looks_like_code=False  in_call_tokens=True   -> WARNS
+NOW        _looks_like_code=False  in_call_tokens=True   -> WARNS
+Do         _looks_like_code=True   in_call_tokens=False  -> WARNS
+Five       _looks_like_code=True   in_call_tokens=False  -> WARNS
+Reporting  _looks_like_code=True   in_call_tokens=False  -> WARNS
+```
+
+* `call_tokens = re.findall(r'\b([A-Z][a-zA-Z0-9_]+)\s*[.(]', spec_text)` is meant to catch
+  `Foo.Bar` and `Foo(`. It also catches **a capitalised word that ends a sentence** — and the
+  house style CF-1 was filed about writes headings exactly that way: the measured text is
+  `'m. SCOPE. Thi'` and `'EN NOW. It mu'`.
+* `_looks_like_code` returns True for **any** mixed-case token, so every sentence-initial English
+  word qualifies (`Do`, `Five`, `Reporting`). ⚠️ **The comment at the call site describes the
+  right rule and the function implements a broader one**: the comment says *"it has an interior
+  lowercase->uppercase transition (camelCase)"*, which `Do` does not have — but the function only
+  checks `has_upper and has_lower`. Comment and code disagree, and the code is what runs.
+
+**Narrowest fix**, both one-liners: require the `.`/`(` to be followed by an identifier character
+(`Foo.Bar`, `Foo(` — never `. ` + capital, which is a sentence boundary), and implement the
+interior-transition rule the comment already claims. Adding `Do`/`Five`/`Reporting` to the
+stop-word list would be the wrong fix — the list is already 19 words long and English is not.
+
+### CF-5 — the fields were added; neither one identifies the tool ⚠️ NOT FIXED
+
+This is the finding to re-open. Both fields are set unconditionally at the top of `run_ticket`,
+and here is what they evaluate to on this box:
+
+```
+agent_loop_version = 0.6.7            <- importlib.metadata, the packaging constant
+agent_loop_sha     = ce5fdc1          <- git rev-parse --short HEAD, cwd=str(repo)
+                                         ...which is nt8-riskguard, the CONSUMER
+agent-loop's own HEAD = e2ed6bd
+```
+
+Two separate problems, and together they leave CF-5's stated purpose unmet:
+
+1. **`cwd=str(repo)` is the consumer repo, not the package.** The commit message says so out loud
+   (*"git rev-parse --short HEAD of the consumer repo"*), so this is a spec slip rather than a
+   typo. That sha is already printed on the `[worktree] agentloop-T1-36912 @ ce5fdc17` line and in
+   `[baseline] ... at ce5fdc17` — the run now records it a third time, and records the tool zero
+   times. Fix: `cwd=Path(agent_loop.__file__).resolve().parent`.
+2. **`agent_loop_version` is frozen at the tag.** CF-5's whole premise was that *"a run at v0.6.7
+   and a run at HEAD are not the same tool"* — and both runs record `0.6.7`, because the constant
+   has not moved since the tag. This is the consumer's own `check_version_matches_tag.py` lesson
+   arriving here: **that gate catches constant-behind-tag and is blind to code-ahead-of-tag.**
+
+The divergence is not hypothetical, and it is bigger than it looks:
+
+```
+requirements.txt:  git+https://github.com/vinay-veerappa/agent-loop.git@v0.6.7
+pip show:          Version: 0.6.7
+                   Editable project location: C:\Users\vinay\agent-loop   <- HEAD, e2ed6bd
+```
+
+What is installed is an **editable pointer to a working checkout**, thousands of insertions past
+the tag that names it. A colleague running `pip install -r requirements.txt` gets materially
+different code and **every version surface agrees with them**. The one number that would have
+revealed it is the one that is frozen. ⚠️ Note this also silently changed what CF-4 buys: it
+prints the resolved *path*, which is the only surface on the box that was telling the truth.
+
+### CF-8 (new, LOW) — the new messages are written to a Windows console as UTF-8
+
+The CF-2 message renders as `vacuous gate <?> the test does not test the defect` on a cp1252
+console — the em dash does not survive. Cosmetic, but it is the **output** half of exactly the
+encoding class `v0.6.7` fixed for subprocess *capture*, and it appeared in brand-new code. Either
+reconfigure stdout once at startup (`sys.stdout.reconfigure(encoding="utf-8", errors="replace")`)
+or keep the loop's own operator-facing strings ASCII. The house prose in this document is full of
+em dashes; the *program's* prose does not need them.
+
+### CF-9 (new, LOW) — a refused or errored run leaves the previous run's `result.json` in place
+
+Both probe runs above ended without writing `logs/agent_loop/T1/result.json`, so it still reports
+`final_verdict: MAX_ROUNDS_EXHAUSTED` from a run hours earlier. Nothing in the directory records
+that two later runs were refused. The early returns in the gate block build a `result` dict and
+return it without persisting; the last *completed* run is therefore indistinguishable from the
+current state of the ticket. Same family as CF-6: **an absent record and a stale record read
+identically.**
+
+### Still true, still worth stating in the docs
+
+The loop measures **HEAD, not your working tree**. CF-2's message now says so at the moment it
+bites, which is most of the value — but the "write the test first" workflow makes an uncommitted
+test the *expected* state at exactly the moment you run, and that is worth one line in the README
+rather than only in an error path.
