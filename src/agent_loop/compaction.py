@@ -290,8 +290,10 @@ def _compact_findings(content: str) -> str:
     Preserves the structure: reviewer name, severity, one-line summary,
     arbiter ruling. Not just aggregate counts.
     """
-    # Extract finding lines: "- [BLOCKER|MAJOR|MINOR] ..."
-    finding_re = re.compile(r"^-\s*\[(BLOCKER|MAJOR|MINOR)\]\s*(.+?)$", re.MULTILINE)
+    # Extract finding lines: "- [BLOCKER|MAJOR|MINOR] ..." or "- BLOCKER ..."
+    # (brackets optional — minimax-m3 has twice omitted them, and the parser
+    # silently dropped all findings, preventing the arbiter from running)
+    finding_re = re.compile(r"^-\s*\[?(BLOCKER|MAJOR|MINOR)\]?\s*(.+?)$", re.MULTILINE)
     findings = finding_re.findall(content)
 
     if not findings:

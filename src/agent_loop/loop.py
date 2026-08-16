@@ -106,7 +106,7 @@ class Finding:
         return self.severity in ("BLOCKER", "MAJOR")
 
 
-_FINDING_RE = re.compile(r"^-\s*\[(BLOCKER|MAJOR|MINOR)\]\s*(.+?)$", re.MULTILINE)
+_FINDING_RE = re.compile(r"^-\s*\[?(BLOCKER|MAJOR|MINOR)\]?\s*(.+?)$", re.MULTILINE)
 
 
 @dataclass
