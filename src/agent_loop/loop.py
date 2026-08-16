@@ -22,6 +22,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -873,9 +874,36 @@ def run_ticket(
     result: Dict[str, Any] = {"ticket": tid, "rounds": [], "applied": False,
                               "applied_approved": False, "applied_unapproved": False,
                               "cost_usd": 0.0}
+
+    def _persist_result() -> None:
+        """CF-9: write result.json so a refused/errored run does not leave
+        the previous run's result.json in place. Without this, two refused
+        runs left a stale MAX_ROUNDS_EXHAUSTED from hours earlier, and
+        nothing in the directory recorded that they happened."""
+        try:
+            (art / "result.json").write_text(
+                json.dumps(result, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
     # CF-5: record which agent-loop version produced this run, so a green
     # run is attributable months later. A run at v0.6.7 and a run at HEAD
     # (5,349 insertions later) are not the same tool.
+    #
+    # CF-5 re-driven: the first fix got both fields wrong. agent_loop_sha
+    # ran `git rev-parse` in the CONSUMER repo (recording the consumer's
+    # commit, not the tool's), and agent_loop_version is the packaging
+    # constant frozen at the tag — so both a v0.6.7 run and a HEAD run
+    # record "0.6.7" and the divergence is invisible. Fixed: sha uses the
+    # agent-loop package's own directory, and the resolved package path
+    # is recorded so an editable install is distinguishable from a wheel.
+    try:
+        import agent_loop as _al_pkg
+        result["agent_loop_path"] = os.path.dirname(
+            getattr(_al_pkg, "__file__", "") or ""
+        ) or "unknown"
+    except Exception:
+        result["agent_loop_path"] = "unknown"
     try:
         from importlib.metadata import version as _pkg_version
         result["agent_loop_version"] = _pkg_version("agent-loop")
@@ -883,9 +911,10 @@ def run_ticket(
         result["agent_loop_version"] = "unknown"
     try:
         import subprocess as _sp
+        _al_dir = result.get("agent_loop_path", "")
         result["agent_loop_sha"] = _sp.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=str(repo), capture_output=True, text=True,
+            cwd=_al_dir or None, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=5,
         ).stdout.strip() or "unknown"
     except Exception:
@@ -907,6 +936,7 @@ def run_ticket(
             f"Change roles.arbiter.model in agent_loop.config.json."
         )
         print(f"  REFUSED: {result['detail']}")
+        _persist_result()
         return result
     if len(reviewers) != len(set(reviewers)):
         dups = [m for m in reviewers if reviewers.count(m) > 1]
@@ -918,6 +948,7 @@ def run_ticket(
             f"roles.reviewer.models in agent_loop.config.json."
         )
         print(f"  REFUSED: {result['detail']}")
+        _persist_result()
         return result
 
     region_files = sorted({r["file"] for r in ticket["regions"]})
@@ -928,6 +959,7 @@ def run_ticket(
         result["detail"] = g0.detail
         print(f"  REFUSED: {g0.detail}")
         append_ledger(repo, {"ticket": tid, "verdict": "TICKET_REJECTED", "detail": g0.detail, "gate": "protected"})
+        _persist_result()
         return result
 
     # ---- graph freshness check (Phase 2)
@@ -979,6 +1011,7 @@ def run_ticket(
                         f"possible. Fix the suite first. Baseline error: {exc}"
                     )
                 print(f"  REFUSED: {result['detail'][:200]}")
+                _persist_result()
                 return result
             print(f"  [baseline] {ws.baseline_note}; {len(ws.baseline)} expected failure(s)")
             result["baseline"] = sorted(ws.baseline)
@@ -1013,13 +1046,13 @@ def run_ticket(
                 parts = []
                 if found_passing:
                     parts.append(
-                        f"present but passing (vacuous gate — the test does "
+                        f"present but passing (vacuous gate -- the test does "
                         f"not test the defect): {found_passing}"
                     )
                 if not_found:
                     parts.append(
                         f"not found in the baseline output at all "
-                        f"(typo or uncommitted — the worktree is built from "
+                        f"(typo or uncommitted -- the worktree is built from "
                         f"HEAD {ws.base_commit[:8]} and your test file may "
                         f"have uncommitted changes): {not_found}"
                     )
@@ -1032,6 +1065,7 @@ def run_ticket(
                     + "; ".join(parts)
                     + ". Write the failing test first, or commit the test file."
                 )
+                _persist_result()
                 return result
             if expect_green:
                 print(f"  [test-first] {len(expect_green)} acceptance test(s) red at baseline")
@@ -1441,9 +1475,9 @@ def run_ticket(
                         print(f"           [arbiter] nominates {len(adj.settled)} finding(s) as settled")
                         # CF-7: validate settled decisions against upheld
                         # findings before persisting. The arbiter has
-                        # written both sides of one question before —
+                        # written both sides of one question before --
                         # upholding "count when ABSENT" while settling
-                        # "count ONLY when PRESENT" — and a wrong settled
+                        # "count ONLY when PRESENT" -- and a wrong settled
                         # decision teaches every future run to
                         # re-introduce the defect.
                         upheld_texts = [
@@ -1454,6 +1488,14 @@ def run_ticket(
                         safe_settled, dropped_settled = (
                             memory.validate_settled(adj.settled, upheld_texts)
                         )
+                        # CF-7 residual: state what the check inspected,
+                        # including when it found nothing -- same shape as
+                        # CF-1/CF-2/CF-6. A run where it inspected nothing
+                        # (no upheld findings) is distinguishable from one
+                        # where it found nothing.
+                        print(f"           [memory] checked {len(adj.settled)} settled decision(s) "
+                              f"against {len(upheld_texts)} upheld finding(s); "
+                              f"dropped {len(dropped_settled)}")
                         if dropped_settled:
                             print(f"           [memory] WARNING: dropped {len(dropped_settled)} "
                                   f"settled decision(s) that contradict upheld findings:")
@@ -1549,7 +1591,7 @@ def run_ticket(
                     "content": (
                         (f"A review panel REJECTED this approach. The arbiter has already "
                          f"discarded the findings that do not block; those below are the ones "
-                         f"that do. RETHINK THE APPROACH — do not just tweak these lines.\n\n"
+                         f"that do. RETHINK THE APPROACH -- do not just tweak these lines.\n\n"
                          f"FINDINGS:\n{feedback}\n\n"
                          "Re-emit ALL blocks in full with a fundamentally different approach.\n")
                         if is_reject else

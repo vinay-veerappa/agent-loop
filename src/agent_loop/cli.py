@@ -82,7 +82,10 @@ def _looks_like_code(token: str, spec: str = "") -> bool:
     A single-word ALL-CAPS token (CSS, DETAIL, GOES) is prose in every
     house style. A token looks like code if:
       - it contains an underscore (snake_case, even ALL_CAPS constants)
-      - it has mixed case (PascalCase / camelCase)
+      - it has an interior lowercase->uppercase transition (camelCase:
+        parseDate) OR an uppercase-then-lowercase transition (PascalCase:
+        StringBuilder). A two-letter token like "Do" or "If" has no
+        interior transition in either direction and is prose.
     """
     if "_" in token:
         return True
@@ -96,9 +99,24 @@ def _looks_like_code(token: str, spec: str = "") -> bool:
     # ALL-CAPS with no lowercase = prose (CSS, DETAIL, SCOPE)
     if has_upper and not has_lower:
         return False
-    # Has mixed case — PascalCase or camelCase
-    if has_upper and has_lower:
-        return True
+    # Mixed case: require an interior transition, not just has_upper+has_lower.
+    # "Do" (D=upper, o=lower) has both but no interior transition — it's
+    # a sentence-initial English word. "parseDate" has lower->upper at
+    # position 5. "StringBuilder" has upper->lower at position 1.
+    if has_upper and has_lower and len(token) >= 3:
+        for i in range(1, len(token)):
+            if token[i - 1].islower() and token[i].isupper():
+                return True  # camelCase transition
+        # PascalCase: first char upper, second char lower, rest mixed.
+        # "Do" (len 2) fails len>=3. "Five" (len 4) has no interior
+        # transition: F-i-v-e is upper-lower-lower-lower, no transition.
+        # "StringBuilder" has S-t (upper->lower at pos 0->1) which is
+        # the PascalCase signature. Check for it explicitly:
+        if token[0].isupper() and token[1].islower():
+            # But "Five" also has this pattern. Require at least one
+            # more upper later, or an underscore (already handled).
+            # True PascalCase has multiple uppercase letters.
+            return sum(1 for c in token if c.isupper()) >= 2
     return False
 
 
@@ -183,9 +201,18 @@ def _list(tickets, profile) -> int:
             #   - it has an interior lowercase->uppercase transition (camelCase)
             #   - it is followed by ( or . in the spec text (a call or access)
             #   - it appears inside backticks in the spec text
-            # Check for backtick-wrapped and call/access patterns
+            # Check for backtick-wrapped and call/access patterns.
+            # CF-1 residual: the call_tokens regex caught sentence-ending
+            # periods ('SCOPE.' in 'm. SCOPE. Thi') because \s*[.(] matches
+            # a period followed by anything. Require no whitespace between
+            # the . and the identifier: Foo.Bar, not 'SCOPE. The'.
+            # For calls, Foo(x) or Foo("x") -- allow whitespace before the
+            # opening paren but require content inside it.
             backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_text))
-            call_tokens = set(_re.findall(r'\b([A-Z][a-zA-Z0-9_]+)\s*[.(]', spec_text))
+            call_tokens = set(_re.findall(
+                r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]', spec_text))      # Foo.Bar (no space)
+            call_tokens |= set(_re.findall(
+                r'\b([A-Z][a-zA-Z0-9_]+)\s*\(\s*[\w"\']', spec_text))  # Foo(x) or Foo("x")
             caps = {c for c in caps if _looks_like_code(c, spec_text)
                     or c in backtick_tokens or c in call_tokens}
             if not caps or not file_path:

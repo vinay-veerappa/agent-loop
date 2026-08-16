@@ -87,6 +87,31 @@ def test_cf1_pascal_case_is_code():
     assert _looks_like_code("TradeCopierEngine", "")
 
 
+def test_cf1_short_mixed_case_is_prose():
+    """CF-1 residual: 'Do', 'Five', 'Reporting' have no interior transition."""
+    from agent_loop.cli import _looks_like_code  # type: ignore
+    assert not _looks_like_code("Do", "")
+    assert not _looks_like_code("If", "")
+    assert not _looks_like_code("Five", "")
+    assert not _looks_like_code("Reporting", "")
+
+
+def test_cf1_sentence_ending_period_not_call_token():
+    """CF-1 residual: 'SCOPE.' at end of sentence should not match call_tokens."""
+    import re
+    # The old regex: r'\b([A-Z][a-zA-Z0-9_]+)\s*[.(]'
+    # matches 'SCOPE' in 'm. SCOPE. Thi' because the period matches [.(].
+    # The new regex requires . or ( to be followed by an identifier char.
+    spec = "m. SCOPE. Thi"
+    old_re = re.compile(r'\b([A-Z][a-zA-Z0-9_]+)\s*[.(]')
+    new_re_dot = re.compile(r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]')
+    new_re_paren = re.compile(r'\b([A-Z][a-zA-Z0-9_]+)\s*\(\s*[\w"\']')
+    old_matches = set(old_re.findall(spec))
+    new_matches = set(new_re_dot.findall(spec)) | set(new_re_paren.findall(spec))
+    assert "SCOPE" in old_matches, "sanity: old regex catches SCOPE"
+    assert "SCOPE" not in new_matches, "new regex must not catch SCOPE"
+
+
 # ---------------------------------------------------------------------------
 # CF-4: --version prints package version and resolved path
 # ---------------------------------------------------------------------------
