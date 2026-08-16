@@ -132,6 +132,32 @@ reasoning budget) are not the same tool. `logs/agent_loop/T1/` and the summary b
 the package version and git sha, so a green run is attributable months later. Same argument as the
 consumer's own rule that a deployment is verified by content, not by the path the tool believes in.
 
+### CF-6. An omitted `expect_green` disables the test-first gate SILENTLY — MEDIUM
+
+`loop.py` reads `ticket.get("expect_green", ())`, and when the list is empty the whole
+red-at-baseline check is skipped. The refusal path (CF-2) is loud; **the skip path prints
+nothing at all**, so the run output for a ticket with no acceptance gate is indistinguishable from
+one whose gate passed.
+
+This came up while scoping a **pure refactor** for this consumer (`P3-124`: one symbol table
+defined in four places). A refactor has no behaviour change, therefore no test that can be red
+first, therefore no `expect_green` — so the strongest gate the loop has simply does not apply, and
+nothing says so. The run is not *unguarded* (the no-regressions check still runs, and for a
+refactor that is genuinely the right gate), but the operator cannot tell which of the two
+situations they are in, and neither can anyone reading the log afterwards.
+
+**Narrowest fix**: print one line either way, the way the gate already does when it fires —
+`[test-first] 6 acceptance test(s) red at baseline` has a natural counterpart in
+`[test-first] SKIPPED - ticket declares no expect_green; only the no-regression gate applies`.
+
+**Better, if it is cheap**: let a ticket declare `"refactor": true` and then *require* the absent
+`expect_green`, so "no behaviour change intended" is an assertion the ticket makes rather than an
+absence anyone can create by deleting a line. That also gives the reviewers a fact worth having:
+under a refactor ticket, any behaviour change visible in the diff is itself a finding.
+
+This is the same shape as CF-1 and CF-2 and as three gates in the consumer repo: **state what the
+gate inspected, including when the answer is "nothing".**
+
 ---
 
 ## What worked, recorded because it is evidence too
