@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -75,6 +76,32 @@ def load_tickets(path: Path) -> list:
     return tickets
 
 
+def _looks_like_code(token: str, spec: str = "") -> bool:
+    """CF-1: return True if a capitalized token looks like a code identifier.
+
+    A single-word ALL-CAPS token (CSS, DETAIL, GOES) is prose in every
+    house style. A token looks like code if:
+      - it contains an underscore (snake_case, even ALL_CAPS constants)
+      - it has mixed case (PascalCase / camelCase)
+    """
+    if "_" in token:
+        return True
+    has_upper = False
+    has_lower = False
+    for ch in token:
+        if ch.isupper():
+            has_upper = True
+        elif ch.islower():
+            has_lower = True
+    # ALL-CAPS with no lowercase = prose (CSS, DETAIL, SCOPE)
+    if has_upper and not has_lower:
+        return False
+    # Has mixed case — PascalCase or camelCase
+    if has_upper and has_lower:
+        return True
+    return False
+
+
 def _list(tickets, profile) -> int:
     """Confirm every ticket's regions still resolve against the current tree.
 
@@ -112,15 +139,19 @@ def _list(tickets, profile) -> int:
                         if not any(gates.names_match(name, f) for f in outcome.failures):
                             bad += 1
                             print(f"      WARN expect_green '{name}' matches no current failure "
-                                  f"-- vacuous gate (can never go red-then-green)")
+                                  f"-- vacuous gate (can never go red-then-green)",
+                                  file=sys.stderr)
                     for fail in sorted(outcome.failures):
                         if not any(gates.names_match(name, fail) for name in expect_green):
                             print(f"      NOTE failure '{fail}' is not in expect_green "
-                                  f"-- forgotten criterion?")
+                                  f"-- forgotten criterion?",
+                                  file=sys.stderr)
                 else:
-                    print(f"      WARN cannot validate expect_green: test runner produced no summary")
+                    print(f"      WARN cannot validate expect_green: test runner produced no summary",
+                          file=sys.stderr)
             except Exception as exc:
-                print(f"      WARN cannot validate expect_green: {exc}")
+                print(f"      WARN cannot validate expect_green: {exc}",
+                      file=sys.stderr)
 
         # O66: warn when a capitalized identifier in spec/context is not
         # declared inside any region of the same file. Regions are not only the
@@ -128,6 +159,13 @@ def _list(tickets, profile) -> int:
         # named in spec whose declaration falls outside every region is
         # invisible to the implementer, and an invisible type gets a plausible
         # guess -- four rounds of invented member names, measured.
+        #
+        # CF-1: the heuristic treated any capitalised token as a symbol, so a
+        # well-written ticket that uses ALL-CAPS for emphasis (THE, DO, SCOPE)
+        # produced ~20 warnings with zero real identifiers. Only warn for
+        # tokens that look like code: contains _, has a camelCase/PascalCase
+        # interior transition, is followed by ( or . in the spec text, or
+        # appears inside backticks. A single-word ALL-CAPS token is prose.
         import re as _re
         for spec_entry in t["regions"]:
             spec_text = t.get("spec", "") + " " + t.get("context", "")
@@ -138,6 +176,18 @@ def _list(tickets, profile) -> int:
             caps -= {"The", "This", "That", "These", "Those", "When", "Where",
                      "Which", "What", "Each", "Every", "All", "None", "True",
                      "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
+            # CF-1: filter to code-like tokens only.
+            # A single-word ALL-CAPS token (CSS, DETAIL, GOES) is prose in
+            # every house style. A token looks like code if:
+            #   - it contains an underscore (snake_case)
+            #   - it has an interior lowercase->uppercase transition (camelCase)
+            #   - it is followed by ( or . in the spec text (a call or access)
+            #   - it appears inside backticks in the spec text
+            # Check for backtick-wrapped and call/access patterns
+            backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_text))
+            call_tokens = set(_re.findall(r'\b([A-Z][a-zA-Z0-9_]+)\s*[.(]', spec_text))
+            caps = {c for c in caps if _looks_like_code(c, spec_text)
+                    or c in backtick_tokens or c in call_tokens}
             if not caps or not file_path:
                 continue
             # Try to resolve the region and check if the identifiers appear in it.
@@ -161,7 +211,8 @@ def _list(tickets, profile) -> int:
                 # Is it mentioned anywhere in the file?
                 if cap not in file_text:
                     print(f"      WARN '{cap}' named in spec but not found in {file_path} "
-                          f"-- model will guess; add its declaration to a read-only region")
+                          f"-- model will guess; add its declaration to a read-only region",
+                          file=sys.stderr)
 
     return 1 if bad else 0
 
@@ -437,6 +488,8 @@ def main(argv=None) -> int:
         pass
 
     ap = argparse.ArgumentParser(prog="python -m agent_loop")
+    ap.add_argument("--version", action="store_true",
+                    help="print package version and resolved package path, then exit")
     ap.add_argument("--tickets", default="tickets.json")
     ap.add_argument("--ticket", action="append", help="ticket id (repeatable); default all")
     ap.add_argument("--profile", default="", help="profile name (must be registered)")
@@ -548,6 +601,21 @@ def main(argv=None) -> int:
         help="review mode: run the profile's build+test first so the panel is told the true gate state",
     )
     args = ap.parse_args(argv)
+
+    # CF-4: --version prints the package version and resolved package path.
+    # Editable installs are exactly when you doubt which copy is running,
+    # so the path is the useful part.
+    if args.version:
+        import agent_loop as _pkg
+        try:
+            from importlib.metadata import version as _pkg_version
+            ver = _pkg_version("agent-loop")
+        except Exception:
+            ver = getattr(_pkg, "__version__", "unknown")
+        pkg_path = os.path.dirname(getattr(_pkg, "__file__", "") or "")
+        print(f"agent-loop {ver}")
+        print(f"  resolved: {pkg_path}")
+        return 0
 
     # Install the effective config before anything reads a tunable, then
     # rebuild the model registry from it so role->model bindings and budgets

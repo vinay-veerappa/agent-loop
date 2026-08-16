@@ -119,6 +119,12 @@ class Workspace:
     ticket: str
     baseline: Set[str] = field(default_factory=set)
     baseline_note: str = ""
+    # CF-2: the full test output from the baseline run, so the test-first
+    # gate can distinguish "test not found at all" (uncommitted/typo) from
+    # "test found but passing" (vacuous gate). Both were reported as
+    # "not failing at baseline", sending the operator to re-read assertions
+    # when the fix was one `git commit` away.
+    baseline_raw: str = ""
 
     def run(self, cmd: str, timeout: int = 900) -> Tuple[int, str]:
         """Run a shell command with the worktree as cwd."""
@@ -441,3 +447,4 @@ def capture_baseline(ws: Workspace, test_cmd: str, parse_tests, timeout: int = 9
         )
     ws.baseline = set(outcome.failures)
     ws.baseline_note = f"{outcome.passed} passed, {outcome.failed} failed at {ws.base_commit[:8]}"
+    ws.baseline_raw = outcome.raw

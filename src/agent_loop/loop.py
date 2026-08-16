@@ -34,6 +34,7 @@ from ._io import write_text_verbatim
 from .models import DEFAULT_REGISTRY
 from .compaction import compact_history, history_token_count
 from .context import check_graph_freshness, build_context_slice
+from . import memory
 from .memory import (
     save_settled, inject_settled, save_feedback, build_learning_context,
 )
@@ -872,6 +873,23 @@ def run_ticket(
     result: Dict[str, Any] = {"ticket": tid, "rounds": [], "applied": False,
                               "applied_approved": False, "applied_unapproved": False,
                               "cost_usd": 0.0}
+    # CF-5: record which agent-loop version produced this run, so a green
+    # run is attributable months later. A run at v0.6.7 and a run at HEAD
+    # (5,349 insertions later) are not the same tool.
+    try:
+        from importlib.metadata import version as _pkg_version
+        result["agent_loop_version"] = _pkg_version("agent-loop")
+    except Exception:
+        result["agent_loop_version"] = "unknown"
+    try:
+        import subprocess as _sp
+        result["agent_loop_sha"] = _sp.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(repo), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        result["agent_loop_sha"] = "unknown"
     convergence: List[Tuple[int, set]] = []
 
     # ---- invariant checks: guard the architecture's central guarantees.
@@ -971,24 +989,60 @@ def run_ticket(
             # nothing), or the test passes without the fix (so it does not
             # actually test the defect). Refuse the ticket rather than run a
             # vacuous gate; a gate that cannot fail is worse than no gate.
+            #
+            # CF-2: "not failing at baseline" conflated two states with
+            # different fixes: the test exists and passes (vacuous gate —
+            # fix the ticket) vs. the test does not exist at all
+            # (uncommitted — fix the workflow). Classify each name so the
+            # message names the right problem.
             expect_green = list(ticket.get("expect_green", ()))
             not_red = [
                 t for t in expect_green
                 if not any(gates.names_match(t, f) for f in ws.baseline)
             ]
             if not_red:
-                print(f"  REFUSED: expect_green test(s) not failing at baseline: {not_red}")
+                # Classify: found-but-passing vs not-found-at-all
+                found_passing = []
+                not_found = []
+                for t in not_red:
+                    if ws.baseline_raw and t in ws.baseline_raw:
+                        found_passing.append(t)
+                    else:
+                        not_found.append(t)
+                # Build a message that names both states separately
+                parts = []
+                if found_passing:
+                    parts.append(
+                        f"present but passing (vacuous gate — the test does "
+                        f"not test the defect): {found_passing}"
+                    )
+                if not_found:
+                    parts.append(
+                        f"not found in the baseline output at all "
+                        f"(typo or uncommitted — the worktree is built from "
+                        f"HEAD {ws.base_commit[:8]} and your test file may "
+                        f"have uncommitted changes): {not_found}"
+                    )
+                print(f"  REFUSED: expect_green test(s) not failing at baseline:")
+                for p in parts:
+                    print(f"    - {p}")
                 result["final_verdict"] = "TICKET_REJECTED"
                 result["detail"] = (
-                    f"expect_green names {not_red} are not in the baseline failure set. "
-                    "Either the name is wrong, or the test passes without the fix and so "
-                    "does not test the defect. Write the failing test first."
+                    f"expect_green names are not in the baseline failure set. "
+                    + "; ".join(parts)
+                    + ". Write the failing test first, or commit the test file."
                 )
                 return result
             if expect_green:
                 print(f"  [test-first] {len(expect_green)} acceptance test(s) red at baseline")
                 ticket = dict(ticket, _acceptance_tests_src=extract_test_sources(
                     ws.root, expect_green, profile.test_sources, profile))
+            else:
+                # CF-6: the silent skip was indistinguishable from a gate
+                # that passed. State what the gate inspected, including
+                # when the answer is "nothing" — same shape as CF-1/CF-2.
+                print(f"  [test-first] SKIPPED - ticket declares no expect_green; "
+                      f"only the no-regression gate applies")
 
         regs = regions.extract(ws.root, ticket["regions"], profile)
         for r in regs:
@@ -1385,8 +1439,28 @@ def run_ticket(
                     print(f"           [arbiter] {adj.summary()}  {adj.usage}")
                     if adj.settled:
                         print(f"           [arbiter] nominates {len(adj.settled)} finding(s) as settled")
+                        # CF-7: validate settled decisions against upheld
+                        # findings before persisting. The arbiter has
+                        # written both sides of one question before —
+                        # upholding "count when ABSENT" while settling
+                        # "count ONLY when PRESENT" — and a wrong settled
+                        # decision teaches every future run to
+                        # re-introduce the defect.
+                        upheld_texts = [
+                            all_findings[i - 1].text
+                            for i in adj.upheld_indices
+                            if 1 <= i <= len(all_findings)
+                        ]
+                        safe_settled, dropped_settled = (
+                            memory.validate_settled(adj.settled, upheld_texts)
+                        )
+                        if dropped_settled:
+                            print(f"           [memory] WARNING: dropped {len(dropped_settled)} "
+                                  f"settled decision(s) that contradict upheld findings:")
+                            for d in dropped_settled:
+                                print(f"             - {d[:120]}")
                         # Phase 5: persist arbiter-nominated settled decisions
-                        saved = save_settled(repo, tid, adj.settled)
+                        saved = save_settled(repo, tid, safe_settled)
                         if saved:
                             print(f"           [memory] saved {saved} settled decision(s) to store")
 

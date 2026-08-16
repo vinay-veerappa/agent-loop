@@ -159,6 +159,77 @@ def save_settled(
     return saved
 
 
+def _contradicts_settled(settled_text: str, upheld_texts: List[str]) -> bool:
+    """Detect when a settled decision contradicts an upheld finding.
+
+    CF-7: the arbiter upheld a finding saying "count when the order is
+    ABSENT" and settled a decision saying "count ONLY when the order is
+    PRESENT" — a direct contradiction in the same ruling. The settled
+    decision persists and is loaded into future runs as an established
+    constraint, teaching every future run to re-introduce the defect.
+
+    This is a crude check: it looks for the word "only" in the settled
+    text and tests whether flipping a key term (absent/present,
+    true/false, etc.) would align it with an upheld finding. Even a
+    crude check catches the measured case because the two sentences
+    share their subject and differ by the word "only".
+    """
+    s_lower = settled_text.lower()
+    # The word "only" in a settled decision is the common shape of a
+    # contradiction: "X may only happen when Y" negates an upheld finding
+    # that says "X must happen when NOT Y".
+    if "only" not in s_lower:
+        return False
+    # Negation pairs that, if flipped, indicate a contradiction.
+    negation_pairs = [
+        ("absent", "present"),
+        ("not found", "found"),
+        ("missing", "present"),
+        ("true", "false"),
+        ("open", "closed"),
+        ("flat", "in position"),
+        ("empty", "non-empty"),
+        ("zero", "non-zero"),
+    ]
+    for a, b in negation_pairs:
+        if a in s_lower:
+            for upheld in upheld_texts:
+                if b in upheld.lower() and a not in upheld.lower():
+                    return True
+        if b in s_lower:
+            for upheld in upheld_texts:
+                if a in upheld.lower() and b not in upheld.lower():
+                    return True
+    return False
+
+
+def validate_settled(
+    settled: List[str],
+    upheld_findings: List[str],
+) -> tuple[List[str], List[str]]:
+    """Validate settled decisions against upheld findings.
+
+    Returns (safe_settled, dropped_settled). A settled decision that
+    contradicts an upheld finding is dropped — the model has written both
+    sides of one question, so neither is safe to keep.
+
+    CF-7: a wrong SETTLED decision teaches every future run to
+    re-introduce the defect, arriving labelled as something already
+    decided. The check is crude (word-level negation) but catches the
+    measured case.
+    """
+    if not settled or not upheld_findings:
+        return list(settled), []
+    safe = []
+    dropped = []
+    for decision in settled:
+        if _contradicts_settled(decision, upheld_findings):
+            dropped.append(decision)
+        else:
+            safe.append(decision)
+    return safe, dropped
+
+
 def load_settled(repo: Path) -> List[str]:
     """Load all settled decisions from the JSONL store.
 
