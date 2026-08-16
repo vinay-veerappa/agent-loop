@@ -393,6 +393,37 @@ def _docs(args, profile, implementer) -> int:
     return 0 if result.get("docs") else 1
 
 
+def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
+    """Run-plan mode: execute a decomposed plan."""
+    from . import run_plan_mode
+
+    if not args.plan:
+        print("--mode run-plan needs --plan (path to the plan JSON)")
+        return 2
+
+    plan_path = Path(args.plan)
+    if not plan_path.is_file():
+        print(f"plan file not found: {plan_path}")
+        return 2
+
+    result = run_plan_mode.run_plan(
+        repo=Path("."),
+        plan_path=plan_path,
+        profile=profile,
+        implementer=implementer,
+        reviewers=reviewers,
+        arbiter_model=arbiter,
+        apply=args.apply,
+        max_rounds=args.max_rounds,
+        from_part=args.from_part,
+        keep_branch=args.keep_branch,
+        panel_deadline=args.panel_deadline,
+    )
+
+    # Exit code: 0 if all parts applied, 1 if partial or failed.
+    return 0 if result.status == "complete" else 1
+
+
 def main(argv=None) -> int:
     # Line-buffer stdout. A run redirected to a log or a pipe -- which is how any
     # run long enough to background is invoked -- otherwise BLOCK-buffers, so the
@@ -446,7 +477,7 @@ def main(argv=None) -> int:
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
 
     # ---- modes -----------------------------------------------------------
-    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs", "report", "replay"), default="patch")
+    ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs", "report", "replay", "run-plan"), default="patch")
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
     ap.add_argument(
         "--feature", default="",
@@ -455,6 +486,18 @@ def main(argv=None) -> int:
              "and regions may carry op=create for files that do not exist yet.",
     )
     ap.add_argument("--fast-plan", action="store_true", help="plan mode: skip panel+arbiter, use single reviewer")
+    ap.add_argument(
+        "--plan", default="",
+        help="run-plan mode: path to the plan JSON (from --mode plan --feature)",
+    )
+    ap.add_argument(
+        "--from", dest="from_part", default="",
+        help="run-plan mode: resume from a specific part (skip earlier parts)",
+    )
+    ap.add_argument(
+        "--keep-branch", action="store_true",
+        help="run-plan mode: do not delete the scratch branch on failure",
+    )
     # Empty, NOT a Python path. This default was passed unconditionally, so it
     # overrode any profile-derived choice and told a C# project's test writer to
     # emit `.py`. Test mode derives the path from `profile.test_sources` when this
@@ -596,6 +639,9 @@ def main(argv=None) -> int:
 
     if args.mode == "docs":
         return _docs(args, profile, implementer)
+
+    if args.mode == "run-plan":
+        return _run_plan(args, profile, implementer, reviewers, arbiter)
 
     if args.mode == "replay":
         from .replay import run_replay_corpus
