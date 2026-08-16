@@ -1,6 +1,6 @@
 # Design Proposal: Code Mode + Graph-Native Exploration for Developer Mode
 
-> **Status:** proposal, not implemented
+> **Status:** proposal, not implemented (revised after first review)
 > **Date:** 2026-08-16
 > **Inspiration:** [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Code Mode + codebase-memory-mcp graph
 > **Scope:** Developer mode EXPLORE phase. Patch mode is not affected.
@@ -10,7 +10,7 @@
 ## 1. Problem
 
 Developer mode's EXPLORE phase uses the same sequential JSON tool-calling
-pattern that DSH's Code Mode was designed to replace. The model交互ively
+pattern that DSH's Code Mode was designed to replace. The model interactively
 calls `search_code`, `read_file`, and `trace_call_path`, and every
 intermediate result dumps into the context window:
 
@@ -77,9 +77,10 @@ return "No changes needed";
 4. **Fresh-per-run isolation.** No pooling, no cross-run state. A program's
    world dies with its worker. State bleed is unrepresentable.
 
-5. **Hostile-peer assumption.** The worker runs model code. Every inbound
-   message from the worker port is re-validated and rebuilt field-by-field.
-   A forged extra field never rides along.
+5. **Semi-trusted peer, not hostile.** The worker runs model code with
+   bash-equivalent authority. Containment is about process isolation and
+   state bleed, not a security boundary against a determined adversary.
+   Deployments that need hard isolation use a container-class backend.
 
 6. **Bindings, not imports.** The model's code receives tool functions as
    injected bindings (a `tools` namespace), not via `import`. The sandbox
@@ -118,13 +119,17 @@ search results and the file contents never touch the context window.
 
 ### 2.2 The SDK
 
-The sandbox exposes a restricted SDK as Python functions injected into the
-script's globals. The SDK wraps the existing developer-mode tools + the
-codebase-memory-mcp graph client:
+The sandbox exposes a restricted SDK as Python functions. The SDK wraps the
+existing developer-mode tools + the codebase-memory-mcp graph client. The
+SDK functions are **stubs in the subprocess that marshal calls over a
+JSON-line IPC bridge to the parent** process, which resolves them against
+the real tool implementations and the MCP client. The subprocess never has
+direct access to the MCP client, the file system, or the network — only
+to the IPC bridge.
 
-| SDK function | Backed by | What it does |
+| SDK function | Backed by (parent) | What it does |
 |---|---|---|
-| `sdk.read_file(path, start=1, end=None)` | `developer/tools.py:_read_file` | Read a file, windowed |
+| `sdk.read_file(path, start=1, end=None)` | `developer/tools.py:_read_file` | Read a file, windowed. Note: the existing `_read_file` accepts `start_line`/`end_line` (not `start`/`end`); the SDK adapter renames. |
 | `sdk.search_code(pattern, file_pattern=None)` | `developer/tools.py:_search_code` | Grep + graph-augmented ranking |
 | `sdk.trace_call_path(function_name, direction="both", depth=2)` | `developer/tools.py:_trace_call_path` | Graph: who calls / what it calls |
 | `sdk.search_graph(query, **kwargs)` | `mcp_client.call_tool("search_graph", ...)` | Graph: full-text search over functions/classes |
@@ -139,15 +144,44 @@ The graph knows the entire call structure. A script can:
 - Filter for lines that match a pattern
 - Return only the relevant 5 lines
 
-Interactively, this is 5+ turns. With `run_code`, it's 1 turn. And the
-graph queries run at CPU speed (the MCP client uses stdio, no network),
-not model latency.
+Interactively, this is 5+ turns. With `run_code`, it's 1 turn. The graph
+queries run via stdio IPC to the MCP client — a per-call round-trip cost
+measured in milliseconds, not the 10-60s of a model round-trip.
 
 ### 2.3 The sandbox
 
-**Design:** `subprocess.run([python, "-c", script])` with restricted globals.
+**Threat model:** the model's script is **semi-trusted**. It is written by
+a coding model that may produce buggy logic, not by a determined adversary.
+The sandbox provides **process isolation** (no shared state, killable,
+timeout-bounded) and **namespace restriction** (no `import`, no `open()`,
+no network). It does NOT provide a security boundary against a hostile
+script — a determined script could escape via Python introspection. For
+a hard boundary, a container-class backend (chroot/Landlock/Seatbelt) would
+be needed, which is out of scope for this proposal. The blast radius of a
+sandbox escape is: any file the user can read. This is the same authority
+the existing `read_file` tool already grants.
 
-**Restriction mechanism:** AST-based import blocking + injected SDK.
+**Design:** subprocess with AST-based restriction + restricted builtins +
+JSON-line IPC bridge for SDK calls.
+
+**AST validator (revised — closes the `getattr` bypass):**
+
+The validator blocks three categories of access:
+
+1. **Import statements** — `import` and `from X import Y` are blocked
+   unconditionally. No module may be loaded.
+
+2. **Dangerous builtins by name** — `open`, `exec`, `eval`, `compile`,
+   `__import__`, `globals`, `locals`, `vars`, `dir`, `input`, `breakpoint`,
+   `exit`, `quit`, **`getattr`, `setattr`, `delattr`, `type`**,
+   `__build_class__`. These are blocked both as direct calls (`open(...)`)
+   and as attribute access targets (`__builtins__.open`).
+
+3. **Introspection chains** — the validator walks `ast.Attribute` chains
+   and rejects any that reach: `__builtins__`, `__class__`, `__bases__`,
+   `__subclasses__`, `__globals__`, `__dict__`, `__mro__`, `__dir__`,
+   `__getattr__`. This blocks the `().__class__.__base__.__subclasses__()`
+   escape that recovers `os`/`subprocess`/`_io.FileIO`.
 
 ```python
 import ast
@@ -157,82 +191,184 @@ _BLOCKED_NODES = (
     ast.ImportFrom,   # from os import system
 )
 
-_BLOCKED_BUILTINS = {
+# Blocked as direct calls AND as attribute access targets
+_BLOCKED_NAMES = frozenset({
     "open", "exec", "eval", "compile", "__import__",
     "globals", "locals", "vars", "dir",
     "input", "breakpoint", "exit", "quit",
-}
+    "getattr", "setattr", "delattr", "type",
+    "__build_class__",
+})
+
+# Blocked attribute names — any chain reaching these is rejected
+_BLOCKED_ATTRS = frozenset({
+    "__builtins__", "__class__", "__bases__", "__subclasses__",
+    "__globals__", "__dict__", "__mro__", "__dir__", "__getattr__",
+    "__getattribute__",
+})
+
 
 def validate_script(source: str) -> list[str]:
-    """Return a list of errors, or empty if the script is safe to run."""
+    """Return a list of errors, or empty if the script is safe to run.
+
+    Blocks: imports, dangerous builtins, and introspection chains.
+    This is a namespace restriction, not a security boundary — a
+    determined adversary can escape Python's object model. The blast
+    radius is documented in the threat model above.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
         return [f"SyntaxError: {e}"]
 
-    errors = []
+    errors: list[str] = []
     for node in ast.walk(tree):
+        # 1. Block all import statements
         if isinstance(node, _BLOCKED_NODES):
             names = [n.name for n in node.names]
             errors.append(f"import not allowed: {', '.join(names)}")
-        # Check for attribute access on blocked builtins
+            continue
+
+        # 2. Block dangerous builtins called by name
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in _BLOCKED_BUILTINS:
+            if node.func.id in _BLOCKED_NAMES:
                 errors.append(f"builtin not allowed: {node.func.id}")
+
+        # 3. Block attribute access into introspection chains
+        if isinstance(node, ast.Attribute):
+            if node.attr in _BLOCKED_ATTRS:
+                errors.append(
+                    f"attribute access not allowed: .{node.attr} "
+                    f"(introspection chain blocked)"
+                )
     return errors
 ```
 
-**Execution:**
+**Restricted builtins (revised — uses `import builtins`, not `__builtins__`):**
+
+```python
+import builtins as _builtins
+
+def _safe_builtins() -> dict:
+    """Construct a safe builtins dict from the real builtins module.
+
+    Uses `import builtins` (the module), not `__builtins__` (which is a
+    dict proxy in non-__main__ modules and raises AttributeError on
+    .__dict__). Filters out dangerous names.
+    """
+    return {
+        k: v for k, v in vars(_builtins).items()
+        if k not in _BLOCKED_NAMES
+    }
+```
+
+### 2.4 Return capture (revised — wraps script in a function)
+
+The model's script is wrapped in a function so `return` is legal. The
+wrapper calls the function, captures the return value, and emits it as a
+sentinel line on stdout. The parent parses the sentinel.
+
+**The wrapper (generated by the parent, not written by the model):**
+
+```python
+# Parent constructs this wrapper around the model's script body.
+# The model's script is inserted as the body of __user_script.
+# `return` is legal inside __user_script because it's a function body.
+
+WRAPPER_TEMPLATE = '''
+import json, sys
+
+# --- safe builtins (injected by parent) ---
+{safe_builtins_assignment}
+
+# --- SDK stubs (injected by parent) ---
+{sdk_stubs}
+
+# --- model script (wrapped in a function so return is legal) ---
+def __user_script():
+{model_script_indented}
+
+# --- execute and capture return value ---
+try:
+    __result = __user_script()
+except Exception as e:
+    import traceback
+    print("__ERROR__" + json.dumps({{
+        "kind": "exception",
+        "message": str(e),
+        "traceback": traceback.format_exc(),
+    }}))
+    sys.exit(0)
+
+# Emit the return value as a sentinel line.
+print("__RESULT__" + json.dumps({{"value": __result}}))
+'''
+```
+
+**How the parent runs it:**
 
 ```python
 def run_script(source: str, repo: Path, profile: Profile, timeout: int = 30) -> dict:
     """Run a model-written script in a restricted sandbox.
 
-    Returns {"return": str, "stdout": str, "error": str | None}.
+    Returns {"return": str, "stdout": str, "error": dict | None}.
     """
     errors = validate_script(source)
     if errors:
-        return {"return": "", "stdout": "", "error": "; ".join(errors)}
+        return {"return": "", "stdout": "", "error": {
+            "kind": "invalid-script", "message": "; ".join(errors)
+        }}
 
-    # Build the SDK with the repo and profile bound
-    sdk = _build_sdk(repo, profile)
-
-    # Restricted globals: no builtins access to open/exec/eval
-    safe_builtins = {
-        k: v for k, v in __builtins__.__dict__.items()
-        if k not in _BLOCKED_BUILTINS
-    }
-    safe_globals = {
-        "__builtins__": safe_builtins,
-        "sdk": sdk,
-        "print": _make_print_captor(),  # captures print() output
-    }
-
-    # Run in a subprocess for hard isolation (timeout, no shared state)
-    # The script's return value is captured via a sentinel.
-    wrapped = (
-        "import sys\n"
-        f"__result = exec(open(sys.argv[1]).read(), "
-        f"{{'__builtins__': {safe_builtins_repr}, 'sdk': sdk}})\n"
-        f"print('__RESULT__', repr(__result))\n"
+    # Indent the model script to be the body of __user_script
+    indented = "\n".join("    " + line for line in source.splitlines())
+    wrapper = WRAPPER_TEMPLATE.format(
+        safe_builtins_assignment=_render_safe_builtins(),
+        sdk_stubs=_render_sdk_stubs(),
+        model_script_indented=indented,
     )
-    # ... or simpler: exec in-process with a hard timeout via signal/threading
+
+    # Run in a subprocess with timeout
+    proc = subprocess.run(
+        [sys.executable, "-c", wrapper],
+        capture_output=True, text=True,
+        timeout=timeout,
+        encoding="utf-8", errors="replace",
+        cwd=str(repo),
+        env={},  # empty env — no PATH, no network config
+    )
+
+    # Parse the sentinel from stdout
+    stdout = proc.stdout
+    return_value = ""
+    error = None
+
+    for line in stdout.splitlines():
+        if line.startswith("__RESULT__"):
+            payload = line[len("__RESULT__"):]
+            return_value = json.loads(payload).get("value", "")
+        elif line.startswith("__ERROR__"):
+            payload = line[len("__ERROR__"):]
+            error = json.loads(payload)
+
+    if proc.returncode != 0 and not error:
+        error = {"kind": "crash", "message": proc.stderr[:2000]}
+
+    return {"return": str(return_value), "stdout": stdout, "error": error}
 ```
 
-**Two isolation options:**
+**Distinguishing error kinds:**
 
-| Option | Pros | Cons |
+| `error.kind` | Cause | What the model sees |
 |---|---|---|
-| **In-process exec** (thread + timeout) | Simple, no subprocess overhead, SDK is real Python objects | A hostile script could crash the process; no memory isolation |
-| **Subprocess** (`subprocess.run`) | Hard isolation, killable, no state bleed | SDK must be serialized across the process boundary |
+| `invalid-script` | AST validator blocked import/builtin/attribute | The validator's error message |
+| `exception` | Script raised an exception | Traceback (first 2000 chars) |
+| `crash` | Subprocess exited non-zero without sentinel | stderr (first 2000 chars) |
+| `timeout` | `subprocess.run` raised `TimeoutExpired` | "compute budget exhausted (30s)" |
 
-**Recommendation:** subprocess. DSH's "fresh-per-run, no cross-run state"
-principle applies. The SDK is injected via a bootstrap script that imports
-the agent_loop package and constructs the SDK objects — the model's script
-is appended as the body. A 30-second timeout kills the process. No network
-(the MCP client uses stdio to a local server, not HTTP).
+A `TimeoutExpired` is caught by the caller and converted to the same
+`error` dict shape.
 
-### 2.4 What stays a discrete tool call
+### 2.5 What stays a discrete tool call
 
 `edit_file`, `run_build`, `run_tests`, and `write_test` stay as discrete
 tool calls, not SDK functions. Reasons:
@@ -250,12 +386,19 @@ tool calls, not SDK functions. Reasons:
    first `edit_file` call. This is a control-flow event, not a data
    query.
 
-`run_code` is available in EXPLORE phase only. Once the model calls
-`edit_file`, it transitions to EDIT phase and `run_code` is no longer
-offered. This matches DSH's separation: Code Mode for exploration, native
-tools for mutation.
+**Phase machine and `run_code` (revised — addresses the race):**
 
-### 2.5 Graph-native exploration
+`run_code` is available in EXPLORE phase only. The offered-tool list is
+rebuilt at the **start of each turn** from the current phase, and a
+`run_code` call is dispatched only if the phase at dispatch time is
+`explore`. If the model calls `edit_file` and `run_code` in the same
+turn, the tool dispatcher processes calls in order: `edit_file` fires
+the phase transition to `edit`, and the subsequent `run_code` is
+**rejected with a message** ("not available in edit phase") rather
+than executed. This is the same mechanism already used for rejected
+tool calls (`developer/driver.py:274-300`).
+
+### 2.6 Graph-native exploration
 
 The key insight from combining Code Mode + the codebase-memory-mcp graph:
 
@@ -269,10 +412,10 @@ answer structural questions in one execution:
 #  anything in the auth module?"
 callers = sdk.trace_call_path("parse_date", direction="inbound", depth=1)
 auth_callers = []
-for c in callers:
-    inbound = sdk.trace_call_path(c.name, direction="inbound", depth=1)
+for caller in callers:
+    inbound = sdk.trace_call_path(caller.name, direction="inbound", depth=1)
     if any("auth" in caller.file for caller in inbound):
-        source = sdk.get_code_snippet(c.qualified_name)
+        source = sdk.get_code_snippet(caller.qualified_name)
         auth_callers.append(f"{c.file}:{c.name}\n{source[:500]}")
 return f"Auth-path callers of parse_date:\n" + "\n".join(auth_callers)
 ```
@@ -281,7 +424,7 @@ This is a 2-hop graph traversal with source reading and filtering. Done
 interactively, it's 6-8 turns. Done in a script, it's 1 turn with a
 10-line return value.
 
-### 2.6 The `return` contract
+### 2.7 The `return` contract
 
 The script's return value is a string that goes into the model's context
 as the tool result. DSH uses `CodeJsonValue` (structured JSON); we use
@@ -290,11 +433,13 @@ plain strings because:
 1. Our existing tool results are strings (e.g., `read_file` returns
    formatted text, `search_code` returns `file:line: content` lines).
 2. The model is good at formatting text for its own consumption.
-3. A string return is the simplest contract — no serialization boundary
-   to cross in the subprocess.
+3. A string return avoids crossing a JSON serialization boundary in the
+   IPC — the return value is already a string by the time the parent
+   parses the `__RESULT__` sentinel.
 
-If the script doesn't call `return`, the captured `print()` output is
-returned instead (matching DSH's `logs` field). If neither, an error.
+If the script doesn't call `return` (or returns `None`), the captured
+`print()` output (stdout minus the sentinel lines) is returned instead.
+If neither, an error ("no output and no return value").
 
 ---
 
@@ -305,20 +450,20 @@ From the source analysis of `deepseek-harness`:
 ### 3.1 Error as a field, not a rejection
 
 DSH's `CodeRunResult` carries `error` as a field; `run()` rejects only for
-contract misuse. Our `run_code` tool should return a structured result:
+contract misuse. Our `run_code` tool returns a structured result:
 
 ```python
 {
     "return": "",           # the script's return value (string)
-    "stdout": "...",        # captured print() output
+    "stdout": "...",        # captured print() output (minus sentinels)
     "error": {              # present iff the script failed
-        "kind": "timeout",  # timeout | abort | exception | invalid-output
+        "kind": "timeout",  # timeout | crash | exception | invalid-script
         "message": "compute budget exhausted (30s)"
     }
 }
 ```
 
-A timeout is not an exception. A script that throws is not an abort. The
+A timeout is not an exception. A script that throws is not a crash. The
 tool result always returns to the model — the model sees the error and
 self-corrects, same as any other tool failure.
 
@@ -328,24 +473,48 @@ DSH meters busy time (ELU), not wall time, because a program awaiting a
 slow tool binding accrues nothing. For our Python subprocess, we use
 wall-time as the budget (30s) because Python doesn't have an ELU
 equivalent. But the principle matters: if the SDK's graph queries take
-10 seconds (MCP stdio round-trip), that should not count against the
-model's compute budget. The 30s timeout is a hard ceiling, not a
-compute meter.
+10 seconds (MCP stdio round-trip), the 30s budget is a hard ceiling on
+the whole execution, not a compute meter. The model's context budget is
+not charged for time spent in the sandbox.
 
 ### 3.3 Fresh-per-run
 
 No pooling, no cross-run state. Each `run_code` call spawns a fresh
-subprocess. State bleed is unrepresentable. This is cheap on Windows
-(python startup ~200ms) and correct by construction.
+subprocess. State bleed is unrepresentable. Python startup on Windows is
+~500ms-1s (higher than the ~200ms estimate for Linux); this is acceptable
+given the 30-180s of model latency it saves.
 
-### 3.4 Hostile-peer assumption
+### 3.4 Semi-trusted peer (revised — not "hostile-peer")
 
-The model's script is untrusted. The AST validator blocks `import`,
-`open`, `exec`, `eval`, `compile`, `__import__`. The subprocess has no
-network access (the MCP client uses stdio, but the script doesn't have
-access to the MCP client directly — it goes through the SDK). The
-subprocess runs with the same user permissions as the loop, so file
-reads are bounded by the OS, not by us.
+DSH's Code Mode runs model code with bash-equivalent authority. Its
+isolation is containment, not a security boundary — `worker.terminate()`
+stops the thread but not OS processes it spawned. The DSH agent note
+explicitly says: "Deployments that need a hard multi-tenant boundary need
+a container-class backend for both code and bash."
+
+We adopt the same posture. The sandbox provides:
+- **Namespace restriction** (no `import`, no `open()`, no `getattr`/`type`
+  introspection chains)
+- **Process isolation** (fresh subprocess, killable, timeout-bounded)
+- **No environment** (empty `env={}` — no PATH, no network config)
+- **Restricted builtins** (filtered from the real `builtins` module)
+
+It does NOT provide:
+- A security boundary against a determined adversary (Python's object
+  model is escapable via introspection chains that the AST validator may
+  not catch)
+- Network isolation at the OS level (a script that bypasses the validator
+  could `import socket`)
+- Filesystem isolation (the subprocess runs with user permissions and
+  can read any file the user can read — same as `read_file` already grants)
+
+**The blast radius of a sandbox escape is: any file the user can read.**
+This is explicitly the same authority the existing `read_file` tool grants.
+A script that escapes the namespace restriction gains nothing it couldn't
+get by calling `read_file` interactively. The sandbox is about preventing
+accidental damage (a buggy script that writes files, spawns processes, or
+hangs), not about defending against a model that's actively trying to
+escape.
 
 ### 3.5 Compaction: checkpoint framing
 
@@ -355,7 +524,9 @@ checkpoint preamble so consumers recognize them. Our compaction
 structured summary directive (8 sections: Primary Request, Key Concepts,
 Files and Code, Errors and Fixes, Pending Jobs, Current Work, Next Step,
 Critical Context) is worth borrowing for Phase 4b compaction — it gives
-the summarizer a deterministic structure instead of freeform prose.
+the summarizer a deterministic structure instead of freeform prose. This
+is a future direction, not part of this proposal; it would need
+measurement against the existing truncation approach before adoption.
 
 ### 3.6 SDK codegen from tool schemas
 
@@ -402,10 +573,10 @@ service.
 
 | File | Lines (est.) | What |
 |---|---|---|
-| `developer/code_sandbox.py` | ~250 | AST validator, SDK builder, subprocess executor, result capture |
+| `developer/code_sandbox.py` | ~350 | AST validator, safe builtins, wrapper template, subprocess executor, IPC bridge, SDK stubs |
 | `developer/tools.py` | +40 | `run_code` tool schema, dispatch to `code_sandbox.run_script` |
-| `developer/driver.py` | +15 | Add `run_code` to `EXPLORE_TOOLS`, wire dispatch |
-| `tests/acceptance/test_code_sandbox.py` | ~120 | Tests: AST validation, SDK functions, timeout, error handling |
+| `developer/driver.py` | +15 | Add `run_code` to `EXPLORE_TOOLS`, wire dispatch, reject after phase flip |
+| `tests/acceptance/test_code_sandbox.py` | ~200 | Tests (see §5.3) |
 
 ### 5.2 Changes to existing files
 
@@ -413,61 +584,91 @@ service.
 - Add `"run_code"` to `EXPLORE_TOOLS`
 - Add dispatch case in the tool execution loop
 - The `run_code` result is a string, same as any other tool result
+- The existing rejected-tool mechanism handles the phase-flip race: if
+  `edit_file` transitions to EDIT and `run_code` was called in the same
+  turn, `run_code` is rejected with "not available in edit phase"
 
 **`developer/tools.py`:**
 - Add `run_code` tool schema (two params: `code` string, `description` string)
 - Add dispatch: `elif tool_name == "run_code": return _run_code(repo, args, profile)`
 
 **`developer/code_sandbox.py` (new):**
-- `validate_script(source) -> list[str]` — AST-based import/builtin blocking
-- `build_sdk(repo, profile) -> Sdk` — constructs the SDK object with bound repo/profile
-- `run_script(source, repo, profile, timeout=30) -> dict` — subprocess execution
-- `Sdk` class with `read_file`, `search_code`, `trace_call_path`, `search_graph`, `get_code_snippet`, `get_architecture`
+- `validate_script(source) -> list[str]` — AST validator (imports, builtins, attribute chains)
+- `_safe_builtins() -> dict` — filtered builtins from `import builtins`
+- `run_script(source, repo, profile, timeout=30) -> dict` — subprocess execution with wrapper
+- `WRAPPER_TEMPLATE` — wraps model script in `def __user_script(): ...`
+- SDK stubs that marshal calls over JSON-line IPC to the parent
 
 ### 5.3 Tests
 
-1. **AST validation blocks imports:** `import os` → error
-2. **AST validation blocks builtins:** `open("file")` → error
-3. **SDK read_file works:** script reads a file, returns content
-4. **SDK search_code works:** script searches, returns matches
-5. **SDK trace_call_path works:** script traces, returns callers (mocked MCP)
-6. **Timeout kills the process:** infinite loop → timeout error
-7. **Script exception is captured:** `1/0` → error with traceback
-8. **Return value is captured:** `return "hello"` → `{"return": "hello"}`
-9. **Print output is captured:** `print("hi"); return "done"` → both captured
-10. **No access to real builtins:** `open(__file__)` → blocked
+All tests will be landed in the same PR as the implementation. The
+proposal makes no behavioral claim that is not verified by a test:
 
-### 5.4 MCP integration
+1. **AST validation blocks imports:** `import os` → error
+2. **AST validation blocks builtins by name:** `open("file")` → error
+3. **AST validation blocks `getattr` bypass:** `getattr(__builtins__, 'open')` → error
+4. **AST validation blocks introspection chains:** `().__class__.__base__.__subclasses__()` → error
+5. **AST validation blocks `type` calls:** `type("x", (), {})` → error
+6. **Safe builtins construction works:** `import builtins` in the test, filter, verify `open` is absent
+7. **SDK read_file works:** script reads a file via `sdk.read_file`, returns content
+8. **SDK search_code works:** script searches via `sdk.search_code`, returns matches
+9. **SDK trace_call_path works:** script traces via `sdk.trace_call_path`, returns callers (mocked MCP)
+10. **Timeout kills the process:** `while True: pass` → timeout error
+11. **Script exception is captured:** `1/0` → error with traceback
+12. **Return value is captured:** `return "hello"` → `{"return": "hello"}`
+13. **Print output is captured:** `print("hi"); return "done"` → both captured
+14. **No return value → print output used:** `print("hi")` (no return) → `{"return": "hi"}`
+15. **Empty env:** subprocess launched with `env={}`, verify no PATH leakage
+16. **Phase-flip rejection:** `run_code` called after `edit_file` in same turn → rejected
+
+### 5.4 MCP integration (revised — IPC bridge is the only mechanism)
 
 The SDK's graph functions (`trace_call_path`, `search_graph`,
 `get_code_snippet`, `get_architecture`) call the codebase-memory-mcp
-client directly, same as `developer/tools.py:_trace_call_path` does now.
-The difference is that they're called inside a script, not as a
-text-protocol tool call. The MCP client is a stdio-based subprocess
-that the agent_loop already manages (`mcp_client.py`).
+client in the **parent process**, not in the subprocess. The subprocess
+has SDK stubs that marshal calls over a JSON-line IPC bridge:
 
-The sandbox subprocess does NOT have direct access to the MCP client.
-The SDK functions are closures that call the MCP client in the parent
-process and pass results back to the subprocess via stdout. This keeps
-the MCP client's state in the parent, not in the sandbox.
+```
+Subprocess stdout → parent reads JSON line → parent resolves SDK call
+                                                      ↓
+Subprocess stdin  ← parent writes JSON line ← parent sends result
+```
 
-**Implementation detail:** the sandbox runs as a subprocess, but the SDK
-functions need to call the MCP client in the parent. Two options:
+**Protocol:**
 
-1. **Pre-resolve:** the script is analyzed for SDK calls, all graph
-   queries are resolved before execution, results are injected as
-   constants. (Simple but can't handle dynamic queries.)
+Each SDK call from the subprocess writes a JSON line to stdout:
+```json
+{"__sdk_call__": "read_file", "args": {"path": "src/dates.py", "start": 1}}
+```
 
-2. **IPC bridge:** the subprocess communicates SDK calls back to the
-   parent via stdout/stdin JSON lines. The parent resolves them against
-   the MCP client and sends results back. (More complex but supports
-   dynamic queries.)
+The parent reads this line, resolves it against the real implementation
+(`_read_file(repo, args)` or `mcp_client.call_tool(...)`), and writes the
+result back to the subprocess's stdin as a JSON line:
+```json
+{"__sdk_result__": "File: src/dates.py (lines 1-100 of 250)\n    1: ..."}
+```
 
-**Recommendation:** option 2 (IPC bridge). The subprocess writes a JSON
-line to stdout for each SDK call; the parent reads it, resolves it, and
-writes the result back as a JSON line to stdin. The SDK functions block
-on reading the response. This is the same pattern as DSH's worker port,
-simplified to JSON lines.
+The SDK stub in the subprocess blocks on reading this line. This is the
+same pattern as DSH's worker port, simplified to JSON lines over stdio.
+
+**Why the IPC bridge (not closures):**
+
+Closures cannot cross a `subprocess.run` boundary. The subprocess is a
+separate Python process — it has its own memory space, its own module
+state, its own `__builtins__`. The SDK functions in the subprocess are
+stubs that communicate with the parent via the IPC bridge. The parent
+resolves the calls against the real tool implementations and the MCP
+client. This keeps the MCP client's state in the parent, not in the
+sandbox.
+
+**Why not pre-resolve:**
+
+Pre-resolving (analyzing the script for SDK calls and resolving them
+before execution) doesn't work for dynamic queries — the script's SDK
+calls depend on runtime values (e.g., `sdk.read_file(caller.file)` where
+`caller` comes from a prior `trace_call_path` result). The IPC bridge
+supports dynamic queries at the cost of a per-call round-trip (typically
+<10ms for file reads, <100ms for MCP stdio queries).
 
 ---
 
@@ -484,7 +685,8 @@ phase.
 
 Each turn costs 10-60s of model latency. Collapsing 4 explore turns to 1
 saves 30-180s per ticket. The sandbox execution itself is <1s for file
-reads and <5s for graph queries (MCP stdio round-trip).
+reads and <5s for graph queries (MCP stdio round-trip, measured in
+milliseconds per call).
 
 ### 6.3 Graph utilization
 
@@ -500,12 +702,13 @@ in one execution instead of 6-8 interactive turns.
 
 | Risk | Mitigation |
 |---|---|
-| Model writes a hostile script | AST validator blocks imports/builtins; subprocess isolation; 30s timeout |
-| Script crashes the subprocess | Caught as `error.kind: "exception"`; model sees traceback and self-corrects |
+| Model writes a script that escapes the namespace | AST validator blocks imports, builtins, and introspection chains. Blast radius is documented: same as `read_file` (any file the user can read). |
+| Model writes a hostile script that imports `socket` | The validator blocks `import` unconditionally. `socket` cannot be imported. A bypass via introspection chains is possible but gains only what `read_file` already grants. |
+| Script crashes the subprocess | Caught as `error.kind: "crash"` or `error.kind: "exception"`; model sees traceback and self-corrects |
 | Graph queries are slow (MCP round-trip) | 30s timeout; graph queries are typically <5s |
 | Model writes code that doesn't use the SDK | `return` value is empty; model sees "no output" and adapts |
-| IPC bridge adds complexity | Start with option 1 (pre-resolve) for MVP; upgrade to option 2 when dynamic queries are needed |
-| Phase machine breaks | `run_code` is EXPLORE-only; calling `edit_file` still transitions to EDIT |
+| Phase machine race | `run_code` is rejected if phase has flipped to `edit` by the time it dispatches (same mechanism as existing rejected tools) |
+| Subprocess startup latency on Windows | ~500ms-1s per call; acceptable given 30-180s of model latency saved |
 
 ---
 
@@ -526,9 +729,15 @@ in one execution instead of 6-8 interactive turns.
 
 4. **Compaction checkpoint framing**: adopt DSH's 8-section summary
    directive for Phase 4b compaction. Deterministic structure instead of
-   freeform prose.
+   freeform prose. Needs measurement against the existing approach.
 
 5. **Code Mode for plan mode**: the planner decomposes a feature into
    tickets. A script could analyze the codebase graph to propose
    decomposition boundaries (files, functions, dependency edges) in one
    execution instead of interactive exploration.
+
+6. **Container-class sandbox backend**: for deployments that need hard
+   isolation (multi-tenant, untrusted models), add a container backend
+   (chroot on Linux, restricted token on Windows) behind the same `run_code`
+   interface. The current proposal is semi-trusted; this upgrades it to
+   hostile-peer without changing the SDK.
