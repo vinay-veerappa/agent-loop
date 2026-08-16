@@ -157,9 +157,19 @@ timeout-bounded) and **namespace restriction** (no `import`, no `open()`,
 no network). It does NOT provide a security boundary against a hostile
 script — a determined script could escape via Python introspection. For
 a hard boundary, a container-class backend (chroot/Landlock/Seatbelt) would
-be needed, which is out of scope for this proposal. The blast radius of a
-sandbox escape is: any file the user can read. This is the same authority
-the existing `read_file` tool already grants.
+be needed, which is out of scope for this proposal.
+
+**Blast radius of a sandbox escape:** the existing `read_file` tool is
+**repo-scoped** — `_resolve_in_repo` (`developer/tools.py:144`) rejects
+paths that escape the repo root. A sandbox escape is strictly **worse**:
+the subprocess runs with the user's OS permissions and can read any file
+the user can read (`~/.ssh/id_rsa`, browser credential stores, other
+repos). The blast radius is **at most as bad as the user account being
+compromised**, not "same as `read_file`." The sandbox is about preventing
+accidental damage (a buggy script that writes files, spawns processes, or
+hangs), not about defending against a model that's actively trying to
+escape. The `cwd` is set to the repo, but `cwd` is not a chroot — `open()`
+with an absolute path ignores it.
 
 **Design:** subprocess with AST-based restriction + restricted builtins +
 JSON-line IPC bridge for SDK calls.
@@ -175,13 +185,19 @@ The validator blocks three categories of access:
    `__import__`, `globals`, `locals`, `vars`, `dir`, `input`, `breakpoint`,
    `exit`, `quit`, **`getattr`, `setattr`, `delattr`, `type`**,
    `__build_class__`. These are blocked both as direct calls (`open(...)`)
-   and as attribute access targets (`__builtins__.open`).
+   and as attribute-call targets (`__builtins__.open(...)`). The check
+   fires on both `ast.Call(func=ast.Name)` and
+   `ast.Call(func=ast.Attribute)` so that `<scope>.<name>(...)` is rejected
+   for every name in `_BLOCKED_NAMES`, regardless of what `<scope>` is.
 
 3. **Introspection chains** — the validator walks `ast.Attribute` chains
    and rejects any that reach: `__builtins__`, `__class__`, `__bases__`,
    `__subclasses__`, `__globals__`, `__dict__`, `__mro__`, `__dir__`,
-   `__getattr__`. This blocks the `().__class__.__base__.__subclasses__()`
-   escape that recovers `os`/`subprocess`/`_io.FileIO`.
+   `__getattr__`, **`__getattribute__`, `__setattr__`, `__delattr__`,
+   `__init_subclass__`**. This blocks the
+   `().__class__.__base__.__subclasses__()` escape that recovers
+   `os`/`subprocess`/`_io.FileIO`, and blocks `x.__setattr__("__class__",
+   ...)` class-replacement attacks.
 
 ```python
 import ast
@@ -191,7 +207,7 @@ _BLOCKED_NODES = (
     ast.ImportFrom,   # from os import system
 )
 
-# Blocked as direct calls AND as attribute access targets
+# Blocked as direct calls AND as attribute-call targets
 _BLOCKED_NAMES = frozenset({
     "open", "exec", "eval", "compile", "__import__",
     "globals", "locals", "vars", "dir",
@@ -200,11 +216,15 @@ _BLOCKED_NAMES = frozenset({
     "__build_class__",
 })
 
-# Blocked attribute names — any chain reaching these is rejected
+# Blocked attribute names — any chain reaching these is rejected.
+# Includes __setattr__/__delattr__/__init_subclass__ so that the
+# attribute-call path cannot bypass the _BLOCKED_NAMES entries for
+# setattr/delattr, and so class-replacement attacks are blocked.
 _BLOCKED_ATTRS = frozenset({
     "__builtins__", "__class__", "__bases__", "__subclasses__",
-    "__globals__", "__dict__", "__mro__", "__dir__", "__getattr__",
-    "__getattribute__",
+    "__globals__", "__dict__", "__mro__", "__dir__",
+    "__getattr__", "__getattribute__",
+    "__setattr__", "__delattr__", "__init_subclass__",
 })
 
 
@@ -229,10 +249,16 @@ def validate_script(source: str) -> list[str]:
             errors.append(f"import not allowed: {', '.join(names)}")
             continue
 
-        # 2. Block dangerous builtins called by name
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id in _BLOCKED_NAMES:
-                errors.append(f"builtin not allowed: {node.func.id}")
+        # 2. Block dangerous builtins called by name OR by attribute.
+        #    Covers both `open(...)` (ast.Name) and `__builtins__.open(...)`
+        #    (ast.Attribute) so <scope>.<name>(...) is rejected for every
+        #    name in _BLOCKED_NAMES regardless of what <scope> is.
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name) and func.id in _BLOCKED_NAMES:
+                errors.append(f"builtin not allowed: {func.id}")
+            elif isinstance(func, ast.Attribute) and func.attr in _BLOCKED_NAMES:
+                errors.append(f"builtin not allowed: .{func.attr}")
 
         # 3. Block attribute access into introspection chains
         if isinstance(node, ast.Attribute):
@@ -327,33 +353,25 @@ def run_script(source: str, repo: Path, profile: Profile, timeout: int = 30) -> 
         model_script_indented=indented,
     )
 
-    # Run in a subprocess with timeout
+    # Run in a subprocess with timeout.
+    # env is NOT empty — Windows CPython requires SystemRoot at startup
+    # (os module init reads it; without it, _bootstrap_external raises
+    # on first import of os, which json triggers immediately). We seed
+    # a minimal platform-aware environment that has no PATH (so
+    # subprocess.Popen without an absolute path fails) but has the
+    # vars CPython needs to boot.
+    env = _minimal_env()
     proc = subprocess.run(
         [sys.executable, "-c", wrapper],
         capture_output=True, text=True,
         timeout=timeout,
         encoding="utf-8", errors="replace",
         cwd=str(repo),
-        env={},  # empty env — no PATH, no network config
+        env=env,
     )
 
-    # Parse the sentinel from stdout
-    stdout = proc.stdout
-    return_value = ""
-    error = None
-
-    for line in stdout.splitlines():
-        if line.startswith("__RESULT__"):
-            payload = line[len("__RESULT__"):]
-            return_value = json.loads(payload).get("value", "")
-        elif line.startswith("__ERROR__"):
-            payload = line[len("__ERROR__"):]
-            error = json.loads(payload)
-
-    if proc.returncode != 0 and not error:
-        error = {"kind": "crash", "message": proc.stderr[:2000]}
-
-    return {"return": str(return_value), "stdout": stdout, "error": error}
+    # Parse stdout: classify each line (SDK call, sentinel, or captured)
+    return _parse_subprocess_output(proc)
 ```
 
 **Distinguishing error kinds:**
@@ -367,6 +385,66 @@ def run_script(source: str, repo: Path, profile: Profile, timeout: int = 30) -> 
 
 A `TimeoutExpired` is caught by the caller and converted to the same
 `error` dict shape.
+
+**Minimal environment (`_minimal_env`):**
+
+```python
+import os, sys
+
+def _minimal_env() -> dict:
+    """Platform-aware minimal env for the sandbox subprocess.
+
+    NOT empty — Windows CPython requires SystemRoot at startup.
+    No PATH so subprocess.Popen without an absolute path fails.
+    """
+    if sys.platform == "win32":
+        return {
+            "SYSTEMROOT": os.environ.get("SystemRoot", r"C:\Windows"),
+            "SystemRoot": os.environ.get("SystemRoot", r"C:\Windows"),
+            "TEMP": os.environ.get("TEMP", os.environ.get("TMP", r"C:\Windows\Temp")),
+            "TMP": os.environ.get("TEMP", os.environ.get("TMP", r"C:\Windows\Temp")),
+            "PATHEXT": os.environ.get("PATHEXT", ".EXE;.BAT;.CMD"),
+            "COMSPEC": os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe"),
+        }
+    return {
+        "PATH": "",
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+    }
+```
+
+**Stdout demultiplexer (`_parse_subprocess_output`):**
+
+The subprocess's stdout carries three kinds of lines: SDK-call requests,
+`__RESULT__`/`__ERROR__` sentinels, and the script's own `print()` output.
+The parent classifies each line with this state machine:
+
+```
+for each line in stdout:
+    if line starts with "__RESULT__":
+        → parse as return-value sentinel, stop
+    elif line starts with "__ERROR__":
+        → parse as error sentinel, stop
+    elif line starts with '{"__sdk_call__"':
+        → dispatch as SDK call (only in interactive mode; in
+          subprocess.run mode the SDK calls are resolved via
+          the stdin/stdout pipe, see §5.4)
+    else:
+        → append to captured stdout (the script's print() output)
+```
+
+Non-conforming lines (anything that doesn't match a known prefix) are
+**appended to captured stdout, never dispatched**. A `print()` that
+happens to produce a line starting with `{"__sdk_call__"` would be
+mis-dispatched only in interactive pipe mode; in `subprocess.run` mode
+(the default), SDK calls are resolved inline via the pipe protocol
+described in §5.4, and the stdout classifier only sees the final output
+after the subprocess has completed. The `print()` collision risk is
+documented but not mitigated in the initial implementation — the SDK
+stub prefixes its calls with a sentinel that the model's `print()` is
+unlikely to produce, and a collision would result in a no-op dispatch,
+not a security issue.
 
 ### 2.5 What stays a discrete tool call
 
@@ -482,7 +560,11 @@ not charged for time spent in the sandbox.
 No pooling, no cross-run state. Each `run_code` call spawns a fresh
 subprocess. State bleed is unrepresentable. Python startup on Windows is
 ~500ms-1s (higher than the ~200ms estimate for Linux); this is acceptable
-given the 30-180s of model latency it saves.
+given the 30-180s of model latency it saves. The subprocess env is
+**minimal but not empty** — Windows CPython requires `SystemRoot` at
+startup (`os` module init reads it; without it, `_bootstrap_external`
+raises on first import of `os`, which `json` triggers immediately). See
+`_minimal_env` in §2.4 for the platform-aware env seeding.
 
 ### 3.4 Semi-trusted peer (revised — not "hostile-peer")
 
@@ -494,9 +576,10 @@ a container-class backend for both code and bash."
 
 We adopt the same posture. The sandbox provides:
 - **Namespace restriction** (no `import`, no `open()`, no `getattr`/`type`
-  introspection chains)
+  introspection chains, no `__setattr__`/`__delattr__` class mutation)
 - **Process isolation** (fresh subprocess, killable, timeout-bounded)
-- **No environment** (empty `env={}` — no PATH, no network config)
+- **Minimal environment** (no `PATH` — `subprocess.Popen` without an
+  absolute path fails; seeded with only the vars CPython needs to boot)
 - **Restricted builtins** (filtered from the real `builtins` module)
 
 It does NOT provide:
@@ -506,15 +589,16 @@ It does NOT provide:
 - Network isolation at the OS level (a script that bypasses the validator
   could `import socket`)
 - Filesystem isolation (the subprocess runs with user permissions and
-  can read any file the user can read — same as `read_file` already grants)
+  can read any file the user can read — `~/.ssh/id_rsa`, other repos,
+  browser credential stores)
 
-**The blast radius of a sandbox escape is: any file the user can read.**
-This is explicitly the same authority the existing `read_file` tool grants.
-A script that escapes the namespace restriction gains nothing it couldn't
-get by calling `read_file` interactively. The sandbox is about preventing
-accidental damage (a buggy script that writes files, spawns processes, or
-hangs), not about defending against a model that's actively trying to
-escape.
+**The blast radius of a sandbox escape is: the user account.** The
+existing `read_file` tool is repo-scoped (`_resolve_in_repo` rejects
+path escapes at `developer/tools.py:144`); a sandbox escape is strictly
+worse because the subprocess has full OS permissions, not repo-scoped
+permissions. The sandbox is about preventing accidental damage (a buggy
+script that writes files, spawns processes, or hangs), not about
+defending against a model that's actively trying to escape.
 
 ### 3.5 Compaction: checkpoint framing
 
@@ -618,8 +702,13 @@ proposal makes no behavioral claim that is not verified by a test:
 12. **Return value is captured:** `return "hello"` → `{"return": "hello"}`
 13. **Print output is captured:** `print("hi"); return "done"` → both captured
 14. **No return value → print output used:** `print("hi")` (no return) → `{"return": "hi"}`
-15. **Empty env:** subprocess launched with `env={}`, verify no PATH leakage
+15. **Minimal env on Windows:** subprocess launched with `_minimal_env()`, verify `SystemRoot` is present and `PATH` is absent
 16. **Phase-flip rejection:** `run_code` called after `edit_file` in same turn → rejected
+17. **AST blocks `__builtins__.open`:** `__builtins__.open("/etc/passwd")` → error (attribute-call target)
+18. **AST blocks `__builtins__.exec`:** `__builtins__.exec("import os")` → error (attribute-call target)
+19. **AST blocks `__setattr__`:** `x.__setattr__("y", 1)` → error (introspection chain)
+20. **AST blocks `__delattr__`:** `x.__delattr__("y")` → error (introspection chain)
+21. **AST blocks multi-segment introspection:** `().__class__.__mro__[-1].__subclasses__()` → error (verifies walker is not first-segment only)
 
 ### 5.4 MCP integration (revised — IPC bridge is the only mechanism)
 
@@ -676,10 +765,10 @@ supports dynamic queries at the cost of a per-call round-trip (typically
 
 ### 6.1 Context savings
 
-A typical EXPLORE phase that currently takes 4-6 turns and ~12,000 chars
-of intermediate data would take 1-2 turns and ~500 chars (the return
-value). That's a **10-24x reduction in context usage** for the explore
-phase.
+A typical EXPLORE phase that currently takes 4-6 turns and ~14,000 chars
+of intermediate data (4 turns × ~3,500 chars/turn) would take 1-2 turns
+and ~500 chars (the return value). That's a **7-28x reduction in context
+usage** for the explore phase.
 
 ### 6.2 Latency savings
 
@@ -702,8 +791,8 @@ in one execution instead of 6-8 interactive turns.
 
 | Risk | Mitigation |
 |---|---|
-| Model writes a script that escapes the namespace | AST validator blocks imports, builtins, and introspection chains. Blast radius is documented: same as `read_file` (any file the user can read). |
-| Model writes a hostile script that imports `socket` | The validator blocks `import` unconditionally. `socket` cannot be imported. A bypass via introspection chains is possible but gains only what `read_file` already grants. |
+| Model writes a script that escapes the namespace | AST validator blocks imports, builtins, attribute-call targets, and introspection chains (`__setattr__`/`__delattr__`/`__init_subclass__` included). Blast radius is the user account (worse than `read_file`, which is repo-scoped). |
+| Model writes a hostile script that imports `socket` | The validator blocks `import` unconditionally. `socket` cannot be imported. A bypass via introspection chains is possible and would grant network access — the blast radius is the user account, not just file reads. |
 | Script crashes the subprocess | Caught as `error.kind: "crash"` or `error.kind: "exception"`; model sees traceback and self-corrects |
 | Graph queries are slow (MCP round-trip) | 30s timeout; graph queries are typically <5s |
 | Model writes code that doesn't use the SDK | `return` value is empty; model sees "no output" and adapts |
