@@ -368,6 +368,59 @@ return it without persisting; the last *completed* run is therefore indistinguis
 current state of the ticket. Same family as CF-6: **an absent record and a stale record read
 identically.**
 
+### CF-10 (new, HIGH) — the arbiter upheld a finding the ticket had explicitly scoped OUT, and reported `out-of-scope=0` while doing it
+
+Ticket `P2-127` in `nt8-mcp-bridge`, run at `abea3bc`. Its `context` field opens with a SCOPE
+paragraph naming, in order, the things the ticket does not touch — including *"the wiring of the
+`system` cell into it, are later slices of P2-127 and are deliberately not in this one"*. The
+arbiter's first ruling:
+
+```
+- UPHELD #1: The system severity is never incorporated into the tree's rank computation ...
+[arbiter] REVISE (upheld=2 rejected=10 out-of-scope=0)
+```
+
+**The ruling line has an `out-of-scope` category and it reported zero.** So the mechanism exists
+and did not fire on the one finding the ticket had pre-emptively answered in prose. That upheld
+finding is half of what drove `NOT_CONVERGING`: it cannot be closed without doing work the ticket
+forbids, so each round either ignores it (and stays REVISE) or starts widening the patch.
+
+**Narrowest fix**: the arbiter prompt already receives the ticket. Give the scope text its own
+labelled block rather than leaving it inside `context` prose, and require a ruling of
+`OUT_OF_SCOPE` — not `UPHELD` — for any finding whose subject the scope block names. Cheaper
+alternative if that is too strong: make the arbiter quote the sentence it believes puts a finding
+in scope, which is the same discipline the reviewers are already held to.
+
+⚠️ **Worth recording alongside it: the arbiter also REJECTED a finding that was correct.** It
+dismissed *"the unlinked children sort is stable"* as "stable and correct" — `List<T>.Sort` is
+documented **unstable**, and the consumer verified the defect by mutation afterwards. So in one
+ruling it upheld something out of scope and rejected something true. **The rulings are not a
+filter you can lean on in either direction**, which is the same conclusion the consumer's own
+memory reached from four earlier runs; this is the first time both errors appeared in one output.
+
+### CF-11 (new, MEDIUM) — the worktree does not populate submodules, so submodule-dependent tests are dark for the whole run
+
+Measured, same run. `nt8-mcp-bridge` vendors its core as a git submodule and has two tests that
+assert on it. In the loop's worktree they cannot pass:
+
+```
+[baseline] 439 passed, 17 failed at e18b09a4; 17 expected failure(s)
+```
+
+against **444 passed, 15 failed** for the identical commit in the main checkout. The loop's
+handling is *correct* — it treats them as expected failures and reports no regression — and the
+run is not invalid. But **two real gates were dark for four rounds and nothing in the output says
+so**, and the operator only notices by comparing two numbers that appear in different places.
+
+Note the assertion COUNT also dropped (456 vs 459), because a failing assertion aborted the rest
+of its method — so the difference is not simply "two more failures".
+
+**Narrowest fix**: `git worktree add` does not initialise submodules; run
+`git submodule update --init --recursive` in the new worktree when `.gitmodules` exists. If that is
+unwanted (it is a network fetch), then say it: one line at baseline time — *"`.gitmodules` present;
+submodules are NOT populated in the worktree, so N test(s) may fail for that reason alone."*
+Same principle as CF-6: **state what the gate inspected, including the part it could not.**
+
 ### Still true, still worth stating in the docs
 
 The loop measures **HEAD, not your working tree**. CF-2's message now says so at the moment it
