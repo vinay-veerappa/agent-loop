@@ -945,14 +945,53 @@ def run_ticket(
                     (art / f"r{rnd}_build.txt").write_text(gc.detail, encoding="utf-8")
                     gate_results.append(gc)
                 if gate_results[-1].ok and profile.test_cmd:
-                    gt, _ = gates.check_tests(
-                        profile.test_cmd, ws.root, ws.baseline,
-                        expect_green=ticket.get("expect_green", ()),
-                    )
-                    (art / f"r{rnd}_tests.txt").write_text(
-                        gt.detail or gt.summary, encoding="utf-8"
-                    )
-                    gate_results.append(gt)
+                    # S2: two-phase tests. Run the focused tests first (seconds),
+                    # and only run the full suite when they pass. This recovers
+                    # 60-75% of rounds that fail on the acceptance tests, which
+                    # are the first thing the gate ladder checks. The full
+                    # suite still gates every promotable candidate (the
+                    # regression guarantee is preserved exactly).
+                    expect_green = ticket.get("expect_green", ())
+                    if profile.focused_test_cmd and expect_green:
+                        # Build the focused command: replace {tests} with the
+                        # expect_green names joined by a space (pytest) or the
+                        # filter syntax the profile defines.
+                        test_names = " ".join(expect_green)
+                        focused_cmd = profile.focused_test_cmd.replace(
+                            "{tests}", test_names
+                        )
+                        gt_focused, _ = gates.check_tests(
+                            focused_cmd, ws.root, ws.baseline,
+                            expect_green=expect_green,
+                        )
+                        if not gt_focused.ok:
+                            # Focused tests failed -- skip the full suite.
+                            (art / f"r{rnd}_tests.txt").write_text(
+                                f"[focused] {gt_focused.detail or gt_focused.summary}",
+                                encoding="utf-8"
+                            )
+                            gate_results.append(gt_focused)
+                        else:
+                            # Focused tests passed -- run the full suite for
+                            # regressions.
+                            gt, _ = gates.check_tests(
+                                profile.test_cmd, ws.root, ws.baseline,
+                                expect_green=expect_green,
+                            )
+                            (art / f"r{rnd}_tests.txt").write_text(
+                                gt.detail or gt.summary, encoding="utf-8"
+                            )
+                            gate_results.append(gt)
+                    else:
+                        # No focused test command -- run the full suite (old behavior).
+                        gt, _ = gates.check_tests(
+                            profile.test_cmd, ws.root, ws.baseline,
+                            expect_green=expect_green,
+                        )
+                        (art / f"r{rnd}_tests.txt").write_text(
+                            gt.detail or gt.summary, encoding="utf-8"
+                        )
+                        gate_results.append(gt)
                 if gate_results[-1].ok:
                     gate_results.append(
                         gates.check_lock_scope(

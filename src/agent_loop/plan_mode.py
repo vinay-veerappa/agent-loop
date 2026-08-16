@@ -491,6 +491,17 @@ def _validate_feature_plan(
                     return f"Part {tid}: {exc}"
                 for r in regs:
                     _note(tid, spec, f"lines {r.lines_1based} ({op})")
+                    # W6: refuse a region above a configured ceiling.
+                    line_span = r.end_line - r.start_line + 1
+                    max_lines = getattr(profile, "max_region_lines", 150)
+                    if line_span > max_lines:
+                        return (
+                            f"Part {tid}: region {spec.get('id')} in {f} spans "
+                            f"{line_span} lines (lines {r.lines_1based}), which "
+                            f"exceeds the max of {max_lines}. Split the ticket into "
+                            f"smaller regions -- a large region exposes new surface "
+                            f"every round and the panel cannot converge."
+                        )
             else:
                 _note(tid, spec, f"({op}, anchor deferred: file is created by an earlier part)")
     return ""

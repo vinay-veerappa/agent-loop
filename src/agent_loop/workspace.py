@@ -129,9 +129,41 @@ class Workspace:
 
     def revert(self, files: Sequence[str]) -> None:
         """Discard candidate edits. Safe here, and only here: this checkout is
-        disposable and holds nothing a human authored."""
+        disposable and holds nothing a human authored.
+
+        Also removes untracked files created by `create` or `write_test`
+        regions. `git checkout -- <file>` only restores tracked files, so a
+        candidate that created a new file and then failed a gate left an
+        orphaned file in the worktree. The next round's `git diff` would then
+        show it, and `promote` could land a file the panel never saw. See
+        AGENT_LOOP_THIRD_REVIEW.md E-section 2.
+        """
         for f in files:
+            # Try to restore the tracked version.
             _git(self.root, "checkout", "--", f, check=False)
+            # If the file was intent-added (`git add -N`), it is in the index
+            # but has no content there -- `git checkout --` restores it to the
+            # HEAD version, which for a new file is empty/nonexistent. But the
+            # file may still exist on disk. Check if the file has a real entry
+            # in the HEAD commit; if not, remove the on-disk copy.
+            # `git ls-files --error-unmatch` exits non-zero for untracked files,
+            # but for intent-added files it exits 0 (the file IS in the index).
+            # The right check: does `git show HEAD:<file>` succeed? If not, the
+            # file is not in HEAD, so it was created by this run -- remove it.
+            try:
+                _git(self.root, "show", f"HEAD:{f}", check=True, timeout=10)
+                # File is in HEAD -- tracked, restored by checkout. Done.
+            except WorkspaceError:
+                # File is NOT in HEAD. It was created by this run (or was
+                # intent-added). Remove it and unstage it.
+                p = self.root / f
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except OSError:
+                        pass
+                # Also remove from the index if it was intent-added.
+                _git(self.root, "rm", "--cached", "--", f, check=False)
 
     def dirty_files(self) -> List[str]:
         out = _git(self.root, "status", "--porcelain")

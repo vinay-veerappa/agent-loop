@@ -75,6 +75,13 @@ class Profile:
     # Build and test
     build_cmd: str = ""
     test_cmd: str = ""
+    # Focused test command: runs ONLY the named acceptance tests, not the full
+    # suite. When set, the gate ladder runs this first (seconds) and only runs
+    # the full test_cmd when the focused tests pass -- recovering 60-75% of
+    # rounds that fail on the acceptance tests. The {tests} placeholder is
+    # replaced with the expect_green names. If not set, the full suite runs
+    # every round (the old behavior). See S2 in the work-breakdown review.
+    focused_test_cmd: str = ""
     test_runner_regex: Tuple[str, ...] = field(default_factory=tuple)
     # Lint gate (optional; runs between static and compile)
     lint_cmd: str = ""
@@ -91,6 +98,10 @@ class Profile:
     context_token_budget: int = 3000
     # Per-round input budget (token efficiency)
     round_input_token_budget: int = 40000
+    # W6: max lines a single region may span. A 113-line region was too big for
+    # this loop (the handover's own lesson from CM2). The plan validator refuses
+    # a region above this ceiling with the instruction to split.
+    max_region_lines: int = 150
     # Graph project name for codebase-memory-mcp (Phase 2/3)
     # When set, the loop checks graph freshness at startup and re-indexes if stale.
     # Format: the project name as registered in codebase-memory-mcp (e.g. "C-Users-vinay-agent-loop")
