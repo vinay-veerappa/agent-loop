@@ -76,7 +76,12 @@ def load_tickets(path: Path) -> list:
 
 
 def _list(tickets, profile) -> int:
-    """Confirm every ticket's regions still resolve against the current tree."""
+    """Confirm every ticket's regions still resolve against the current tree.
+
+    Also validates expect_green against the test failure set (O65) and warns
+    when a capitalized identifier in spec/context is not declared inside any
+    region of the same file (O66).
+    """
     from . import gates
 
     bad = 0
@@ -92,6 +97,72 @@ def _list(tickets, profile) -> int:
             except regions.RegionError as exc:
                 bad += 1
                 print(f"      FAIL {spec['id']:<24} {exc}")
+
+        # O65: validate expect_green against the test failure set. A string
+        # matching no current failure is a vacuous gate (it can never go
+        # red-then-green, so the run can pass without the implementation having
+        # done anything). A failure no expect_green claims is a forgotten
+        # criterion. Both are caught by a set difference in both directions.
+        expect_green = t.get("expect_green", ())
+        if expect_green and profile.test_cmd:
+            try:
+                outcome = gates.run_tests(profile.test_cmd, Path("."))
+                if outcome.ran:
+                    for name in expect_green:
+                        if not any(gates.names_match(name, f) for f in outcome.failures):
+                            bad += 1
+                            print(f"      WARN expect_green '{name}' matches no current failure "
+                                  f"-- vacuous gate (can never go red-then-green)")
+                    for fail in sorted(outcome.failures):
+                        if not any(gates.names_match(name, fail) for name in expect_green):
+                            print(f"      NOTE failure '{fail}' is not in expect_green "
+                                  f"-- forgotten criterion?")
+                else:
+                    print(f"      WARN cannot validate expect_green: test runner produced no summary")
+            except Exception as exc:
+                print(f"      WARN cannot validate expect_green: {exc}")
+
+        # O66: warn when a capitalized identifier in spec/context is not
+        # declared inside any region of the same file. Regions are not only the
+        # editing window, they are the model's entire view of the file. A type
+        # named in spec whose declaration falls outside every region is
+        # invisible to the implementer, and an invisible type gets a plausible
+        # guess -- four rounds of invented member names, measured.
+        import re as _re
+        for spec_entry in t["regions"]:
+            spec_text = t.get("spec", "") + " " + t.get("context", "")
+            file_path = spec_entry.get("file", "")
+            # Find capitalized identifiers in the spec.
+            caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_text))
+            # Skip common English words that look like identifiers.
+            caps -= {"The", "This", "That", "These", "Those", "When", "Where",
+                     "Which", "What", "Each", "Every", "All", "None", "True",
+                     "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
+            if not caps or not file_path:
+                continue
+            # Try to resolve the region and check if the identifiers appear in it.
+            try:
+                r = regions.extract(Path("."), [spec_entry], profile)[0]
+                region_text = r.text
+            except regions.RegionError:
+                continue  # already reported above
+            # Read the full file to check if the identifier is declared outside the region.
+            full_path = Path(".") / file_path
+            if not full_path.exists():
+                continue
+            try:
+                file_text = full_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for cap in sorted(caps):
+                # Is the identifier mentioned in the region text?
+                if cap in region_text:
+                    continue
+                # Is it mentioned anywhere in the file?
+                if cap not in file_text:
+                    print(f"      WARN '{cap}' named in spec but not found in {file_path} "
+                          f"-- model will guess; add its declaration to a read-only region")
+
     return 1 if bad else 0
 
 

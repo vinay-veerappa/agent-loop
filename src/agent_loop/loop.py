@@ -720,7 +720,40 @@ def run_ticket(
     with workspace.open_workspace(repo, tid, keep=keep_worktree) as ws:
         print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")
         if profile.test_cmd:
-            workspace.capture_baseline(ws, profile.test_cmd, gates.parse_tests)
+            try:
+                workspace.capture_baseline(ws, profile.test_cmd, gates.parse_tests)
+            except workspace.WorkspaceError as exc:
+                # O64: distinguish "suite doesn't build" from "tests are green."
+                # The old code had one message for three causes:
+                #   1. expect_green is a typo (the gate would be vacuous)
+                #   2. expect_green passes without the fix (doesn't test the defect)
+                #   3. the suite doesn't build, so there are no failure lines at all
+                # For a feature ticket (op=create), cause 3 is expected: the new
+                # file doesn't exist yet, so the suite cannot compile. The
+                # workaround is to commit a compiling stub first, then let the
+                # loop fill the bodies. That is documented nowhere -- say so.
+                is_feature = gates.is_feature_ticket(ticket)
+                result["final_verdict"] = "TICKET_REJECTED"
+                if is_feature:
+                    result["detail"] = (
+                        f"the test suite does not produce a parseable result "
+                        f"summary at baseline. For a feature ticket (op=create), "
+                        f"this is expected: the new file does not exist yet, so "
+                        f"the suite cannot compile. Commit a compiling stub first "
+                        f"(the file with empty method bodies), then run the loop "
+                        f"to fill the bodies. Baseline error: {exc}\n\n"
+                        f"The test-first gate proves the specification is "
+                        f"satisfiable -- do not weaken it; provide the scaffold."
+                    )
+                else:
+                    result["detail"] = (
+                        f"the test suite does not produce a parseable result "
+                        f"summary at baseline. The test command is broken "
+                        f"independently of any patch, so no regression check is "
+                        f"possible. Fix the suite first. Baseline error: {exc}"
+                    )
+                print(f"  REFUSED: {result['detail'][:200]}")
+                return result
             print(f"  [baseline] {ws.baseline_note}; {len(ws.baseline)} expected failure(s)")
             result["baseline"] = sorted(ws.baseline)
 
@@ -1011,37 +1044,58 @@ def run_ticket(
             )
 
             if not panel.valid:
-                # Quorum check: if >= ceil(2/3 * len(reviewers)) answered and
-                # all are APPROVE, proceed as APPROVE with panel_partial metadata.
-                # A 2-of-3 panel where both answered APPROVE is different from
-                # a 0-of-3 panel; hard-stopping on quorum-met unanimous APPROVE
-                # wastes a candidate that the panel approved.
+                # Quorum check: if >= ceil(2/3 * len(reviewers)) answered, proceed
+                # with the surviving reviewers' worst verdict. The old code only
+                # rescued a quorum where ALL counted votes were APPROVE, which
+                # meant one malfunctioning reviewer (returning 8x the findings
+                # cap, or timing out) ended the ticket -- even when the other
+                # reviewer had a clear verdict. O67/R2: a member returning 475
+                # findings against a cap of 60 is a malfunction, not a verdict,
+                # and it should be DROPPED with a loud line, not allowed to end
+                # the ticket.
                 counted = [v for v in panel.votes if v.counted]
                 quorum = math.ceil(2 * len(reviewers) / 3) if reviewers else 1
-                if len(counted) >= quorum and all(v.status == APPROVE for v in counted):
-                    # A quorum approval is NOT a unanimous one: a reviewer that
-                    # was never reached cannot approve on the panel's behalf, so
-                    # this is recorded as partial and promotes as unapproved.
+                if len(counted) >= quorum:
+                    # A quorum answered. Proceed with the worst verdict from
+                    # the surviving reviewers. The unreachable ones are dropped,
+                    # not counted as REJECT.
                     result["panel_partial"] = True
                     result["panel_partial_missing"] = [v.model for v in panel.unreachable]
-                    final = "APPROVE_PARTIAL"
+                    dropped = ", ".join(f"{v.model} ({v.error})" for v in panel.unreachable)
+                    # Recompute verdict from counted votes only.
+                    quorum_verdict = max(counted, key=lambda v: _RANK[v.status]).status
+                    # Apply the solo-REJECT downgrade to the quorum verdict too.
+                    if quorum_verdict == REJECT and sum(1 for v in counted if v.status == REJECT) < 2:
+                        quorum_verdict = REVISE
+                    if quorum_verdict == APPROVE and all(v.status == APPROVE for v in counted):
+                        final = "APPROVE_PARTIAL"
+                    else:
+                        # REVISE or REJECT from a partial panel: treat as a
+                        # normal non-unanimous verdict and go to arbitration.
+                        final = ""
+                        panel.verdict = quorum_verdict
+                        # Make the panel "valid" for the arbitration path by
+                        # faking unanimous_approve=False (which it is).
+                        panel.valid = False  # stays invalid -- but we don't break
                     print(
-                        f"           panel quorum {len(counted)}/{len(reviewers)} all APPROVE; "
-                        f"recorded as PARTIAL (unreached: "
-                        f"{', '.join(v.model for v in panel.unreachable)})"
+                        f"           panel quorum {len(counted)}/{len(reviewers)} "
+                        f"verdict={quorum_verdict}; dropped unreachable: {dropped}"
                     )
+                    if final:
+                        break
+                    # Fall through to arbitration with the quorum's findings.
+                    # The unreachable reviewers' findings (which are empty) are
+                    # not included.
+                else:
+                    # No quorum: stop cleanly, keep the candidate on disk.
+                    who = ", ".join(f"{v.model} ({v.error})" for v in panel.unreachable)
+                    print(f"           panel OUTAGE - no quorum ({len(counted)}/{len(reviewers)}). "
+                          f"Unreachable: {who}")
+                    print(f"           resume with --resume-raw {art / f'r{rnd}_impl_raw.txt'}")
+                    if touched:
+                        ws.revert(touched)
+                    final = "PANEL_OUTAGE"
                     break
-
-                # A reviewer that could not be reached has not voted. This is
-                # NOT a rejection: stop cleanly, keep the candidate on disk, and
-                # let the arbiter resume from it once the provider is healthy.
-                who = ", ".join(f"{v.model} ({v.error})" for v in panel.unreachable)
-                print(f"           panel INVALID - NOT a rejection. Unreachable: {who}")
-                print(f"           resume with --resume-raw {art / f'r{rnd}_impl_raw.txt'}")
-                if touched:
-                    ws.revert(touched)
-                final = "PANEL_UNREACHABLE"
-                break
 
             if panel.unanimous_approve:
                 # Candidate is already applied in the worktree and cleared every

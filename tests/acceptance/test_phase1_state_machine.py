@@ -198,7 +198,7 @@ def test_p1_5_panel_reject_goes_to_arbiter(tmp_path):
     assert result["final_verdict"] != "PANEL_REJECT", "PANEL_REJECT is a signal, not a terminal state"
 
 
-# === P1-6: PANEL_UNREACHABLE must revert touched files ===
+# === P1-6: PANEL_OUTAGE must revert touched files ===
 def test_p1_6_panel_unreachable_reverts(tmp_path):
     repo = _make_repo(tmp_path)
     ticket = _make_ticket("P1-6", "Panel unreachable revert")
@@ -206,9 +206,9 @@ def test_p1_6_panel_unreachable_reverts(tmp_path):
     with _patched_loop(repo, panel_result=panel):
         result = loop.run_ticket(repo, ticket, TEST_PROFILE, "test-impl", ["r1"],
                                  max_rounds=2, apply=False, arbiter_model="test-arbiter")
-    assert result["final_verdict"] == "PANEL_UNREACHABLE"
+    assert result["final_verdict"] == "PANEL_OUTAGE"
     target = (repo / "src" / "target.py").read_text()
-    assert "return 42" in target, "touched files were not reverted on PANEL_UNREACHABLE"
+    assert "return 42" in target, "touched files were not reverted on PANEL_OUTAGE"
 
 
 # === P1-7: Quorum - partial panel with unanimous APPROVE should proceed ===
