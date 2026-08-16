@@ -158,6 +158,49 @@ under a refactor ticket, any behaviour change visible in the diff is itself a fi
 This is the same shape as CF-1 and CF-2 and as three gates in the consumer repo: **state what the
 gate inspected, including when the answer is "nothing".**
 
+### CF-7. The arbiter SETTLED the opposite of a finding it upheld in the same ruling — and settled decisions persist — **HIGHEST severity here**
+
+Observed on a second ticket the same day (`P1-130`, a live `P1` in the consumer). One arbiter
+output, verbatim:
+
+```
+[UPHELD] #1: The patch fails to increment `bracket.StopModifyAttempts` when the stop order is
+             absent from `account.Orders`, causing an unbounded retry loop ...
+<<<SETTLED>>>
+- The failure counter may increment only when the stop order is still present in account.Orders
+  but no longer occupies a live slot (P1-130, this ticket).
+```
+
+**#1 says it must count when the order is ABSENT. The settled decision says it may count ONLY when
+the order is PRESENT.** They are direct contradictions, produced in one call, and the rationale
+underneath even restates #1 correctly (*"the implementer must fix the counter increment to cover
+the not-found case"*).
+
+**Why this is the worst one in this document**: the run's rulings die with the run, but
+`[memory] saved 2 settled decision(s) to store` wrote that sentence to
+`logs/agent_loop/settled_decisions.jsonl`, where it is loaded into **later** runs as an established
+constraint (`[memory] 48 settled decisions (20 from prior runs)`). A wrong ruling costs one round.
+**A wrong SETTLED decision teaches every future run in that repo to re-introduce the defect** — and
+it arrives labelled as something already decided, which is precisely the label that stops the next
+reviewer arguing with it. It had to be deleted by hand from the consumer's store.
+
+**Narrowest fix, and it is mechanical**: before persisting, check each nominated SETTLED decision
+against the rulings in the same output. A settled decision that contradicts an UPHELD finding must
+be dropped and the run flagged — the model has just written both sides of one question, so neither
+is safe to keep. Even a crude check (does the settled text negate a term the upheld finding
+requires?) would have caught this one, because the two sentences share their subject and differ by
+the word *only*.
+
+**Second, cheaper fix**: record the provenance of every settled decision — ticket, run id, and the
+finding it derives from — and print settled decisions when they are LOADED, not only when saved.
+Neither the save line nor the load line names what was learned, so a poisoned entry is invisible
+until a later run behaves strangely for reasons nobody can trace.
+
+⚠️ **Corroborating detail worth keeping**: the panel split, `glm-5.2=APPROVE(0)` and
+`deepseek-v4-flash=REVISE(2)`, and **the minority reviewer was right on the substance**. The
+consumer's own note that the second reviewer "is where blocking verdicts come from" is holding up —
+but the arbiter mishandled the very finding it agreed with.
+
 ---
 
 ## What worked, recorded because it is evidence too
