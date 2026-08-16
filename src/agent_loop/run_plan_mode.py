@@ -141,22 +141,28 @@ def _commit_to_branch(
     part_id: str,
     message: str = "",
 ) -> str:
-    """Commit the promoted files to the plan branch.
+    """Commit the promoted files to the plan branch via a temporary worktree.
 
-    This advances the branch HEAD so the next part's worktree (created at the
-    branch HEAD) will contain the promoted changes.
+    This advances the plan branch HEAD so the next part's worktree (created at
+    the plan branch HEAD) will contain the promoted changes.
 
-    Returns the commit hash.
+    The promoted files are already in the live working tree (run_ticket with
+    apply=True put them there). We stage them, create a TEMP commit on the
+    current HEAD, fast-forward the plan branch to that commit, and then reset
+    the current HEAD back one commit so the user's branch is unchanged. The
+    files remain in the working tree (soft reset).
+
+    Returns the commit hash on the plan branch.
     """
     # Stage the promoted files in the live repo (they were just promoted by
     # run_ticket with apply=True).
     for f in files:
         _git(repo, "add", "--", f, check=False)
 
-    # Commit to the plan branch. We use a detached approach: create a temp
-    # commit on HEAD, then cherry-pick or fast-forward the plan branch to it.
-    # Simpler: commit on the current branch, then move the plan branch ref
-    # forward to include this commit.
+    # Remember the user's current HEAD so we can restore it.
+    user_head = _git(repo, "rev-parse", "HEAD").strip()
+
+    # Commit on the current branch (temporarily).
     msg = message or f"agent-loop: part {part_id} promoted"
     _git(repo, "commit", "-m", msg, "--allow-empty")
 
@@ -166,12 +172,11 @@ def _commit_to_branch(
     # Fast-forward the plan branch to this commit.
     _git(repo, "branch", "-f", branch, commit)
 
-    # Reset the live repo's HEAD back to where it was (the plan branch has
-    # the commit; the user's working tree should not have commits from the
-    # plan). Actually -- run_ticket with apply=True promotes to the working
-    # tree, and we just committed that. We need to reset the user's branch
-    # back so the commit is ONLY on the plan branch.
-    # ...this is the tricky part. Let me think about this differently.
+    # Reset the user's HEAD back to where it was (soft: keep the working tree).
+    # The commit is now ONLY on the plan branch. The user's working tree still
+    # has the promoted files (from run_ticket's promote step), but their branch
+    # ref is unchanged.
+    _git(repo, "reset", "--soft", user_head)
 
     return commit
 
@@ -269,9 +274,9 @@ def run_plan(
 
         # Determine the base for this part's worktree. If the previous part
         # was promoted and committed to the plan branch, the worktree should
-        # be at the plan branch's HEAD. Otherwise, at the original base.
+        # be at the plan branch's HEAD so it sees the previous part's code.
+        # Otherwise, at the original base.
         if result.parts and result.parts[-1].applied:
-            # The plan branch has the previous part's commit.
             part_base = branch
         else:
             part_base = "HEAD"
@@ -281,6 +286,7 @@ def run_plan(
         try:
             # Run the part. We pass apply=True so the promoted files land
             # in the live working tree, then we commit them to the plan branch.
+            # base_ref=part_base ensures part 2's worktree sees part 1's work.
             ticket_result = run_ticket(
                 repo,
                 t,
@@ -293,6 +299,7 @@ def run_plan(
                 arbiter_model=arbiter_model,
                 panel_deadline=panel_deadline,
                 keep_worktree=keep_branch,
+                base_ref=part_base,
             )
             part_result.verdict = ticket_result.get("final_verdict", "")
             part_result.applied = ticket_result.get("applied", False)

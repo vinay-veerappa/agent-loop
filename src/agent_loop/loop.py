@@ -23,6 +23,7 @@ import concurrent.futures
 import json
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -184,6 +185,11 @@ def _extract_json_objects(text: str) -> List[str]:
 
     Looks for `{...}` blocks, including those wrapped in markdown fences.
     Returns the raw strings; the caller tries json.loads on each.
+
+    Uses balanced-brace matching rather than a regex, because a regex with
+    `[^{}]*` cannot match nested objects (a review with findings contains
+    `[{"severity": ...}]` which has inner braces). The extractor walks the
+    string, tracks brace depth, and returns each balanced `{...}` block.
     """
     # Direct JSON: the whole text is a JSON object.
     stripped = text.strip()
@@ -194,9 +200,53 @@ def _extract_json_objects(text: str) -> List[str]:
     results = []
     for m in _re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, _re.DOTALL):
         results.append(m.group(1))
-    # Bare JSON object in prose (greedy match for outermost braces).
-    for m in _re.finditer(r"(\{[^{}]*\})", text, _re.DOTALL):
-        results.append(m.group(1))
+    # Balanced-brace extraction for JSON embedded in prose. A regex with
+    # `[^{}]*` only matches flat objects; nested objects (findings arrays
+    # with inner braces) are missed. Walk the string and extract balanced
+    # `{...}` blocks instead.
+    results.extend(_extract_balanced_braces(text))
+    return results
+
+
+def _extract_balanced_braces(text: str) -> List[str]:
+    """Extract all balanced {...} blocks from text, handling nesting.
+
+    Walks the string tracking brace depth. When depth returns to zero after
+    opening, the block is complete. Skips braces inside string literals
+    (delimited by " or ') so braces in JSON string values do not confuse
+    the depth counter.
+    """
+    results: List[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == "{":
+            depth = 0
+            in_string = False
+            escape = False
+            start = i
+            while i < n:
+                ch = text[i]
+                if escape:
+                    escape = False
+                    i += 1
+                    continue
+                if ch == "\\" and in_string:
+                    escape = True
+                    i += 1
+                    continue
+                if ch == '"' and not escape:
+                    in_string = not in_string
+                elif not in_string:
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            results.append(text[start:i + 1])
+                            break
+                i += 1
+        i += 1
     return results
 
 
@@ -662,21 +712,28 @@ def terminal_ledger_record(tid: str, result: Dict[str, Any]) -> Dict[str, Any]:
         record["gate"] = failed[0] if len(failed) == 1 else failed
 
     # Evidence ledger: record what was proven, not just that the run finished.
-    # For a promotable ticket, this is the acceptance criteria + gate summaries
-    # from the round that cleared every gate. For a failed ticket, it is the
-    # gate that blocked and its summary.
+    # For a promotable ticket, this is the gate ladder summaries from the round
+    # that cleared every gate (static, compile, test, lock-scope) — the
+    # MECHANICAL evidence that the patch compiles and passes tests, not the
+    # panel's opinion. For a failed ticket, it is the gate that blocked.
     evidence: Dict[str, Any] = {}
     if result["final_verdict"] in PROMOTABLE:
         evidence["verdict"] = result["final_verdict"]
         evidence["rounds"] = len(result["rounds"])
         evidence["exported_round"] = result.get("exported_round")
-        # The gate ladder results from the promotable round are in the round
-        # records. Record the final-round summaries as evidence.
+        # The gate ladder is stored on the review round record (the round
+        # where the panel ran, after all gates passed). Record the
+        # mechanical gate summaries, not the panel verdict.
         green_rounds = [r for r in result["rounds"] if r.get("ok")]
         if green_rounds:
             last_green = green_rounds[-1]
-            evidence["final_gate"] = last_green.get("stage", "")
-            evidence["gate_summary"] = last_green.get("summary", "")
+            gate_ladder = last_green.get("gate_ladder", [])
+            if gate_ladder:
+                evidence["gate_ladder"] = gate_ladder
+            else:
+                # Fallback for rounds written before gate_ladder was added.
+                evidence["final_stage"] = last_green.get("stage", "")
+                evidence["gate_summary"] = last_green.get("summary", "")
     elif failed:
         # Record which gate blocked and its summary.
         blocking_rounds = [r for r in result["rounds"] if not r.get("ok", True)]
@@ -700,14 +757,40 @@ def terminal_ledger_record(tid: str, result: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
+# Per-file lock for append_ledger. On Windows, concurrent line-buffered
+# appends to the same file from multiple threads/processes are NOT atomic
+# (NTFS does not guarantee atomic appends), so a lock is needed. Same
+# pattern as save_settled (N2). Named by the resolved store path so
+# different repos don't contend.
+_ledger_locks: Dict[str, "threading.Lock"] = {}
+_ledger_locks_guard = threading.Lock()
+
+
+def _get_ledger_lock(path: Path) -> "threading.Lock":
+    """Get or create a per-file lock for ledger writes."""
+    import threading as _threading
+    key = str(path.resolve())
+    with _ledger_locks_guard:
+        if key not in _ledger_locks:
+            _ledger_locks[key] = _threading.Lock()
+        return _ledger_locks[key]
+
+
 def append_ledger(repo: Path, record: Dict[str, Any]) -> None:
     """Append-only. The predecessor's summary.json was rewritten wholesale per
-    invocation and still records T1 as unapplied even though T1 is committed."""
+    invocation and still records T1 as unapplied even though T1 is committed.
+
+    Thread-safe: uses a per-file lock (same pattern as save_settled, N2) so
+    concurrent plan parts or parallel ticket runs on Windows cannot
+    interleave writes and corrupt the JSONL.
+    """
     p = repo / "logs" / "agent_loop" / "ledger.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     record = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), **record}
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record) + "\n")
+    lock = _get_ledger_lock(p)
+    with lock:
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
 
 
 # --------------------------------------------------------------------------
@@ -741,6 +824,11 @@ class RoundRecord:
     reviewer_output_tokens: int = 0
     arbiter_input_tokens: int = 0
     arbiter_output_tokens: int = 0
+    # Gate ladder summaries from the round that cleared every gate. Stored on
+    # the review round record (the one where the panel ran) so the evidence
+    # ledger can record what the MECHANICAL gates proved, not just the panel's
+    # verdict. A gate summary is evidence; a panel verdict is opinion.
+    gate_ladder: List[Dict[str, str]] = field(default_factory=list)
 
 
 def _apply_regions(ws, regs, blocks):
@@ -770,6 +858,7 @@ def run_ticket(
     panel_deadline: int = 0,   # 0 = use config.loop.panel_deadline_secs
     keep_worktree: bool = False,
     arbiter_model: str = "",
+    base_ref: str = "HEAD",   # git ref to base the worktree on (for plan runner)
 ) -> Dict[str, Any]:
     # 0 means "ask config", so these limits have exactly one literal definition
     # (config.py) rather than one per signature that happens to agree with it.
@@ -836,7 +925,7 @@ def run_ticket(
         extra = len(effective_settled) - len(profile.settled)
         print(f"  [memory] {len(effective_settled)} settled decisions ({extra} from prior runs)")
 
-    with workspace.open_workspace(repo, tid, keep=keep_worktree) as ws:
+    with workspace.open_workspace(repo, tid, keep=keep_worktree, base=base_ref) as ws:
         print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")
         if profile.test_cmd:
             try:
@@ -1198,6 +1287,10 @@ def run_ticket(
                     impl_output_tokens=impl_out,
                     reviewer_input_tokens=rev_in,
                     reviewer_output_tokens=rev_out,
+                    gate_ladder=[
+                        {"gate": x.name, "ok": x.ok, "summary": x.summary}
+                        for x in gate_results
+                    ],
                 ).__dict__
             )
 

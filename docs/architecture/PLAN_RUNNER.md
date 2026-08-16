@@ -1,8 +1,9 @@
 # Plan Runner Architecture
 
-> **Status:** implementing (Wave 0.5 of the consolidated review plan)
+> **Status:** done (Wave 0.5, R5-1/R5-2 fixed in fifth review)
 > **Parent doc:** [ARCHITECTURE.md](./ARCHITECTURE.md) §12 (Modes)
 > **Review origin:** [AGENT_LOOP_WORK_BREAKDOWN_AND_THROUGHPUT_REVIEW.md](./AGENT_LOOP_WORK_BREAKDOWN_AND_THROUGHPUT_REVIEW.md) §A, W1–W3, W7
+> **Fixes:** [AGENT_LOOP_FIFTH_REVIEW.md](./AGENT_LOOP_FIFTH_REVIEW.md) R5-1, R5-2
 
 ## Problem
 
@@ -164,6 +165,6 @@ Options:
 |---|---|
 | `cli.py` | New `run-plan` mode entry; `--plan` argument |
 | `run_plan_mode.py` (new) | Topological sort, branch management, per-part execution, manifest |
-| `loop.py` | No change. `run_ticket` is called per-part with `apply=True` and the worktree base at the previous part's commit. |
-| `workspace.py` | `open_workspace` already accepts a `base` parameter (defaults to `HEAD`). The runner passes the scratch branch's HEAD. |
+| `loop.py` | `run_ticket` accepts `base_ref` parameter (R5-2, defaults to `HEAD`). The runner passes the scratch branch's HEAD so part N's worktree sees part N-1's promoted code. |
+| `workspace.py` | `open_workspace` already accepts a `base` parameter (defaults to `HEAD`). `run_ticket` passes `base_ref` through. |
 | `plan_mode.py` | No change. The planner already validates the plan whole. |

@@ -6,7 +6,8 @@ Tests:
 2. Unknown dependency is refused
 3. Cycle is refused
 4. --list shows the plan without running
-5. Commit-per-part: part 2's worktree sees part 1's work
+5. Commit-per-part: part 2's worktree sees part 1's work (R5-1, R5-2)
+6. _commit_to_branch does not leave commits on the user's branch (R5-1)
 """
 import json
 import subprocess
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_loop.run_plan_mode import _topological_sort, PlanError
+from agent_loop.run_plan_mode import _topological_sort, PlanError, _commit_to_branch
 
 
 def test_topological_sort_orders_by_dependency():
@@ -111,3 +112,89 @@ def test_run_plan_no_apply_shows_plan(tmp_path):
     )
     assert result.status == "complete"
     assert len(result.parts) == 0  # not executed
+
+
+def test_commit_to_branch_does_not_leave_commits_on_user_branch(tmp_path):
+    """R5-1: _commit_to_branch must not leave commits on the user's branch.
+
+    The old code committed to the current branch, moved the plan branch ref
+    to that commit, and never reset the user's branch back. So every part
+    promoted by the plan runner left a commit on the user's working branch.
+    The fix: soft-reset the user's HEAD back after fast-forwarding the plan
+    branch, so the commit is ONLY on the plan branch.
+    """
+    from agent_loop.workspace import _git
+
+    # Init a git repo with one file.
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "file.txt").write_text("initial\n", encoding="utf-8")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    subprocess.run(["git", "add", "-A"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path),
+                   capture_output=True, env=env)
+
+    # Record the user's HEAD.
+    user_head_before = _git(tmp_path, "rev-parse", "HEAD").strip()
+
+    # Create a plan branch.
+    subprocess.run(["git", "branch", "agent-loop/plan-test"],
+                   cwd=str(tmp_path), capture_output=True)
+
+    # Modify the file and commit to the plan branch.
+    (tmp_path / "file.txt").write_text("modified by part 1\n", encoding="utf-8")
+    commit = _commit_to_branch(
+        tmp_path, "agent-loop/plan-test", ["file.txt"], "P1"
+    )
+
+    # The user's HEAD should be UNCHANGED.
+    user_head_after = _git(tmp_path, "rev-parse", "HEAD").strip()
+    assert user_head_after == user_head_before, (
+        f"user's HEAD moved: {user_head_before} -> {user_head_after}. "
+        f"_commit_to_branch must not leave commits on the user's branch."
+    )
+
+    # The plan branch should point at the new commit.
+    plan_head = _git(tmp_path, "rev-parse", "agent-loop/plan-test").strip()
+    assert plan_head == commit
+
+    # The commit message should be on the plan branch.
+    log = _git(tmp_path, "log", "--oneline", "agent-loop/plan-test").strip()
+    assert "part P1 promoted" in log
+
+
+def test_run_ticket_accepts_base_ref(tmp_path):
+    """R5-2: run_ticket accepts a base_ref parameter and bases the worktree on it.
+
+    This is what the plan runner uses to ensure part 2's worktree sees
+    part 1's work: it passes base_ref=plan_branch so the worktree is
+    created at the plan branch's HEAD, not at HEAD.
+    """
+    from agent_loop.workspace import _git, open_workspace
+
+    # Init a git repo.
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True)
+    (tmp_path / "file.txt").write_text("initial\n", encoding="utf-8")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    subprocess.run(["git", "add", "-A"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(tmp_path),
+                   capture_output=True, env=env)
+
+    # Create a branch with different content.
+    (tmp_path / "file.txt").write_text("on plan branch\n", encoding="utf-8")
+    subprocess.run(["git", "checkout", "-b", "plan-branch"],
+                   cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=str(tmp_path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "plan commit"], cwd=str(tmp_path),
+                   capture_output=True, env=env)
+    subprocess.run(["git", "checkout", "master"], cwd=str(tmp_path),
+                   capture_output=True)
+
+    # Open a worktree at the plan branch.
+    with open_workspace(tmp_path, "test-base-ref", base="plan-branch") as ws:
+        content = (ws.root / "file.txt").read_text(encoding="utf-8")
+        assert "on plan branch" in content, (
+            f"worktree at plan-branch should see plan branch content, "
+            f"got: {content}"
+        )

@@ -77,3 +77,39 @@ def test_parse_review_unparseable_still_returns_unparseable():
     text = "I cannot review this patch because I don't understand it."
     vote = parse_review(text, "test-model")
     assert vote.status == "UNPARSEABLE"
+
+
+def test_parse_review_json_fallback_nested_in_prose():
+    """A JSON review with nested findings embedded in prose is parsed.
+
+    This is the case the old regex `\\{[^{}]*\\}` could not handle: the
+    outer JSON object contains inner braces from the findings array, so a
+    flat regex match extracts the inner object instead of the outer one.
+    The balanced-brace extractor handles nesting correctly.
+    """
+    text = (
+        'Here is my review:\n'
+        '{"verdict": "REVISE", "findings": [{"severity": "BLOCKER", "text": "lock held during call"}]}\n'
+        'That is all.'
+    )
+    vote = parse_review(text, "test-model")
+    assert vote.status == REVISE
+    assert vote.blockers == 1
+    assert "lock held" in vote.finding_list[0].text
+
+
+def test_parse_review_json_fallback_deeply_nested():
+    """A deeply nested JSON structure is parsed correctly."""
+    text = (
+        '```json\n'
+        '{"verdict": "REJECT", "findings": ['
+        '{"severity": "BLOCKER", "text": "bug 1", "details": {"loc": "line 42", "context": "func()"}}, '
+        '{"severity": "MAJOR", "text": "bug 2", "details": {"loc": "line 99"}}'
+        ']}\n'
+        '```'
+    )
+    vote = parse_review(text, "test-model")
+    assert vote.status == REJECT
+    assert len(vote.finding_list) == 2
+    assert "bug 1" in vote.finding_list[0].text
+    assert "bug 2" in vote.finding_list[1].text

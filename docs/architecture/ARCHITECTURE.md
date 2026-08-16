@@ -5,10 +5,11 @@
 > unambiguous: every step has a file location, every decision has a reason, and
 > every component boundary is explicit.
 >
-> **State.** This doc reflects the code at `main` after Waves 0–3 of the
-> consolidated review plan (commits `6fb3710` through `b501b30`). The plan runner
-> (Wave 0.5) is documented in [PLAN_RUNNER.md](./PLAN_RUNNER.md) and marked as
-> implementing where it is not yet complete.
+> **State.** This doc reflects the code at `main` after Waves 0–4 and the
+> fifth review fixes (commit `e091196` + R5-1 through R5-7). The plan runner
+> (Wave 0.5) is documented in [PLAN_RUNNER.md](./PLAN_RUNNER.md). See
+> [AGENT_LOOP_FIFTH_REVIEW.md](./AGENT_LOOP_FIFTH_REVIEW.md) for the review
+> that found the issues fixed in this commit.
 
 ---
 
@@ -242,6 +243,18 @@ An empty or unparseable response is `UNPARSEABLE`, never a silent `REVISE`.
 
 A reviewer returning more than 60 findings is `UNPARSEABLE` (repetition, not
 review). The cap is configurable via `loop.max_findings_per_reviewer`.
+
+### JSON fallback (C-4, R5-3)
+
+When the text protocol parser finds no `<<<VERDICT>>>` marker, it tries to
+parse the response as JSON before returning `UNPARSEABLE`. A model that
+returns `{"verdict": "APPROVE", "findings": [...]}` is a valid review, not
+an unparseable one. The text protocol remains primary; JSON is a fallback.
+
+The extractor uses balanced-brace matching (`_extract_balanced_braces`),
+not a regex, because a regex with `[^{}]*` cannot match nested JSON objects
+(a review with a findings array contains inner braces). The walker tracks
+brace depth and skips braces inside string literals.
 
 ### Solo-REJECT downgrade (O63)
 
@@ -689,22 +702,39 @@ Each region has an `op`:
 ### Ledger
 
 `logs/agent_loop/ledger.jsonl` — append-only, one line per ticket run. Each
-record carries: `ticket`, `verdict`, `applied`, `rounds`, `cost_usd`, and
-`gate` (the distinct gates that failed, if any; excludes non-gate stages like
-`implement` and `review`, N8).
+record carries: `ticket`, `verdict`, `applied`, `rounds`, `cost_usd`, `gate`
+(the distinct gates that failed, if any; excludes non-gate stages like
+`implement` and `review`, N8), and `evidence`.
 
-### Plan manifest (implementing)
+The **evidence** field (Wave 4.1, R5-4) records what was PROVEN, not just
+that the run finished:
+- **Promotable tickets:** `gate_ladder` — the mechanical gate summaries
+  (static, compile, test, lock-scope) from the round that cleared every
+  gate. This is the evidence that the patch compiles and passes tests, not
+  the panel's opinion.
+- **Failed tickets:** `blocked_by` and `block_summary` — which gate blocked
+  and its summary.
+- **Token usage:** per-role input/output tokens from the final round.
+
+Thread-safe via a per-file `threading.Lock` (R5-6), same pattern as
+`save_settled` (N2). Concurrent plan parts or parallel ticket runs on
+Windows cannot interleave writes and corrupt the JSONL.
+
+### Plan manifest
 
 `logs/agent_loop/<plan_id>/plan_manifest.json` — one record per plan, listing
-each part's verdict, the commit it landed at, and its acceptance tests. This is
-the evidence ledger the prior reviews asked for (C-§2, W7).
+each part's verdict, the commit it landed at, and its acceptance tests. The
+plan runner commits each promoted part to a scratch branch
+(`agent-loop/plan-<id>`) and soft-resets the user's branch back so the
+commit lives only on the plan branch (R5-1). Each part's worktree is based
+at the plan branch HEAD, so part 2 sees part 1's promoted code (R5-2).
 
 ---
 
 ## 17. Invariants enforced in code
 
-These guarantees were previously documented but not enforced. As of Waves 1–2,
-they are checked at entry:
+These guarantees were previously documented but not enforced. As of Waves 1–2
+and the fifth review fixes, they are checked at entry:
 
 | Invariant | Where enforced | Finding |
 |---|---|---|
@@ -720,12 +750,18 @@ they are checked at entry:
 | Arbiter diff truncation has visible marker | `_truncate_diff` | N5 |
 | Encoding captures pin `utf-8, errors=replace` | encoding gate (rglob) | R1 |
 | `save_settled` uses line-buffered append + lock | `save_settled` | N2 |
+| `append_ledger` uses line-buffered append + lock | `append_ledger` | R5-6 |
 | `revert()` prunes untracked files | `workspace.revert` | E-§2 |
 | Test-first gate distinguishes causes | `run_ticket` baseline capture | O64 |
 | `--list` validates expect_green | `cli._list` | O65 |
 | `--list` warns on undeclared identifiers | `cli._list` | O66 |
 | Quorum rescue drops member, not stop | `review_panel` quorum check | O67/R2 |
 | Region size ceiling in plan mode | `_validate_feature_plan` | W6 |
+| Plan runner commits to scratch branch, not user's | `_commit_to_branch` | R5-1 |
+| Plan runner: part N sees part N-1's work | `run_ticket` `base_ref` param | R5-2 |
+| JSON fallback uses balanced-brace extraction | `_extract_balanced_braces` | R5-3 |
+| Evidence ledger records gate ladder, not panel verdict | `terminal_ledger_record` | R5-4 |
+| Reasoning budget warning goes to stderr | `providers.chat` | R5-5 |
 
 ---
 
@@ -755,6 +791,14 @@ Four independent reviews have been conducted against this codebase:
    Identified the missing plan runner, `depends_on` as dead machinery, no
    stop-on-fail, no rollback, and no evidence ledger per plan.
 
+5. **[AGENT_LOOP_FIFTH_REVIEW.md](./AGENT_LOOP_FIFTH_REVIEW.md)** — code-level
+   audit after Waves 0–4. Found 7 issues (R5-1 through R5-7): plan runner
+   commits to user's branch (BLOCKER), plan runner part 2 doesn't see part
+   1's work (BLOCKER), JSON fallback regex can't match nested objects,
+   evidence ledger records panel verdict not gate ladder, reasoning budget
+   warning not thread-safe, `append_ledger` has no lock, ARCHITECTURE.md
+   §18 stale. All 7 fixed.
+
 ### Backlog
 
 [BACKLOG.md](./BACKLOG.md) tracks O1–O67. The `## STATUS` block is the one line
@@ -770,5 +814,5 @@ everybody reads and the one nobody updates — verify currency by checking
 | 1 | T-INV1 through T-INV4 (invariant enforcement) | **Done** |
 | 2 | T-BLG1 through T-BLG4 (backlog defects O64–O67) | **Done** |
 | 3 | T-OPS3, T-OPS5, T-OPS6 (operational) | **Done** |
-| 0.5 | T-PLAN1 through T-PLAN3 (plan runner) | **Implementing** |
-| 4 | TDD proxy, evidence ledger, JSON output, reasoning budget | **Needs measurement** |
+| 0.5 | T-PLAN1 through T-PLAN3 (plan runner) | **Done** (R5-1/R5-2 fixed in fifth review) |
+| 4 | TDD proxy, evidence ledger, JSON output, reasoning budget | **Done** (R5-3 through R5-6 fixed in fifth review) |

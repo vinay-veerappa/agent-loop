@@ -10,7 +10,12 @@ from agent_loop.loop import terminal_ledger_record, PROMOTABLE
 
 
 def test_evidence_ledger_promotable_has_evidence():
-    """A promotable ticket's ledger record carries evidence."""
+    """A promotable ticket's ledger record carries evidence.
+
+    The evidence includes the gate ladder (static, compile, test, lock-scope)
+    from the round that cleared every gate — the MECHANICAL evidence that the
+    patch compiles and passes tests, not the panel's opinion.
+    """
     result = {
         "final_verdict": "APPROVE",
         "applied": True,
@@ -18,7 +23,13 @@ def test_evidence_ledger_promotable_has_evidence():
             {"round": 1, "stage": "compile", "ok": False, "summary": "build failed"},
             {"round": 2, "stage": "review", "ok": True, "summary": "APPROVE [glm=APPROVE(0), ds=APPROVE(0)]",
              "impl_input_tokens": 5000, "impl_output_tokens": 2000,
-             "reviewer_input_tokens": 8000, "reviewer_output_tokens": 1000},
+             "reviewer_input_tokens": 8000, "reviewer_output_tokens": 1000,
+             "gate_ladder": [
+                 {"gate": "static", "ok": True, "summary": "2 region(s) checked"},
+                 {"gate": "compile", "ok": True, "summary": "build ok"},
+                 {"gate": "test", "ok": True, "summary": "676 passed, 34 skipped"},
+                 {"gate": "lock-scope", "ok": True, "summary": "no risk calls in locks"},
+             ]},
         ],
         "cost_usd": 0.0034,
         "exported_round": 2,
@@ -31,8 +42,12 @@ def test_evidence_ledger_promotable_has_evidence():
     ev = record["evidence"]
     assert ev["verdict"] == "APPROVE"
     assert ev["exported_round"] == 2
-    assert ev["final_gate"] == "review"
-    assert "APPROVE" in ev["gate_summary"]
+    # The evidence records the gate ladder, not the review stage.
+    assert "gate_ladder" in ev
+    assert len(ev["gate_ladder"]) == 4
+    assert ev["gate_ladder"][0]["gate"] == "static"
+    assert ev["gate_ladder"][2]["gate"] == "test"
+    assert ev["gate_ladder"][2]["summary"] == "676 passed, 34 skipped"
     assert "tokens" in ev
     assert ev["tokens"]["impl_input_tokens"] == 5000
 

@@ -38,16 +38,16 @@ def _patched_chat():
 
 
 def test_reasoning_budget_warns_when_think_true_and_budget_low():
-    """A warning is printed when think=True and max_tokens < 32000."""
+    """A warning is printed to stderr when think=True and max_tokens < 32000."""
     captured = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = captured
+    old_stderr = sys.stderr
+    sys.stderr = captured
     try:
         with _patched_chat():
             chat("test-model", [{"role": "user", "content": "hi"}],
                  max_tokens=16000, think=True)
     finally:
-        sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
     output = captured.getvalue()
     assert "WARNING" in output
@@ -58,14 +58,14 @@ def test_reasoning_budget_warns_when_think_true_and_budget_low():
 def test_reasoning_budget_no_warning_when_think_false():
     """No warning when think=False (or None)."""
     captured = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = captured
+    old_stderr = sys.stderr
+    sys.stderr = captured
     try:
         with _patched_chat():
             chat("test-model", [{"role": "user", "content": "hi"}],
                  max_tokens=16000, think=False)
     finally:
-        sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
     output = captured.getvalue()
     assert "WARNING" not in output
@@ -74,14 +74,14 @@ def test_reasoning_budget_no_warning_when_think_false():
 def test_reasoning_budget_no_warning_when_budget_high():
     """No warning when think=True and max_tokens >= 32000."""
     captured = io.StringIO()
-    old_stdout = sys.stdout
-    sys.stdout = captured
+    old_stderr = sys.stderr
+    sys.stderr = captured
     try:
         with _patched_chat():
             chat("test-model", [{"role": "user", "content": "hi"}],
                  max_tokens=48000, think=True)
     finally:
-        sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
     output = captured.getvalue()
     assert "WARNING" not in output

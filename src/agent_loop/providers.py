@@ -677,15 +677,21 @@ def chat(
     # and the answer; a budget that is tight for the answer alone will be
     # consumed by reasoning. The warning makes the hazard visible before the
     # call is spent, not after.
+    #
+    # Uses sys.stderr (not print/stdout) so concurrent panel reviewers do not
+    # interleave their warnings on stdout. stderr is line-buffered and the
+    # warning is one line, so thread interleaving is less likely to corrupt it.
     _REASONING_MIN_BUDGET = 32000
     if think and max_tokens < _REASONING_MIN_BUDGET:
-        print(
+        import sys as _sys
+        _sys.stderr.write(
             f"  WARNING: {model_spec} think=True with max_tokens={max_tokens} "
             f"(below {_REASONING_MIN_BUDGET}). On a reasoning model, chain-of-thought "
             f"is spent from the same budget as the answer, so the model may spend "
             f"the whole budget reasoning and return empty content. Raise max_tokens "
-            f"in the same edit you set think=True."
+            f"in the same edit you set think=True.\n"
         )
+        _sys.stderr.flush()
 
     backend, model = split_model(model_spec)
     fn = _BACKENDS[backend]
