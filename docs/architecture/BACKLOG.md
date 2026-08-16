@@ -6,6 +6,14 @@ section or decision log entry that motivates it.
 
 **Last updated**: 2026-08-11, session 4 (O7 modes, O14, O23, O29-O34).
 
+> 🆕 **[`CONSUMER_FINDINGS.md`](CONSUMER_FINDINGS.md)** — defects and rough edges found by *running*
+> the loop on a real consumer repo, rather than by review or by this repo's own suite. Five entries
+> as of 2026-08-16 (`nt8-riskguard`, at HEAD past `v0.6.7`); the two worth doing first are **CF-1**
+> (the unresolved-identifier warning fires on ordinary English words, so it says nothing) and
+> **CF-2** (the test-first gate cannot distinguish an assertion that PASSES from one that does not
+> EXIST — the worktree is built from HEAD, so an uncommitted acceptance test refuses with a message
+> describing the wrong problem).
+
 ## STATUS
 
 All 17 backlog items addressed + Phase 9 complete + review fixes applied.
