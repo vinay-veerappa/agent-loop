@@ -771,3 +771,36 @@ answer is not a review.
 population**, and the code that shrinks it is nowhere near the code that reads it. The finding cap
 itself is right and stays — 853 findings is repetition, not review. What was wrong is that one
 member's malfunction was allowed to be the whole panel's verdict.
+
+### CF-24 — a second harness nobody ran, failing on a verdict name the ticket path does not produce
+
+`python -m agent_loop.selftest` drives the whole loop against stubbed models and asserts a verdict
+per scenario. It was found at **11/13**, and both failures were the same stale expectation:
+
+```
+expect=PANEL_UNREACHABLE  got=PANEL_OUTAGE
+```
+
+**`loop.py` does not have a `PANEL_UNREACHABLE`.** The ticket path says `PANEL_OUTAGE`;
+`plan_mode.py`, `replay.py` and `developer/driver.py` all say `PANEL_UNREACHABLE`. **Two names for
+one condition**, split across modes, and this harness asserted the name the ticket path never
+emits. A comment a few lines above the failures even records the moment a sibling expectation was
+corrected for exactly this reason — *"the expectation here was left at the old name when that split
+landed"* — and these two were left.
+
+It had been red for an unknown number of sessions while `pytest -q` was **744 / 0** and CI, which
+runs only pytest, reported that green as the repo's state. **A harness nobody runs is not a
+harness**, so it is now a CI step.
+
+Fixed expectations, both of which are now load-bearing for `CF-23`: one reviewer returning EMPTY on
+a two-model panel yields `APPROVE_PARTIAL` (the malfunctioning member is dropped, the other's
+APPROVE carries), and **both** reviewers failing still yields `PANEL_OUTAGE` — the negative control
+that keeps `CF-23` from meaning "any single opinion is enough".
+
+⚠️ **The two verdict names are NOT unified here.** Scripts, logs and the operator's own habits may
+match on either, so renaming is a change with a blast radius that wants its own ticket. What is
+recorded is that they exist and which mode produces which.
+
+⚠️ Note the sequencing: `CF-23` changed a real outcome and **`pytest -q` stayed green**, because
+nothing in that suite covered it. The selftest was the only thing that noticed, and it was not
+running. The acceptance test added with `CF-23` covers the arithmetic; this covers the outcome.

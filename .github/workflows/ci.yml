@@ -67,3 +67,12 @@ jobs:
         run: python -m agent_loop --version
       - name: Tests
         run: python -m pytest -q
+
+      # ⚠️ A SECOND HARNESS, and nothing ran it. `agent_loop.selftest` drives the
+      # whole loop against stubbed models and asserts a verdict per scenario. It
+      # was found at 13/13 -> 11/13, failing on a verdict name the ticket path
+      # does not produce, for an unknown number of sessions -- while `pytest -q`
+      # was green and this workflow reported that green as the repo's state.
+      # A harness nobody runs is not a harness.
+      - name: Selftest (end-to-end scenarios against stubbed models)
+        run: python -m agent_loop.selftest

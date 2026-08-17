@@ -192,7 +192,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--reps", type=int, default=1,
-        help="repetitions per arm. MEASURED need: deepseek-v4-flash:cloud "
+        help="repetitions per arm. MEASURED need: deepseek-v4-flash:0731-cloud "
              "returned 147267 chars on one call and ~7000 on the next, same "
              "model, same prompt, same think=false. One rep cannot tell a model "
              "apart from a bad day.",

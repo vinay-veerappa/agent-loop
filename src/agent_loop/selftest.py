@@ -276,19 +276,33 @@ def main() -> int:
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY},
             "ARBITER_NEVER_RAN",
         ),
+        # ⚠️ Both of these expected "PANEL_UNREACHABLE", which `loop.py` does not
+        # produce -- the ticket path says PANEL_OUTAGE, while plan_mode.py,
+        # replay.py and developer/driver.py still say PANEL_UNREACHABLE. Two names
+        # for one condition, and this harness asserted the name the ticket path
+        # never uses. It had been failing 2/13 for an unknown number of sessions
+        # while `pytest -q` was green and CI (which runs only pytest) said so.
+        # Filed as CF-24; the divergence is not fixed here because scripts and
+        # logs may match on either name.
         scenario(
-            "one reviewer returns EMPTY (the T2 bug) -> panel invalid, NOT a rejection",
+            "one reviewer returns EMPTY (the T2 bug) -> the OTHER reviewer's APPROVE carries",
             t3_states,
             R,
             {"rev-a": APPROVE_BODY, "rev-b": "EMPTY"},
-            "PANEL_UNREACHABLE",
+            # CF-23: on a two-model panel the malfunctioning member is DROPPED
+            # rather than allowed to end the ticket. The scenario's original
+            # point -- "panel invalid, NOT a rejection" -- is unchanged; what
+            # changed is that it is no longer allowed to be a dead end either.
+            "APPROVE_PARTIAL",
         ),
         scenario(
-            "both reviewers 502 (T2 round 4) -> panel invalid",
+            "both reviewers 502 (T2 round 4) -> no quorum, and there is nothing to carry",
             t3_states,
             R,
             {"rev-a": "RAISE", "rev-b": "RAISE"},
-            "PANEL_UNREACHABLE",
+            # The negative control for CF-23: dropping ONE member is the rule,
+            # dropping BOTH leaves no review at all, and that must still stop.
+            "PANEL_OUTAGE",
         ),
     ]
 

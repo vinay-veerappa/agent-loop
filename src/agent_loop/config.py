@@ -269,14 +269,16 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         "twice, upholding none of them, with thinking both off and on. It was "
         "the default until 2026-08-10. Not currently recommended for any role.",
     ),
-    "deepseek-v4-flash:cloud": ModelProfile(
+    "deepseek-v4-flash:0731-cloud": ModelProfile(
         "304B", 1_048_576, ("text",), True, True, 0.0, 0.0,
         ("compactor",),
         "MEASURED fine for compaction: 7/8 planted rejections carried forward, "
         "twice, identical to every other candidate. 1M context. "
         "MEASURED BAD as arbiter (0/5, SHIP, twice) -- that is an adjudication "
         "result and says little about summarisation, so it does not disqualify "
-        "it here, but it is not evidence in its favour either.",
+        "it here, but it is not evidence in its favour either. "
+        "The :0731-cloud tag is the July 31 snapshot -- the bare :cloud tag "
+        "drifts and the two are not the same model at different times.",
     ),
     "qwen3.5:cloud": ModelProfile(
         "397B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
@@ -361,6 +363,19 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         "effort via the direct API. Reasoning effort did not change the verdict, "
         "which retires the caveat that the direct-API arms were measuring the "
         "wrong setting.",
+    ),
+    "agy:gemini-3.7-flash-high": ModelProfile(
+        "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "UNTESTED. Gemini 3.7 Flash at high reasoning effort, via agy. "
+        "Newer than 3.6 -- worth benchmarking as arbiter and reviewer "
+        "before assigning a role.",
+    ),
+    "agy:gemini-3.7-flash-medium": ModelProfile(
+        "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
+        (),
+        "UNTESTED. Gemini 3.7 Flash at medium reasoning effort, via agy. "
+        "Cheaper than high; may be enough for reviewer or compactor.",
     ),
     "agy:claude-opus-4-6-thinking": ModelProfile(
         "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
@@ -481,7 +496,7 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # above the model's ceiling is refused at the API).
     "reviewer": RoleSettings(
         model="glm-5.2:cloud", max_tokens=48000, think=False, capability="fast",
-        extra_members=("deepseek-v4-flash:cloud",),
+        extra_members=("deepseek-v4-flash:0731-cloud",),
     ),
     # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
     # glm-5.2 raised six findings on the O3 patch, five of them verified correct

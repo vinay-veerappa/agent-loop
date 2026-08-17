@@ -78,7 +78,7 @@ def score(summary_text):
 
 def main():
     candidates = sys.argv[1:] or [
-        "glm-5.2:cloud", "deepseek-v4-flash:cloud", "gemma4:31b-cloud",
+        "glm-5.2:cloud", "deepseek-v4-flash:0731-cloud", "gemma4:31b-cloud",
         "qwen3.5:cloud", "gemma4:latest",
     ]
     history = build_history()
