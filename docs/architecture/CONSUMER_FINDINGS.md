@@ -478,6 +478,57 @@ that trains people to stop reading warnings. Same family as this repo's own
 evidence**. Anything that looks like an identifier in prose is treated as a symbol the model will
 need. Restricting the scan to the `spec` field rather than `defect` would cut most of that.
 
+### CF-14 (new, HIGH) — a source file vanished from the worktree between rounds, and round 2 died on `FileNotFoundError` instead of the run failing cleanly
+
+Measured 2026-08-16, `nt8-riskguard`, ticket `T1` of `agent/tickets_p1133.json`. Seven regions: six
+in `addons/DynamicAtmManager.cs`, one `op: "create"` for `addons/AtmOrderIdentity.cs`.
+
+```
+[baseline] 2034 passed, 4 failed at 8b4f93a7; 4 expected failure(s)
+round 1: implement 282.3s   [static] ok  [compile] ok
+         [test] FAIL - 21 regression(s); 2016 passed, 23 failed, 2 expected failure(s) now green
+round 2: implement 472.6s in=9351 out=66076
+ERROR T1: FileNotFoundError: 'C:\Users\vinay\agentloop-T1-39480\addons\DynamicAtmManager.cs'
+```
+
+Round 1 is an ordinary red round and the loop was right to retry. What is not ordinary: by the time
+round 2 tried to re-read its regions, **the file those six regions live in was gone from the
+worktree.** The run ends `applied=False` with a stack-trace message rather than a verdict, so a
+recoverable red round is reported the same way an infrastructure failure would be.
+
+⚠️ **The sharpest clue is that the deletions are INVERTED.** After the run the worktree contained
+exactly one file:
+
+```
+agentloop-T1-39480/addons/AtmOrderIdentity.cs      <- untracked, created by the run: SURVIVED
+agentloop-T1-39480/addons/DynamicAtmManager.cs     <- tracked, in HEAD:            DELETED
+```
+
+`Workspace.revert` is the only code that unlinks by path, and its contract is precisely the
+opposite of this: restore what is in HEAD, remove what is not. So either `revert` ran and got both
+files backwards, or it never ran and something else removed the tracked file. **I could not
+establish which, and am not going to guess** — the observed state is the finding.
+
+(The tracked files being absent *at the end* is expected and is not the bug: teardown runs
+`git worktree remove --force`, which deletes tracked content and correctly leaves the untracked
+file, printing *"still present and NOT empty, left alone"*. That teardown happens in a `finally`,
+after the error. It is a red herring in the log ordering, and worth knowing when reading one.)
+
+**Two fixes, and the second matters more than the first:**
+
+1. Find the deletion. A cheap guard regardless of cause: before each round, assert every region
+   file still exists and fail with *"`<file>` disappeared from the worktree between rounds"*, which
+   names the problem instead of leaking a path from inside `open()`.
+2. **An exception inside a round should end that round, not the run.** Rounds already have a
+   failure vocabulary — `[static] FAIL`, `[compile] FAIL`, `[test] FAIL`. An unhandled exception is
+   the one outcome that escapes it, and it escapes at the point where the loop has the most context
+   about what it was doing and the operator has the least.
+
+⚠️ **Cost to the consumer: this is the second round of a two-round ticket, so ~755s of model time
+and 100k output tokens produced nothing promotable** — and the only artifact left on disk was the
+new file, which happened to be correct. A retry that cannot retry is worse than a loop that stops
+at round 1, because the budget is spent before the failure is visible.
+
 ### Still true, still worth stating in the docs
 
 The loop measures **HEAD, not your working tree**. CF-2's message now says so at the moment it
