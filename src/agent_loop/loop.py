@@ -1474,7 +1474,23 @@ def run_ticket(
                 # and it should be DROPPED with a loud line, not allowed to end
                 # the ticket.
                 counted = [v for v in panel.votes if v.counted]
+                # CF-23: `ceil(2n/3)` is 2 when n is 2, so on a TWO-model panel
+                # the quorum required EVERY reviewer and the rule described
+                # directly above -- drop the malfunctioning one, do not let it
+                # end the ticket -- could never fire. It was written when the
+                # panel had three members; v0.6.6 removed minimax-m3 and
+                # silently disarmed it. Measured twice on a consumer repo, two
+                # sessions running: deepseek-v4-flash returned 373 findings and
+                # then 853 against a cap of 60, and both times a patch that had
+                # passed every mechanical gate with the other reviewer at
+                # APPROVE ended as PANEL_OUTAGE and was arbitrated by hand.
+                #
+                # Never require the whole panel. Below the cap the 2/3 rule is
+                # unchanged; all this removes is the degenerate case where the
+                # quorum IS unanimity, which is not a quorum.
                 quorum = math.ceil(2 * len(reviewers) / 3) if reviewers else 1
+                if len(reviewers) >= 2:
+                    quorum = min(quorum, len(reviewers) - 1)
                 if len(counted) >= quorum:
                     # A quorum answered. Proceed with the worst verdict from
                     # the surviving reviewers. The unreachable ones are dropped,

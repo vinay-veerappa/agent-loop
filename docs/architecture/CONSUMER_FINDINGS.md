@@ -735,3 +735,39 @@ project has already paid for once (10 consecutive red pushes read as green).
 Add them back when the fixtures use `subprocess.run(cwd=...)` instead of a
 shell string; that is a contained change and worth doing, but it is a test-suite
 job and not a loop fix.
+
+### CF-23 — a two-model panel made the drop-a-malfunctioning-reviewer rule unreachable
+
+`loop.py` drops a reviewer that malfunctions -- times out, or returns many times the finding cap
+-- and proceeds on the survivors. Its own comment states the intent plainly:
+
+> one malfunctioning reviewer (returning 8x the findings cap, or timing out) ended the ticket --
+> even when the other reviewer had a clear verdict [...] it should be DROPPED with a loud line,
+> not allowed to end the ticket.
+
+The quorum under it is `ceil(2 * len(reviewers) / 3)`. That was written when the panel had **three**
+members, where it evaluates to 2 and leaves room for exactly one casualty. **v0.6.6 cut the panel
+to two**, and `ceil(4/3)` is **2** — so the quorum became unanimity and the rule could never fire.
+Nothing failed; the mechanism simply stopped having a case, disarmed by an edit in a different
+file that never mentioned it.
+
+**Measured on `nt8-riskguard`, two sessions running.** `deepseek-v4-flash` returned **373**
+findings, and then **853**, against a cap of 60. Both times every mechanical gate had passed,
+`glm-5.2` said APPROVE, and the run ended `PANEL_OUTAGE` with the patch arbitrated by hand:
+
+```
+[test] ok - no regressions; 2063 passed, 0 failed; all 5 acceptance test(s) green
+[panel] APPROVE  [glm-5.2=APPROVE(0), deepseek-v4-flash=UNPARSEABLE(0)]
+panel OUTAGE - no quorum (1/2)
+NOT APPLIED: verdict=PANEL_OUTAGE
+```
+
+Fixed by capping the quorum at `len(reviewers) - 1`, so it can never *be* the whole panel. Below
+that cap the 2/3 rule is unchanged — the acceptance test pins 3→2, 4→3, 5→4, 6→4 as a negative
+control, so this cannot quietly loosen larger panels, and 1→1 because a one-model panel with no
+answer is not a review.
+
+⚠️ **The general shape: a rule expressed as a ratio of a population is disarmed by shrinking the
+population**, and the code that shrinks it is nowhere near the code that reads it. The finding cap
+itself is right and stays — 853 findings is repetition, not review. What was wrong is that one
+member's malfunction was allowed to be the whole panel's verdict.
