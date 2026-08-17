@@ -184,62 +184,70 @@ def _list(tickets, profile) -> int:
         # tokens that look like code: contains _, has a camelCase/PascalCase
         # interior transition, is followed by ( or . in the spec text, or
         # appears inside backticks. A single-word ALL-CAPS token is prose.
+        #
+        # CF-13: the set of symbols is a property of the TICKET, not of a
+        # region. The old loop ran per-region and re-scanned the whole spec
+        # each time, so 7 symbols x 7 regions = 49 warnings. Deduplicate:
+        # scan the spec once, then check each (symbol, file) pair once.
         import re as _re
-        for spec_entry in t["regions"]:
-            spec_text = t.get("spec", "") + " " + t.get("context", "")
-            file_path = spec_entry.get("file", "")
-            # Find capitalized identifiers in the spec.
-            caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_text))
-            # Skip common English words that look like identifiers.
-            caps -= {"The", "This", "That", "These", "Those", "When", "Where",
-                     "Which", "What", "Each", "Every", "All", "None", "True",
-                     "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
-            # CF-1: filter to code-like tokens only.
-            # A single-word ALL-CAPS token (CSS, DETAIL, GOES) is prose in
-            # every house style. A token looks like code if:
-            #   - it contains an underscore (snake_case)
-            #   - it has an interior lowercase->uppercase transition (camelCase)
-            #   - it is followed by ( or . in the spec text (a call or access)
-            #   - it appears inside backticks in the spec text
-            # Check for backtick-wrapped and call/access patterns.
-            # CF-1 residual: the call_tokens regex caught sentence-ending
-            # periods ('SCOPE.' in 'm. SCOPE. Thi') because \s*[.(] matches
-            # a period followed by anything. Require no whitespace between
-            # the . and the identifier: Foo.Bar, not 'SCOPE. The'.
-            # For calls, Foo(x) or Foo("x") -- allow whitespace before the
-            # opening paren but require content inside it.
-            backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_text))
-            call_tokens = set(_re.findall(
-                r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]', spec_text))      # Foo.Bar (no space)
-            call_tokens |= set(_re.findall(
-                r'\b([A-Z][a-zA-Z0-9_]+)\s*\(\s*[\w"\']', spec_text))  # Foo(x) or Foo("x")
-            caps = {c for c in caps if _looks_like_code(c, spec_text)
-                    or c in backtick_tokens or c in call_tokens}
-            if not caps or not file_path:
-                continue
-            # Try to resolve the region and check if the identifiers appear in it.
-            try:
-                r = regions.extract(Path("."), [spec_entry], profile)[0]
-                region_text = r.text
-            except regions.RegionError:
-                continue  # already reported above
-            # Read the full file to check if the identifier is declared outside the region.
-            full_path = Path(".") / file_path
-            if not full_path.exists():
-                continue
-            try:
-                file_text = full_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for cap in sorted(caps):
-                # Is the identifier mentioned in the region text?
-                if cap in region_text:
+        spec_text = t.get("spec", "") + " " + t.get("context", "")
+        # CF-13: also restrict the scan to the spec field, not the defect
+        # narrative -- anything that looks like an identifier in prose
+        # (e.g. a live order name quoted as evidence) is treated as a symbol.
+        spec_only = t.get("spec", "") + " " + t.get("context", "")
+        caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_only))
+        # Skip common English words that look like identifiers.
+        caps -= {"The", "This", "That", "These", "Those", "When", "Where",
+                 "Which", "What", "Each", "Every", "All", "None", "True",
+                 "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
+        # CF-1: filter to code-like tokens only.
+        backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_only))
+        call_tokens = set(_re.findall(
+            r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]', spec_only))      # Foo.Bar (no space)
+        # CF-1 residual: Foo(x) not Foo (x) -- require no whitespace
+        # before the opening paren so "SCOPE (the test...)" is prose,
+        # not a call. Real code rarely has space before ( in a call.
+        call_tokens |= set(_re.findall(
+            r'\b([A-Z][a-zA-Z0-9_]+)\(\s*[\w"\']', spec_only))  # Foo(x) or Foo("x")
+        caps = {c for c in caps if _looks_like_code(c, spec_only)
+                or c in backtick_tokens or c in call_tokens}
+        # CF-13: skip symbols belonging to files the ticket CREATES.
+        create_files = {r["file"] for r in t["regions"] if r.get("op") == "create"}
+        # CF-13: track which (symbol, file) pairs we've already warned about
+        # so the warning fires once per pair, not once per region.
+        warned_pairs: set = set()
+        if caps:
+            for spec_entry in t["regions"]:
+                file_path = spec_entry.get("file", "")
+                if not file_path or file_path in create_files:
                     continue
-                # Is it mentioned anywhere in the file?
-                if cap not in file_text:
-                    print(f"      WARN '{cap}' named in spec but not found in {file_path} "
-                          f"-- model will guess; add its declaration to a read-only region",
-                          file=sys.stderr)
+                pair_key = (frozenset(caps), file_path)
+                if pair_key in warned_pairs:
+                    continue
+                warned_pairs.add(pair_key)
+                # Try to resolve the region and check if the identifiers appear in it.
+                try:
+                    r = regions.extract(Path("."), [spec_entry], profile)[0]
+                    region_text = r.text
+                except regions.RegionError:
+                    continue  # already reported above
+                # Read the full file to check if the identifier is declared outside the region.
+                full_path = Path(".") / file_path
+                if not full_path.exists():
+                    continue
+                try:
+                    file_text = full_path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for cap in sorted(caps):
+                    # Is the identifier mentioned in the region text?
+                    if cap in region_text:
+                        continue
+                    # Is it mentioned anywhere in the file?
+                    if cap not in file_text:
+                        print(f"      WARN '{cap}' named in spec but not found in {file_path} "
+                              f"-- model will guess; add its declaration to a read-only region",
+                              file=sys.stderr)
 
     return 1 if bad else 0
 
