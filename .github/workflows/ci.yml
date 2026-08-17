@@ -1,0 +1,50 @@
+name: CI
+
+# Why this exists
+# ---------------
+# This repo had NO workflow at all until 2026-08-16, while three consumer
+# repos depend on it as an editable install. The cost was measured rather
+# than guessed: two consecutive fix commits landed with no tests, and a
+# read of them found six defects (CF-16..CF-21), one of which wrote a
+# diagnosis into a field no reader consumes.
+#
+# ⚠️ Windows is the FIRST entry deliberately, not an afterthought. Every
+# encoding defect this project has shipped -- and there have been several,
+# in three separate repos -- is a cp1252 decode that cannot reproduce on
+# Linux. A green Linux-only matrix would have said nothing about any of them.
+#
+# The suite is ~2 minutes. There is no reason for it not to run on every push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false   # a failure on one OS must not hide the other's
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.10"   # the floor declared in pyproject requires-python
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: python -m pip install -e ".[test]"
+      - name: Show what is actually resolved
+        # The version constant has not moved since v0.6.7 while the code has.
+        # Print the resolved path so a run's evidence names the code it tested.
+        run: python -m agent_loop --version
+      - name: Tests
+        run: python -m pytest -q
