@@ -32,6 +32,15 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "agent_loop"
+TESTS = Path(__file__).resolve().parents[1]
+
+# ⚠️ The ONE capture in this repo that must NOT pin an encoding: the negative
+# control below, which proves the hazard is still real on this platform by
+# reproducing it. It is why the suite prints a PytestUnhandledThreadExceptionWarning
+# naming a cp1252 UnicodeDecodeError -- that warning is the control working, not
+# a defect. Recorded here by (file, function) rather than by line number, which
+# would go stale on the next edit above it.
+DELIBERATELY_UNPINNED = {("test_subprocess_capture_encoding.py", "test_the_hazard_is_real_on_this_platform")}
 
 
 def _capture_calls(path: Path):
@@ -55,6 +64,73 @@ def _capture_calls(path: Path):
         # Only captures that DECODE. A binary capture has no encoding to get wrong.
         if "text" in kw or "universal_newlines" in kw or "encoding" in kw:
             yield path, node.lineno, kw
+
+
+def _enclosing_function(tree: ast.AST, lineno: int) -> str:
+    """Name the function a line falls inside, so an exemption survives an edit above it."""
+    best, best_line = "", -1
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            end = getattr(node, "end_lineno", node.lineno)
+            if node.lineno <= lineno <= end and node.lineno > best_line:
+                best, best_line = node.name, node.lineno
+    return best
+
+
+def test_the_test_suite_pins_its_encodings_too():
+    """CF-21: this gate said "every text capture" and inspected only src/.
+
+    The suite spawns real git and real pytest against generated repos, and this
+    repo's own consumer tests emit non-ASCII assertion text -- so a cp1252
+    decode here kills a reader thread and hands the test `stdout is None`,
+    which surfaces as an AttributeError blaming the assertion, not the capture.
+    Five such captures were live in tests/ while the gate reported clean,
+    because the gate never read that directory.
+
+    A gate's evidence is bounded by the REGION it walks, not by what its name
+    claims. State the region; count what was inspected.
+    """
+    test_files = sorted(TESTS.rglob("*.py"))
+    unpinned, unreadable, exempted = [], [], []
+    seen = 0
+    for py in test_files:
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8-sig"))
+            calls = list(_capture_calls(py))
+        except SyntaxError as exc:
+            unreadable.append(f"{py.name} ({exc.msg})")
+            continue
+        for path, lineno, kw in calls:
+            seen += 1
+            if "encoding" in kw:
+                continue
+            key = (path.name, _enclosing_function(tree, lineno))
+            if key in DELIBERATELY_UNPINNED:
+                exempted.append(f"{path.name}:{lineno}")
+                continue
+            unpinned.append(f"{path.name}:{lineno}")
+
+    assert not unreadable, (
+        "these test files could not be parsed, so this gate did not inspect them at all: "
+        + ", ".join(unreadable)
+    )
+    assert seen >= 1, (
+        f"no text-decoding subprocess calls found across {len(test_files)} test files "
+        f"in {TESTS}; the AST walk has stopped matching the call shape"
+    )
+    # ⚠️ The exemption must be USED. An allowlist entry that matches nothing is
+    # an allowlist that has rotted, and it would let the real control be pinned
+    # -- which silently deletes the proof that the hazard still exists.
+    assert exempted, (
+        "the deliberately-unpinned negative control was not found; either it was "
+        "pinned (which removes the proof the hazard is real) or it moved and "
+        "DELIBERATELY_UNPINNED now names nothing"
+    )
+    assert not unpinned, (
+        "these test-side subprocess captures decode without an explicit encoding, so on "
+        "Windows they decode as cp1252 and one non-ASCII byte kills the reader thread: "
+        + ", ".join(unpinned)
+    )
 
 
 def test_every_text_capture_pins_an_encoding():

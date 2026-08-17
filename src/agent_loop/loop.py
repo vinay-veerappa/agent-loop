@@ -26,9 +26,10 @@ import os
 import re
 import threading
 import time
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import arbiter, config, gates, profiles, regions, workspace
 from ._io import write_text_verbatim
@@ -1327,33 +1328,59 @@ def run_ticket(
                 # identical failing test set, the fix is likely outside the
                 # regions the ticket grants.
                 if failed.name == "test":
-                    # Extract the current failure set from the test detail
-                    current_failures = set()
-                    for line in (failed.detail or "").splitlines():
-                        line = line.strip()
-                        if line.startswith("- "):
-                            current_failures.add(line[2:])
+                    # CF-16: read the failing set as DATA. This scraped
+                    # `failed.detail` for "  - " bullets, and the regression
+                    # path renders "REGRESSIONS" and "Newly passing" with the
+                    # same bullet -- so a round that broke 2 tests and fixed 5
+                    # was recorded as 7 failures, and the warning below named
+                    # PASSING tests as the ones to go and look at.
+                    current_failures = set(failed.failing)
                     test_failure_history.append((rnd, current_failures))
-                    if len(test_failure_history) >= 3:
-                        recent_sets = [s for _, s in test_failure_history[-3:]]
-                        if recent_sets[0] == recent_sets[1] == recent_sets[2] and recent_sets[0]:
-                            # Identical failure set across 3 rounds
+                    # CF-17: "consecutive" has to mean consecutive. This list
+                    # is only appended to when the TEST gate fails, so a round
+                    # that failed to COMPILE in between left no entry and
+                    # rounds 1, 2 and 7 read as three in a row. Require the
+                    # round numbers to be adjacent as well as the sets equal.
+                    recent = test_failure_history[-3:]
+                    if len(recent) == 3:
+                        recent_sets = [s for _, s in recent]
+                        rounds_adjacent = (
+                            recent[1][0] == recent[0][0] + 1
+                            and recent[2][0] == recent[1][0] + 1
+                        )
+                        if (rounds_adjacent and recent_sets[0] and
+                                recent_sets[0] == recent_sets[1] == recent_sets[2]):
+                            # Identical failure set across 3 adjacent rounds.
                             region_files = {r.file for r in regs}
                             failing_refs = ", ".join(sorted(recent_sets[0])[:5])
                             stuck_msg = (
-                                f"\n\nWARNING: rounds {test_failure_history[-3][0]}, "
-                                f"{test_failure_history[-2][0]}, and {test_failure_history[-1][0]} "
-                                f"produced the IDENTICAL failing test set ({len(recent_sets[0])} tests). "
+                                f"\n\nWARNING: rounds {recent[0][0]}, {recent[1][0]} and "
+                                f"{recent[2][0]} produced the IDENTICAL failing test set "
+                                f"({len(recent_sets[0])} tests). "
                                 f"The fix may be outside the regions this ticket grants. "
                                 f"Region files: {', '.join(sorted(region_files))}. "
-                                f"Failing tests reference: {failing_refs}. "
+                                f"Failing tests: {failing_refs}. "
                                 f"Consider adding the caller or related files as regions."
                             )
-                            failed = type(failed)(
-                                failed.name, failed.ok, failed.summary + stuck_msg,
-                                failed.detail, failed.secs, failed.feedback,
+                            # CF-18: this diagnosis has to reach a reader who
+                            # can act on it, and the only party who can add a
+                            # region is the OPERATOR. It used to go into
+                            # `summary` alone -- but the implementer is handed
+                            # `feedback or summary` and the test gate ALWAYS
+                            # sets feedback, so the model never saw a word of
+                            # it, and the console printed a one-line "[stuck]"
+                            # that carried none of the actionable content. The
+                            # whole diagnosis was computed, stored in
+                            # result.json, and read by nobody until the run was
+                            # already over. Print it in full, and append it to
+                            # feedback too so it is not conditional on which
+                            # field a future caller happens to prefer.
+                            failed = dataclasses.replace(
+                                failed,
+                                summary=failed.summary + stuck_msg,
+                                feedback=(failed.feedback or "") + stuck_msg,
                             )
-                            print(f"           [stuck] identical test failures for 3 consecutive rounds")
+                            print(f"           [stuck]{stuck_msg.strip()}")
                 # The candidate is not viable; take it back out so the next
                 # round starts from clean source.
                 if touched:

@@ -51,7 +51,8 @@ def _run(code: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = _SRC + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env,
+        encoding="utf-8", errors="replace",
     )
 
 # Each of these is a plausible FIRST import of the package from a consumer

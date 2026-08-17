@@ -241,7 +241,7 @@ def _real_pytest(tmp_path, body, tb):
     proc = subprocess.run(
         [__import__("sys").executable, "-m", "pytest", "test_case.py", "-q", f"--tb={tb}",
          "-p", "no:cacheprovider"],
-        cwd=tmp_path, capture_output=True, text=True,
+        cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return proc.stdout + proc.stderr
 

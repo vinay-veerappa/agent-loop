@@ -582,3 +582,121 @@ The loop measures **HEAD, not your working tree**. CF-2's message now says so at
 bites, which is most of the value — but the "write the test first" workflow makes an uncommitted
 test the *expected* state at exactly the moment you run, and that is worth one line in the README
 rather than only in an error path.
+
+---
+
+## Review of the CF-12..CF-15 fixes (ebfc757, 9f9d598)
+
+Read before running the loop again. Six findings, all in the fixes themselves,
+found by reading the two commits rather than by running anything. **Neither
+commit added a test.** This repo has 70 acceptance tests, one per finding, and
+that convention is the reason its fixes hold — five of the six below would have
+been caught by writing one.
+
+### CF-16 — the stuck detector recovered its failing set by scraping a rendered string
+
+`loop.py` rebuilt the failing-test set by walking `GateResult.detail` for lines
+beginning `"- "`. The regression path renders **two** bullet lists with that
+exact prefix:
+
+```
+REGRESSIONS (not in baseline):
+  - test_alpha
+Newly passing:
+  - test_gamma
+```
+
+So a round that broke 2 tests and fixed 5 was recorded as a **7-test failure
+set**, and the warning's "Failing tests reference: ..." named tests that had
+just started **passing** — sending the reader to look at working code. `detail`
+is built for a human; the set has to travel as data. Fixed by adding
+`GateResult.failing: Tuple[str, ...]`, populated at both red returns, with a
+source gate pinning the count at 2 so a third red path cannot go dark.
+
+### CF-17 — "consecutive" was not consecutive
+
+`test_failure_history` is appended to **only when the test gate fails**. A round
+that failed to compile in between left no entry, so rounds 1, 2 and 7 satisfied
+"3+ consecutive rounds" and the warning said so in as many words. Fixed by
+requiring the round numbers to be adjacent as well as the sets equal.
+
+### CF-18 — the diagnosis was written to the one field the reader does not read
+
+This is the one that matters. The stuck message was appended to `failed.summary`.
+The implementer is handed:
+
+```python
+{"role": "user", "content": failed.feedback or failed.summary}
+```
+
+and `check_tests` **always** populates `feedback` on both red paths — so on the
+only path that can produce a stuck round, `summary` is dead. The console print
+was `[stuck] identical test failures for 3 consecutive rounds`, carrying none of
+the region files, none of the failing tests and none of the advice. The whole
+diagnosis was computed correctly, stored in `result.json`, and **read by nobody
+until the run was already over**, which is the state CF-15 exists to fix.
+
+⚠️ Note who can act: the advice is *add a region*, and only the **operator** can
+do that. So the console is the load-bearing channel and it was the one carrying
+nothing. Fixed by printing it in full and appending to `feedback` as well, so
+delivery is not conditional on which field a future caller happens to prefer.
+
+Same shape as *an alarm that is always on is off*, inverted: **an alarm wired to
+an output nobody is listening on.**
+
+### CF-19 — a comment described a narrowing that was never written
+
+`cli.py` carried:
+
+```python
+spec_text = t.get("spec", "") + " " + t.get("context", "")
+# CF-13: also restrict the scan to the spec field, not the defect narrative
+spec_only = t.get("spec", "") + " " + t.get("context", "")
+```
+
+Two variables, one expression, and a comment claiming the second is narrower
+than the first. `spec_text` was then never used. Nothing was restricted. Fixed
+by deleting the dead variable and rewriting the comment to say what the code
+does — narrowing may well be right, but it needs evidence that `context` is
+where the false positives come from, and nobody has measured that.
+
+### CF-20 — the CF-1 fix overshot and dropped every zero-arg call
+
+Tightening the call rule to `\(\s*[\w"\']` (no whitespace before the paren)
+correctly stopped reading `SCOPE (the test...)` as a call. It also stopped
+matching `Flatten()`, `CanTrade()`, `Reset()` — **zero-arg calls**, because the
+character class requires content inside the parens and `)` is not in it. A
+predicate or a command is the shape these tickets are mostly about. Fixed by
+adding `)` to the class.
+
+⚠️ A filter tightened past its target fails **silently**: you get fewer warnings
+and read it as the fix working.
+
+### CF-21 — the encoding gate said "every text capture" and walked `src/` only
+
+`test_subprocess_capture_encoding.py` pins `SRC = src/agent_loop` and has
+already been widened once (`glob` → `rglob`, 26 → 29 files) under a comment
+about gates that pass when their subject shrinks. It stops at `src/`. Meanwhile
+`tests/` had **five** live captures decoding without an explicit encoding —
+`git apply --check`, `git stash list`, and two `python -m pytest` runs against
+generated repos — and this repo's own consumer tests emit non-ASCII assertion
+text. On Windows that kills the reader thread and hands the test `stdout is
+None`, which surfaces as an AttributeError blaming the assertion rather than
+the capture.
+
+Fixed: five sites pinned, and a second gate added over `tests/`. The **sixth**
+unpinned capture is the existing negative control that reproduces the hazard on
+purpose — it is why the suite prints one `PytestUnhandledThreadExceptionWarning`
+naming a cp1252 `UnicodeDecodeError`, and **that warning is the control working,
+not a defect**. It is exempted by `(file, function)` rather than line number,
+and the gate asserts the exemption was **used**, so an allowlist that has rotted
+fails instead of quietly permitting the control to be pinned — which would
+delete the proof that the hazard is still real.
+
+Fourth instance of *state the region a gate inspects*.
+
+### What was verified
+
+Suite **716 → 730 passed, 34 skipped**. The 14 new tests were run against the
+pre-fix source first: **6 red**, and the widened encoding gate was driven red by
+un-pinning one site and watched fail by name.

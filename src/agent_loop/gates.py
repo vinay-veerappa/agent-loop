@@ -35,6 +35,12 @@ class GateResult:
     detail: str = ""
     secs: float = 0.0
     feedback: str = ""
+    # The failing test names, as data. `detail` is a RENDERED string built for
+    # a human, and CF-16 came from a reader scraping it back: the regression
+    # path renders "REGRESSIONS" and "Newly passing" with the same "  - "
+    # bullet, so a scrape of that string collects tests that PASS and reports
+    # them as failures. Anything that needs the set must read it from here.
+    failing: Tuple[str, ...] = ()
 
 
 # --------------------------------------------------------------------------
@@ -591,6 +597,7 @@ def check_tests(
                     + "\n\nThey are correct and you may not change them. Re-read the "
                     "defect and the failing assertion text above, then re-emit ALL blocks in full."
                 ),
+                failing=tuple(still_red),
             ),
             out,
         )
@@ -615,6 +622,7 @@ def check_tests(
                     + reg_detail
                     + "\n\nFix them and re-emit ALL blocks in full."
                 ),
+                failing=tuple(new),
             ),
             out,
         )

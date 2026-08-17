@@ -570,7 +570,7 @@ def test_exported_patch_applies_to_its_own_source(tmp_path, newline, label):
 
     check = subprocess.run(
         ["git", "apply", "--check", str(patch)],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     assert check.returncode == 0, (
         f"{label} patch must apply to its own source; git said: {check.stderr}"
@@ -686,7 +686,8 @@ def test_test_mode_does_not_stash_the_users_work(tmp_path):
 
     assert "WORK IN PROGRESS" in (repo / "src" / "target.py").read_text(), \
         "the live working tree must be untouched"
-    stash = subprocess.run(["git", "stash", "list"], cwd=repo, capture_output=True, text=True)
+    stash = subprocess.run(["git", "stash", "list"], cwd=repo, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
     assert stash.stdout.strip() == "", f"no stash may be left behind: {stash.stdout}"
     assert result.get("error") is None, result.get("error")
     assert (repo / "tests" / "test_gen.py").exists()

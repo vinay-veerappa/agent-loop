@@ -190,10 +190,13 @@ def _list(tickets, profile) -> int:
         # each time, so 7 symbols x 7 regions = 49 warnings. Deduplicate:
         # scan the spec once, then check each (symbol, file) pair once.
         import re as _re
-        spec_text = t.get("spec", "") + " " + t.get("context", "")
-        # CF-13: also restrict the scan to the spec field, not the defect
-        # narrative -- anything that looks like an identifier in prose
-        # (e.g. a live order name quoted as evidence) is treated as a symbol.
+        # CF-19: this scans `spec` + `context`. A comment here used to claim
+        # the scan had been narrowed to "the spec field, not the defect
+        # narrative", under a second variable assigned the IDENTICAL
+        # expression -- a narrowing that was described and never written.
+        # Narrowing it is still arguable, but it needs evidence that the
+        # context field is where the false positives come from, and nobody
+        # has measured that. Until then the comment matches the code.
         spec_only = t.get("spec", "") + " " + t.get("context", "")
         caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_only))
         # Skip common English words that look like identifiers.
@@ -207,8 +210,13 @@ def _list(tickets, profile) -> int:
         # CF-1 residual: Foo(x) not Foo (x) -- require no whitespace
         # before the opening paren so "SCOPE (the test...)" is prose,
         # not a call. Real code rarely has space before ( in a call.
+        # CF-20: the closing paren is in the class deliberately. Requiring
+        # content inside the parens dropped every ZERO-ARG call, so a spec
+        # that named `Flatten()` or `CanTrade()` -- the exact shape of a
+        # predicate or a command, which is what these tickets are usually
+        # about -- stopped being read as code by the rule meant to find code.
         call_tokens |= set(_re.findall(
-            r'\b([A-Z][a-zA-Z0-9_]+)\(\s*[\w"\']', spec_only))  # Foo(x) or Foo("x")
+            r'\b([A-Z][a-zA-Z0-9_]+)\(\s*[\w"\')]', spec_only))  # Foo(x), Foo("x"), Foo()
         caps = {c for c in caps if _looks_like_code(c, spec_only)
                 or c in backtick_tokens or c in call_tokens}
         # CF-13: skip symbols belonging to files the ticket CREATES.

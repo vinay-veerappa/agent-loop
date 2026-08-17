@@ -20,7 +20,7 @@ def _run(code: str) -> str:
     """Run `code` in a child whose stdout is a PIPE, not a tty."""
     proc = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, cwd=str(REPO),
+        capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(REPO),
         env={**__import__("os").environ, "PYTHONPATH": str(SRC)},
     )
     return proc.stdout
