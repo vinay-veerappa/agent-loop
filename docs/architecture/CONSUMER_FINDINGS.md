@@ -421,6 +421,63 @@ unwanted (it is a network fetch), then say it: one line at baseline time — *"`
 submodules are NOT populated in the worktree, so N test(s) may fail for that reason alone."*
 Same principle as CF-6: **state what the gate inspected, including the part it could not.**
 
+### CF-12 (new, MEDIUM) — `--list` exists to catch a malformed ticket without spending a model call, and it crashes with a raw traceback instead of naming what is wrong
+
+Measured 2026-08-16 writing `agent/tickets_p1133.json`. A region written with `start`/`end` line
+numbers instead of an `anchor`:
+
+```
+  File "src/agent_loop/regions.py", line 646, in extract
+    start, end = find_region(lines, spec["anchor"], kind, profile)
+KeyError: 'anchor'
+```
+
+The ticket title had already printed, so **the crash looks like it happened while processing that
+ticket's content** rather than while reading its schema. `find_region` itself is exemplary about
+this — an anchor spanning two lines raises a `RegionError` that explains anchors are matched one
+line at a time, *and lists the nearest real lines in the file*. The schema layer above it has none
+of that care.
+
+⚠️ **The failure mode this permits is the expensive one.** `--list` is documented in the consumer's
+own `CLAUDE.md` as *"validate a ticket file without spending a model call"*. A contributor who sees
+a traceback reasonably concludes the tool is broken rather than their ticket, and runs the real
+thing — which is where the model call gets spent.
+
+**Narrowest fix**: validate each region dict before extraction and raise `RegionError` naming the
+region's `id`, the key that is missing, and the two shapes that are legal (`anchor` + optional
+`kind`, or `op: "create"`). One `if` in `extract`.
+
+### CF-13 (new, LOW) — the "named in spec but not found" warning cannot see a file the ticket CREATES, and repeats itself once per region
+
+Same ticket, same command. It has one `op: "create"` region for a new class and a `spec` that names
+that class's members. `--list` emitted **49 warning lines**:
+
+```
+WARN 'AtmOrderIdentity' named in spec but not found in addons/DynamicAtmManager.cs
+     -- model will guess; add its declaration to a read-only region
+WARN 'EntryName'  ... (x7)
+WARN 'FindByName' ... (x7)
+```
+
+Two separate things:
+
+1. **The symbols are unfindable BY CONSTRUCTION** — they belong to a file this ticket is asking the
+   model to write. The advice *"add its declaration to a read-only region"* is not just unhelpful,
+   it is impossible to follow. The check should skip symbols that match a `create` region's file,
+   or at minimum say *"…not found; note this ticket creates `addons/AtmOrderIdentity.cs`, so this
+   may be expected."*
+2. **7 symbols × 7 regions = 49 lines**, because the check runs per region and each region scans the
+   whole spec. The set of symbols is a property of the *ticket*, not of a region. De-duplicate.
+
+The signal is real and worth keeping — it caught a genuine class of ticket defect before. But **a
+correct ticket currently produces 49 warnings and one line of useful output**, which is the shape
+that trains people to stop reading warnings. Same family as this repo's own
+*an alarm that is always on is off*.
+
+⚠️ It also fired on `'Stop_15bc730b'`, a **live order name quoted in the defect narrative as
+evidence**. Anything that looks like an identifier in prose is treated as a symbol the model will
+need. Restricting the scan to the `spec` field rather than `defect` would cut most of that.
+
 ### Still true, still worth stating in the docs
 
 The loop measures **HEAD, not your working tree**. CF-2's message now says so at the moment it
