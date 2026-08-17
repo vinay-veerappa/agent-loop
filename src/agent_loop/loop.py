@@ -920,6 +920,10 @@ def run_ticket(
     except Exception:
         result["agent_loop_sha"] = "unknown"
     convergence: List[Tuple[int, set]] = []
+    # CF-15: track test failure sets across rounds to detect when the loop
+    # is stuck on an identical failing set (likely cause: fix is outside the
+    # regions the ticket grants).
+    test_failure_history: List[Tuple[int, Set[str]]] = []
 
     # ---- invariant checks: guard the architecture's central guarantees.
     # The README states "the arbiter must not be the same model as any
@@ -1158,6 +1162,23 @@ def run_ticket(
         for rnd in range(1, max_rounds + 1):
             last_round = rnd
             out = None  # may not be set on resume-raw path
+
+            # CF-14: assert every region file still exists before each round.
+            # A file that vanished between rounds (observed: tracked file deleted,
+            # untracked file survived) produced a raw FileNotFoundError from
+            # inside open() instead of a clean failure. Name the problem.
+            for r in regs:
+                if r.op != regions.CREATE and not r.path.exists():
+                    result["rounds"].append(
+                        RoundRecord(rnd, "worktree", False,
+                                    f"{r.file} disappeared from the worktree between rounds").__dict__)
+                    final = "WORKTREE_CORRUPTED"
+                    print(f"  round {rnd}: ABORT - {r.file} disappeared from the worktree")
+                    _persist_result()
+                    break
+            if final == "WORKTREE_CORRUPTED":
+                break
+
             # ---- purge stale artifacts from prior runs
             # A prior run may have left r{rnd}_* files on disk; a resume with
             # --max-rounds 1 would then produce a result.json that says 1 round
@@ -1300,6 +1321,39 @@ def run_ticket(
 
             failed = next((x for x in gate_results if not x.ok), None)
             if failed:
+                # CF-15: if the test gate failed, track the failure set to
+                # detect when the loop is stuck on the same failures across
+                # multiple rounds. If 3+ consecutive rounds produce the
+                # identical failing test set, the fix is likely outside the
+                # regions the ticket grants.
+                if failed.name == "test":
+                    # Extract the current failure set from the test detail
+                    current_failures = set()
+                    for line in (failed.detail or "").splitlines():
+                        line = line.strip()
+                        if line.startswith("- "):
+                            current_failures.add(line[2:])
+                    test_failure_history.append((rnd, current_failures))
+                    if len(test_failure_history) >= 3:
+                        recent_sets = [s for _, s in test_failure_history[-3:]]
+                        if recent_sets[0] == recent_sets[1] == recent_sets[2] and recent_sets[0]:
+                            # Identical failure set across 3 rounds
+                            region_files = {r.file for r in regs}
+                            failing_refs = ", ".join(sorted(recent_sets[0])[:5])
+                            stuck_msg = (
+                                f"\n\nWARNING: rounds {test_failure_history[-3][0]}, "
+                                f"{test_failure_history[-2][0]}, and {test_failure_history[-1][0]} "
+                                f"produced the IDENTICAL failing test set ({len(recent_sets[0])} tests). "
+                                f"The fix may be outside the regions this ticket grants. "
+                                f"Region files: {', '.join(sorted(region_files))}. "
+                                f"Failing tests reference: {failing_refs}. "
+                                f"Consider adding the caller or related files as regions."
+                            )
+                            failed = type(failed)(
+                                failed.name, failed.ok, failed.summary + stuck_msg,
+                                failed.detail, failed.secs, failed.feedback,
+                            )
+                            print(f"           [stuck] identical test failures for 3 consecutive rounds")
                 # The candidate is not viable; take it back out so the next
                 # round starts from clean source.
                 if touched:

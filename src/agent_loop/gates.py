@@ -493,6 +493,49 @@ def names_match(name: str, failure: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", failure, re.IGNORECASE) is not None
 
 
+def _extract_failure_detail(raw: str, test_names: Sequence[str], max_chars: int = 3000) -> str:
+    """Extract tracebacks and assertion errors for the named tests from raw pytest output.
+
+    The implementer needs to see WHY tests fail, not just that they fail.
+    Without this, a schema mismatch or column-name error is invisible and
+    the loop cannot self-correct.
+    """
+    if not raw or not test_names:
+        return ""
+    lines = raw.splitlines()
+    sections = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # Match pytest FAILED header or failure separator
+        is_failed_header = any(
+            names_match(tn, line) and ("FAILED" in line or "FAIL" in line or "_" * 20 in line)
+            for tn in test_names
+        )
+        is_failure_sep = ("_" * 20 in line) and i + 1 < len(lines) and any(
+            names_match(tn, lines[i + 1]) for tn in test_names
+        )
+        if is_failed_header or is_failure_sep:
+            # Capture from here until the next separator line (====) or end
+            section_lines = []
+            j = i
+            while j < len(lines):
+                section_lines.append(lines[j])
+                # Stop at the next === separator (but allow at least 3 lines)
+                if len(section_lines) > 3 and "=" * 10 in lines[j]:
+                    break
+                j += 1
+            section = "\n".join(section_lines)
+            if section not in sections:  # dedup
+                sections.append(section)
+            i = j
+        i += 1
+    result = "\n\n".join(sections)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n... [truncated]"
+    return result if result else "(no traceback found in test output)"
+
+
 def check_tests(
     cmd: str,
     repo: Path,
@@ -530,6 +573,7 @@ def check_tests(
         if any(names_match(t, f) for f in out.failures)
     ]
     if still_red and not new:
+        failure_detail = _extract_failure_detail(out.raw, still_red)
         return (
             GateResult(
                 "test",
@@ -542,8 +586,10 @@ def check_tests(
                     "Your patch does not close the defect. These tests define this "
                     "ticket's acceptance criteria and are STILL FAILING:\n\n"
                     + "\n".join(f"- {t}" for t in still_red)
+                    + "\n\n"
+                    + failure_detail
                     + "\n\nThey are correct and you may not change them. Re-read the "
-                    "defect and the failing assertion text, then re-emit ALL blocks in full."
+                    "defect and the failing assertion text above, then re-emit ALL blocks in full."
                 ),
             ),
             out,
@@ -553,6 +599,7 @@ def check_tests(
         detail = "REGRESSIONS (not in baseline):\n" + "\n".join(f"  - {f}" for f in new)
         if fixed:
             detail += "\n\nNewly passing:\n" + "\n".join(f"  - {f}" for f in fixed)
+        reg_detail = _extract_failure_detail(out.raw, list(new))
         return (
             GateResult(
                 "test",
@@ -564,6 +611,8 @@ def check_tests(
                     "Your patch BREAKS tests that passed before it. These failures are "
                     "new and are not part of the known-failing baseline:\n\n"
                     + "\n".join(f"- {f}" for f in new)
+                    + "\n\n"
+                    + reg_detail
                     + "\n\nFix them and re-emit ALL blocks in full."
                 ),
             ),

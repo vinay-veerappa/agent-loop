@@ -635,6 +635,18 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
             )
             continue
 
+        # CF-12: validate schema before extraction so a missing 'anchor'
+        # produces a readable error, not a raw KeyError traceback.
+        if "anchor" not in spec:
+            raise RegionError(
+                f"{spec['id']}: region is missing the 'anchor' key. "
+                f"An anchor is a unique line of text in {spec['file']} that "
+                f"locates the region. Legal shapes: "
+                f"'anchor' + optional 'kind' for replace/insert, or "
+                f"'op: \"create\"' for a new file. "
+                f"If you have line numbers instead of an anchor, convert them "
+                f"to an anchor by picking a unique line from that range."
+            )
         if not path.exists():
             raise RegionError(f"{spec['id']}: file does not exist: {spec['file']}")
         language_for(path, profile)

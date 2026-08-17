@@ -404,6 +404,16 @@ def open_workspace(
         if root.exists():
             raise WorkspaceError(f"worktree path already exists: {root}")
         _git(repo, "worktree", "add", "--detach", str(root), commit)
+        # CF-11: populate submodules if .gitmodules exists, so tests that
+        # depend on submodule content are not dark for the whole run.
+        gitmodules = repo / ".gitmodules"
+        if gitmodules.exists():
+            try:
+                _git(Path(root), "submodule", "update", "--init", "--recursive", timeout=120)
+            except WorkspaceError:
+                # Network fetch may fail in offline environments; the run is
+                # not invalid, but some tests may fail for this reason alone.
+                print("  [worktree] WARNING: submodule update failed; submodule-dependent tests may be dark")
         ws = Workspace(repo=repo, root=root, base_commit=commit, ticket=ticket)
         try:
             yield ws
