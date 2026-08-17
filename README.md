@@ -77,14 +77,10 @@ profile has `graph_project` set. The `design` and `prd` sub-modes use the
 graph to answer "what existing code does this touch?" — the same graph the
 loop uses for passive context injection.
 
-**Reference — not yet implemented.** The documentation architect skill
-(`.agents/skills/doc-architect` or equivalent) defines the conventions for
-documentation structure — section headers, ADR format, handover format. Docs
-mode does **not** currently read that skill: its four system prompts are
-hardcoded in `docs_mode.py` and contain no project-specific conventions, so
-generated documents will not match a repo's house format without editing.
-Injecting the skill's conventions into the system prompt is tracked as
-BACKLOG O10.
+When `profile.docs_conventions` is set, docs mode prepends those conventions
+to the system prompt so generated documents match the repo's house format
+(section headers, ADR format, handover format). Without it, the four
+hardcoded system prompts in `docs_mode.py` are used as-is.
 
 ```bash
 # Generate a changelog from the last commit

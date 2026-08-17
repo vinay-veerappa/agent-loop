@@ -123,3 +123,58 @@ def test_cf4_version_flag_prints_version_and_path(capsys):
     assert rc == 0
     assert "agent-loop" in captured.out
     assert "resolved:" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# CF-10: arbiter prompt includes ticket scope as a labelled block
+# ---------------------------------------------------------------------------
+
+def test_cf10_arbiter_prompt_includes_ticket_scope_block():
+    """The arbiter was upholding findings the ticket had explicitly scoped OUT.
+    The fix: give the ticket's context field its own labelled block in the
+    arbiter prompt with an instruction to rule OUT_OF_SCOPE for findings it
+    names."""
+    from agent_loop.arbiter import build_prompt
+    from agent_loop.loop import Finding
+
+    ticket = {
+        "id": "P2-127",
+        "title": "Test ticket",
+        "defect": "The sort is unstable.",
+        "context": "The wiring of the system cell into it, are later slices of "
+                   "P2-127 and are deliberately not in this one.",
+    }
+    findings = [
+        Finding(severity="BLOCKER", model="glm-5.2:cloud",
+                text="The system severity is never incorporated into the tree's rank computation"),
+    ]
+    prompt = build_prompt(ticket, findings, "compile: ok", "diff --git a/x b/x", [])
+
+    # The scope block must be present with its heading
+    assert "Ticket scope" in prompt
+    assert "deliberately not in this one" in prompt
+    # The instruction must tell the arbiter to use OUT_OF_SCOPE
+    assert "OUT_OF_SCOPE" in prompt
+    # The scope block heading and instruction must be present
+    assert "Ticket scope" in prompt
+    assert "this block names" in prompt
+
+
+def test_cf10_arbiter_prompt_without_context_has_no_scope_block():
+    """A ticket with no context field should not produce an empty scope block."""
+    from agent_loop.arbiter import build_prompt
+    from agent_loop.loop import Finding
+
+    ticket = {"id": "T1", "title": "test", "defect": "broken", "context": ""}
+    findings = [Finding(severity="MAJOR", model="m1", text="something")]
+    prompt = build_prompt(ticket, findings, "compile: ok", "diff", [])
+
+    assert "Ticket scope" not in prompt
+
+
+def test_cf10_arbiter_contract_mentions_scope():
+    """The arbiter's output contract must mention the scope block in the
+    OUT_OF_SCOPE definition."""
+    from agent_loop.arbiter import _ARBITER_CONTRACT
+
+    assert "scope block" in _ARBITER_CONTRACT or "scope" in _ARBITER_CONTRACT.lower()

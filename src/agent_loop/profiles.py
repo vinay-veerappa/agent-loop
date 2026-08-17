@@ -116,6 +116,11 @@ class Profile:
     # be met by any finding on, say, a data pipeline -- so an arbiter carrying
     # it into a Python repo rejects everything and recommends SHIP.
     arbiter_rules: str = ""
+    # O10: documentation conventions for docs mode. When set, docs mode prepends
+    # this to the system prompt so generated docs match the repo's house format
+    # (section headers, ADR format, handover format). Without it, docs mode uses
+    # its hardcoded prompts and the output won't match the repo's conventions.
+    docs_conventions: str = ""
     settled: Tuple[str, ...] = ()
 
     @property

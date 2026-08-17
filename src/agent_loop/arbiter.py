@@ -70,7 +70,8 @@ Rule on EVERY finding, using its number:
   UPHELD       - real, caused by this patch, and blocks. State the concrete failure.
   REJECTED     - wrong. The claimed mechanism does not hold, it contradicts a mechanical gate,
                  the code already handles it, or it restates a settled decision.
-  OUT_OF_SCOPE - real, but pre-existing or belonging to a different ticket. This patch does not
+  OUT_OF_SCOPE - real, but pre-existing or belonging to a different ticket, OR named in the
+                 ticket's scope block as deliberately excluded. This patch does not
                  have to fix everything wrong with the file; it has to fix its own defect without
                  introducing new ones.
 
@@ -218,8 +219,28 @@ def build_prompt(
         f"# TICKET {ticket['id']}: {ticket['title']}",
         "",
         "## Defect this patch must close",
-        ticket["defect"].strip(),
+        ticket.get("defect", "").strip(),
         "",
+    ]
+    # CF-10: the ticket's scope/context deserves its OWN labelled block, not
+    # burial inside the defect prose. The arbiter was upholding findings the
+    # ticket had explicitly scoped OUT (reporting out-of-scope=0 while doing
+    # it), because the scope text sat inside `context` as unlabelled prose and
+    # the arbiter had no instruction to treat it as a boundary. Give it a
+    # heading and an explicit instruction: a finding whose subject the scope
+    # text names is OUT_OF_SCOPE, not UPHELD.
+    ticket_context = ticket.get("context", "").strip()
+    if ticket_context:
+        parts += [
+            "## Ticket scope (what this patch must NOT touch)",
+            "The ticket's context field names things that are deliberately out of scope. "
+            "A finding whose subject this block names is OUT_OF_SCOPE, not UPHELD -- the "
+            "ticket has pre-emptively answered it.",
+            "",
+            ticket_context,
+            "",
+        ]
+    parts += [
         "## Mechanical gates (facts - you may not contradict these)",
         gate_summary or "(none run)",
         "",

@@ -203,7 +203,7 @@ def _run_changelog(
     prompt += f"Write a changelog entry for these changes.\n"
 
     return _generate_and_write(
-        repo, _CHANGELOG_SYSTEM, prompt, implementer, output_path, "CHANGELOG"
+        repo, _CHANGELOG_SYSTEM, prompt, implementer, output_path, "CHANGELOG", profile
     )
 
 
@@ -249,7 +249,7 @@ def _run_handover(
     prompt += f"Write a handover document for the next engineer.\n"
 
     return _generate_and_write(
-        repo, _HANDOVER_SYSTEM, prompt, implementer, output_path, "HANDOVER"
+        repo, _HANDOVER_SYSTEM, prompt, implementer, output_path, "HANDOVER", profile
     )
 
 
@@ -273,7 +273,7 @@ def _run_design(
     prompt += f"\nWrite a design document for this feature.\n"
 
     return _generate_and_write(
-        repo, _DESIGN_SYSTEM, prompt, implementer, output_path, "DESIGN"
+        repo, _DESIGN_SYSTEM, prompt, implementer, output_path, "DESIGN", profile
     )
 
 
@@ -297,7 +297,7 @@ def _run_prd(
     prompt += f"\nWrite a PRD for this defect/feature.\n"
 
     return _generate_and_write(
-        repo, _PRD_SYSTEM, prompt, implementer, output_path, "PRD"
+        repo, _PRD_SYSTEM, prompt, implementer, output_path, "PRD", profile
     )
 
 
@@ -312,16 +312,27 @@ def _generate_and_write(
     implementer: str,
     output_path: str,
     mode_name: str,
+    profile: Optional[Profile] = None,
 ) -> Dict[str, Any]:
-    """Send prompt to model, parse <<<DOCS>>>, write to file."""
+    """Send prompt to model, parse <<<DOCS>>>, write to file.
+
+    O10: when profile.docs_conventions is set, it is prepended to the system
+    prompt so generated docs match the repo's house format."""
     tid = mode_name
     art = repo / "logs" / "agent_loop" / tid
     art.mkdir(parents=True, exist_ok=True)
 
     result: Dict[str, Any] = {"ticket": tid, "output_path": output_path, "docs": None}
 
+    # O10: inject the repo's documentation conventions before the hardcoded
+    # system prompt, so the model follows the house format (section headers,
+    # ADR format, handover format) rather than the generic defaults.
+    full_system = system_prompt
+    if profile and getattr(profile, "docs_conventions", "").strip():
+        full_system = profile.docs_conventions.strip() + "\n\n" + system_prompt
+
     history = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": full_system},
         {"role": "user", "content": user_prompt},
     ]
 
