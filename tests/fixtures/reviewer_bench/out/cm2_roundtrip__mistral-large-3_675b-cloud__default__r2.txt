@@ -1,0 +1,67 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `TryConvertToken` method silently tolerates malformed numeric/bool values by returning `false` without throwing, but the calling `Populate` method does not check the return value before calling `prop.SetValue`. This violates constraint 3: a malformed number (e.g., `"MaxPositionSize": "abc"`) will leave the field at its property-initializer default (100), but a malformed bool (e.g., `"ArmedForLive": "xyz"`) will leave it at `false`—which is the *safe* default—while a malformed ratio (e.g., `"QuantityRatio": "abc"`) will leave it at `0.0`, sizing every fill at nothing. The failure case is a leader trade that executes but the follower does not, violating the "fail closed on entries" rule.
+
+  Offending lines:
+  ```csharp
+  if (TryConvertToken(jp.Value, prop.PropertyType, out value))
+  {
+      prop.SetValue(target, value, null);
+      present.Add(prop.Name);
+  }
+  ```
+  The `TryConvertToken` return value is checked, but the `false` path is ignored, so the property remains at its CLR default.
+
+- [MAJOR] R1: The `Populate` method does not enforce that `ArmedForLive` defaults to `false` when absent from the file. The `ParseRelationship` and `ParseGroup` methods only set defaults for `Id`, `LeaderAccountName`, `FollowerAccountName`, and `FollowerAccounts`, but not for `ArmedForLive`. This violates constraint 5: a file that omits `armedForLive` will leave the field at its property-initializer default (`false`), but if the property-initializer is ever changed to `true`, the deserialization path will silently arm the relationship for live trading.
+
+  Offending lines:
+  ```csharp
+  if (!present.Contains("Id"))
+      rel.Id = Guid.NewGuid().ToString();
+  // No check for ArmedForLive
+  ```
+
+- [MAJOR] R1: The `TryConvertToken` method does not handle `null` tokens for non-nullable value types (e.g., `int`, `double`, `bool`). If the JSON contains `"MaxPositionSize": null`, the method returns `false`, and the property remains at its CLR default (0 for `int`), which is a naked-risk regression. This violates constraint 3.
+
+  Offending lines:
+  ```csharp
+  if (token == null || token.Type == JTokenType.Null)
+      return false;
+  ```
+
+- [MINOR] R1: The `aliasMap` uses `StringComparer.Ordinal` for case-sensitive comparison, but the ticket requires camelCase aliases to be matched case-insensitively (constraint 2). This may cause fields like `"leaderaccount"` (lowercase) to be ignored.
+
+  Offending lines:
+  ```csharp
+  var aliasMap = new Dictionary<string, string>(StringComparer.Ordinal)
+  ```
+
+- [MINOR] R1: The `Populate` method does not validate that `FollowerAccounts` is non-null before returning the `present` set. If the JSON contains `"followerAccounts": null`, the `TryConvertToken` call will return `false`, and `FollowerAccounts` will remain `null`, which may cause NREs elsewhere.
+
+  Offending lines:
+  ```csharp
+  if (TryConvertToken(jp.Value, prop.PropertyType, out value))
+  {
+      prop.SetValue(target, value, null);
+      present.Add(prop.Name);
+  }
+  // No null check for FollowerAccounts
+  ```
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- Fix the `TryConvertToken` method to throw an exception for malformed numeric/bool values (e.g., `"MaxPositionSize": "abc"`) instead of returning `false`. This ensures the outer `try-catch` in `LoadFromDisk` will clear the configuration and fail closed. Do not swallow deserialization errors for value types.
+
+- Add explicit defaulting for `ArmedForLive` in `ParseRelationship` and `ParseGroup` to ensure it is always `false` when absent from the file, regardless of the property-initializer default.
+
+- Modify `TryConvertToken` to throw an exception if a non-nullable value type (e.g., `int`, `double`, `bool`) receives a `null` token. This prevents silent zeroing of critical fields.
+
+- Change the `aliasMap` comparer to `StringComparer.OrdinalIgnoreCase` to match camelCase aliases case-insensitively.
+
+- Add a null check for `FollowerAccounts` in `ParseGroup` to ensure it is never `null`. If the JSON contains `"followerAccounts": null`, default to an empty list.
+
+- Add a test case for malformed numeric/bool values (e.g., `"QuantityRatio": "abc"`) to verify the configuration is cleared and the engine fails closed. This must be a green-at-baseline test.
+
+- Add a test case for `null` tokens in non-nullable fields (e.g., `"MaxPositionSize": null`) to verify the configuration is cleared and the engine fails closed.
+<<<END REQUIRED>>>

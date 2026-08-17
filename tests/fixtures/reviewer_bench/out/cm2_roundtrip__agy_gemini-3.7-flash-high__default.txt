@@ -1,0 +1,29 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: `Enum.TryParse(targetType, s, true, out object e)` on line 307 breaks compilation under .NET Framework 4.8 (`net48`). Non-generic `Enum.TryParse(Type, string, bool, out object)` was introduced in .NET Core 2.0 / .NET Standard 2.1 and does not exist in `net48`. Compiling against NinjaTrader 8's target framework fails with `CS1501: No overload for method 'TryParse' takes 4 arguments`.
+- [MAJOR] R1: `foreach (JProperty jp in jObj.Properties())` on line 387 dereferences `jObj` without a null check. In the flat legacy loop (line 474: `_relationships.Add(ParseRelationship(kv.Value, kv.Key));`), any null dictionary value (e.g. `{"Account_Leader": null}`) passes `jObj = null` into `Populate`, throwing `NullReferenceException`. Because `LoadFromDisk` cleared `_relationships` and `_groups` at lines 438-439, this exception is caught by the outer catch block (line 480) and silently leaves the engine holding zero configuration, disarming all trade copying.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- In `TryConvertToken` (line 307), replace `if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))` with a `net48`-compatible parsing construct:
+```csharp
+try
+{
+    object e = Enum.Parse(targetType, s, true);
+    if (Enum.IsDefined(targetType, e))
+    {
+        value = e;
+        return true;
+    }
+}
+catch
+{
+}
+```
+- In `Populate` (line 383), add an immediate null check before iterating properties:
+```csharp
+if (jObj == null)
+    return present;
+```
+<<<END REQUIRED>>>

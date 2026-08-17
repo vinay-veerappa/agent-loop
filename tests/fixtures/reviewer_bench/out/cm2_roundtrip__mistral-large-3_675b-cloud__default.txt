@@ -2,74 +2,80 @@
 REVISE
 <<<END VERDICT>>>
 <<<FINDINGS>>>
-- [BLOCKER] R1: **Silent numeric/bool deserialization failure produces zero values instead of defaults**
-  Line: `if (TryConvertToken(jp.Value, prop.PropertyType, out value))`
-  The `TryConvertToken` helper returns `false` on any conversion failure (including malformed numbers/bools), but the calling `Populate` method does **not** apply the property's default value in this case. This violates constraint #3: a malformed `MaxPositionSize` or `QuantityRatio` will silently become `0` instead of the intended default (`100` or `1.0`), creating a naked-risk path where fills are sized at zero (leader trades, follower does not). The green-at-baseline test for this case is explicitly cited in the ticket and must not break.
+- [BLOCKER] R1: **Silent numeric/bool defaulting to zero/false on malformed input violates fail-closed discipline**
+  Line: `TryConvertToken` helper (lines ~120-250 in AFTER)
+  What is wrong: The helper returns `false` on conversion failure, but `Populate` ignores the return value and leaves the property at its CLR default (0 for `int`/`double`, `false` for `bool`). This silently turns a malformed `MaxPositionSize` into 0 (no position allowed) or `QuantityRatio` into 0.0 (no fill copied), violating the ticket’s requirement that “a malformed NUMBER must fail closed — refusing the entry is fine, keeping the intended default is fine, silently producing zero is not.”
+  Concrete failure case: A config file with `"maxPositionSize": "abc"` loads as `MaxPositionSize = 0`, blocking every entry. A config with `"quantityRatio": "xyz"` loads as `QuantityRatio = 0.0`, so the leader trades and the follower does not.
 
-- [BLOCKER] R1: **Enum deserialization tolerance is overbroad**
-  Line: `if (Enum.TryParse(targetType, s, true, out object e) && Enum.IsDefined(targetType, e))`
-  The `TryConvertToken` helper accepts **any** integer value for enums (via `Enum.ToObject`), even if it is not a defined value. This violates the requirement that unrecognized enum *names* are tolerated but unrecognized *values* must fail closed. A malformed `SizingMode = 999` (not a defined enum value) should not be silently accepted; it should either fail closed or default to the property initializer's value.
+- [BLOCKER] R1: **Enum tolerance is too permissive**
+  Line: `TryConvertToken` (enum branch, ~180-200 in AFTER)
+  What is wrong: The helper accepts any string that parses to a defined enum value, but the ticket requires that an unrecognised enum name must not throw — it does not require that every string that happens to parse to a defined value must be accepted. The current code accepts `"1"` (numeric) or `"PerTickerMatrix"` (string), but it also accepts `"999"` (numeric) or `"Garbage"` (string) if those happen to map to a defined value. This silently loads an unintended enum value instead of refusing the entry.
+  Concrete failure case: A config file with `"sizingMode": "999"` loads as `SizingMode = (CopierSizingMode)999`, which is likely an unintended value, but the engine proceeds as if the config were valid.
 
-- [MAJOR] R1: **`ArmedForLive` can be incorrectly defaulted to `true`**
-  Line: `if (!present.Contains("ArmedForLive"))` is missing in `ParseRelationship` and `ParseGroup`
-  The `Populate` helper does not track whether `ArmedForLive` was present in the JSON. If the field is absent, the property initializer (`false`) is used, but if the JSON contains a malformed value (e.g., `"ArmedForLive": "not-a-bool"`), `TryConvertToken` returns `false` and the property remains at its default (`false`). However, the `ParseRelationship`/`ParseGroup` methods do not explicitly set `ArmedForLive` when the field is missing, which is correct, but the lack of a `present.Contains` check means the code cannot distinguish between "field absent" and "field malformed". This is a latent risk: if the property initializer ever changes to `true`, the code will incorrectly default `ArmedForLive` to `true` for malformed values.
+- [MAJOR] R1: **No validation of required fields**
+  Line: `ParseRelationship` and `ParseGroup` (lines ~300-320 in AFTER)
+  What is wrong: Neither helper validates that required fields (`LeaderAccountName`, `FollowerAccountName` for relationships, `GroupName` for groups) are non-null/non-empty after applying fallbacks. A config file with `"leaderAccount": null` or `"leaderAccount": ""` loads as an empty string, which will later cause account lookup failures or silent no-op fills.
+  Concrete failure case: A config file with `"leaderAccount": ""` loads a relationship with `LeaderAccountName = ""`, so every fill from that leader is silently ignored.
 
-- [MAJOR] R1: **`PerTickerRatios` and `CustomSymbolMappings` dictionaries lose case-insensitive comparison**
-  Line: `var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);`
-  The `TryConvertToken` helper creates dictionaries with `StringComparer.OrdinalIgnoreCase` for `PerTickerRatios` and `CustomSymbolMappings`, but the `Populate` method does not enforce this on the target object. If the target property (`PerTickerRatios` or `CustomSymbolMappings`) was initialized with `StringComparer.Ordinal`, the deserialized dictionary will overwrite it with a case-insensitive comparer, which is correct, but if the target property was already case-insensitive, this is redundant. More critically, if the target property's comparer is ever changed to `Ordinal`, this code will silently break case-insensitive lookups.
+- [MAJOR] R1: **Legacy flat form regression on `LeaderAccountName`**
+  Line: `ParseRelationship` (line ~305 in AFTER)
+  What is wrong: The fallback for `LeaderAccountName` uses `key.Contains("_") ? key.Split('_')[0] : key`, but the legacy flat form’s key is the leader account name itself, not a composite key. This means a legacy config with `"Sim101": { ... }` loads as `LeaderAccountName = "Sim101"` (correct), but a legacy config with `"Sim101_SimCopy2": { ... }` loads as `LeaderAccountName = "Sim101_SimCopy2"` (incorrect, should be `"Sim101"`).
+  Concrete failure case: A legacy config file with `"Sim101_SimCopy2": { ... }` loads a relationship with `LeaderAccountName = "Sim101_SimCopy2"`, so no fills from `Sim101` are copied.
 
-- [MINOR] R1: **`TryConvertToken` swallows all exceptions, including `OutOfMemoryException` and `StackOverflowException`**
-  Line: `catch { return false; }`
-  The `TryConvertToken` helper catches all exceptions, including fatal ones like `OutOfMemoryException` or `StackOverflowException`. This violates fail-safe principles: the method should only catch `JsonException`, `FormatException`, `InvalidCastException`, and `ArgumentException`. Swallowing fatal exceptions could mask critical system failures.
+- [MINOR] R1: **`TryConvertToken` does not handle `null` for non-nullable value types**
+  Line: `TryConvertToken` (lines ~120-130 in AFTER)
+  What is wrong: The helper returns `false` for `null` tokens, but `Populate` ignores the return value and leaves non-nullable value types (`int`, `double`, `bool`) at their CLR default. This is inconsistent with the ticket’s requirement that fields absent from the file must get their existing defaults.
+  Concrete failure case: A config file with `"maxPositionSize": null` loads as `MaxPositionSize = 0` (CLR default), but the ticket requires it to load as `100` (property initialiser default).
 
-- [MINOR] R1: **`ParseRelationship` and `ParseGroup` do not validate required fields**
-  Lines: `ParseRelationship` and `ParseGroup` methods
-  The methods do not validate that required fields (e.g., `LeaderAccountName`, `FollowerAccountName`) are non-null/non-empty after applying defaults. While the defaults ensure these fields are never `null`, an empty string (e.g., `"LeaderAccountName": ""`) would pass through unchecked, leading to runtime errors when the copier attempts to use the account name.
+- [MINOR] R1: **No test coverage for malformed numeric/bool input**
+  What is wrong: The test suite does not include cases for malformed numeric (`"maxPositionSize": "abc"`) or bool (`"isEnabled": "xyz"`) input, so the silent defaulting to zero/false is not caught.
 <<<END FINDINGS>>>
 <<<REQUIRED>>>
-- **Fix silent numeric/bool deserialization failure**:
-  In `Populate`, after the `TryConvertToken` call, if the conversion fails, explicitly set the property to its default value (e.g., `rel.MaxPositionSize = 100`). Do this for all numeric/bool fields with non-zero defaults (`MaxPositionSize`, `QuantityRatio`, `FixedLotSize`, `DailyLossLimit`, `MaxSlippageTicks`). Example:
+- **Fix silent numeric/bool defaulting to zero/false**:
+  In `Populate`, after calling `TryConvertToken`, check the return value. If `false`, skip setting the property, so it retains its property initialiser default. Example:
   ```csharp
   if (TryConvertToken(jp.Value, prop.PropertyType, out value))
   {
       prop.SetValue(target, value, null);
       present.Add(prop.Name);
   }
-  else if (prop.Name == "MaxPositionSize")
-  {
-      prop.SetValue(target, 100, null);
-  }
-  // Repeat for other fields
   ```
 
-- **Fix enum deserialization tolerance**:
-  In `TryConvertToken`, remove the `else if (token.Type == JTokenType.Integer)` branch for enums. Only allow string-based enum parsing. If the integer value is not a defined enum value, return `false`.
-
-- **Add `ArmedForLive` presence check**:
-  In `ParseRelationship` and `ParseGroup`, add explicit checks for `ArmedForLive` presence:
+- **Tighten enum tolerance**:
+  In `TryConvertToken`, for enums, only accept string values that match a defined enum name (case-insensitive). Reject numeric values or strings that parse to a defined value but are not a named enum. Example:
   ```csharp
-  if (!present.Contains("ArmedForLive"))
-      rel.ArmedForLive = false; // Explicitly set to default
-  ```
-
-- **Enforce case-insensitive dictionaries**:
-  In `Populate`, after setting `PerTickerRatios` or `CustomSymbolMappings`, explicitly reassign the dictionary with `StringComparer.OrdinalIgnoreCase`:
-  ```csharp
-  if (prop.Name == "PerTickerRatios" && value is Dictionary<string, double> dict)
+  if (targetType.IsEnum && token.Type == JTokenType.String)
   {
-      prop.SetValue(target, new Dictionary<string, double>(dict, StringComparer.OrdinalIgnoreCase), null);
+      string s = token.Value<string>();
+      if (Enum.GetNames(targetType).Any(n => string.Equals(n, s, StringComparison.OrdinalIgnoreCase)))
+      {
+          if (Enum.TryParse(targetType, s, true, out object e))
+          {
+              value = e;
+              return true;
+          }
+      }
+      return false;
   }
-  // Repeat for CustomSymbolMappings
   ```
-
-- **Narrow exception handling in `TryConvertToken`**:
-  Replace the catch-all `catch { return false; }` with specific exception handling for `JsonException`, `FormatException`, `InvalidCastException`, and `ArgumentException`.
 
 - **Validate required fields**:
-  In `ParseRelationship` and `ParseGroup`, add validation for non-empty `LeaderAccountName` and `FollowerAccountName`:
+  In `ParseRelationship` and `ParseGroup`, after applying fallbacks, validate that `LeaderAccountName`, `FollowerAccountName`, and `GroupName` are non-null and non-empty. If not, throw an exception to fail closed. Example:
   ```csharp
-  if (string.IsNullOrEmpty(rel.LeaderAccountName))
-      throw new InvalidOperationException("LeaderAccountName cannot be null or empty");
-  // Repeat for FollowerAccountName
+  if (string.IsNullOrEmpty(rel.LeaderAccountName) || string.IsNullOrEmpty(rel.FollowerAccountName))
+      throw new ArgumentException("LeaderAccountName and FollowerAccountName must be non-empty.");
   ```
+
+- **Fix legacy flat form `LeaderAccountName` fallback**:
+  In `ParseRelationship`, change the fallback to:
+  ```csharp
+  if (!present.Contains("LeaderAccountName"))
+      rel.LeaderAccountName = key; // Legacy flat form key is the leader account name, not a composite key.
+  ```
+
+- **Handle `null` for non-nullable value types**:
+  In `TryConvertToken`, for non-nullable value types (`int`, `double`, `bool`), return `false` for `null` tokens, so `Populate` skips setting the property and it retains its property initialiser default.
+
+- **Add test cases for malformed numeric/bool input**:
+  Add tests for malformed numeric (`"maxPositionSize": "abc"`) and bool (`"isEnabled": "xyz"`) input, verifying that the engine fails closed (throws or refuses the entry) rather than silently defaulting to zero/false.
 <<<END REQUIRED>>>

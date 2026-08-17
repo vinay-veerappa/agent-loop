@@ -1,0 +1,55 @@
+<<<VERDICT>>>
+REVISE
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `TryConvertToken` enum branch silently swallows malformed numeric enum values, violating constraint 3's "malformed NUMBER must fail closed" requirement. The code reads:
+```csharp
+else if (token.Type == JTokenType.Integer)
+{
+    int i = token.Value<int>();
+    object e = Enum.ToObject(targetType, i);
+    if (Enum.IsDefined(targetType, e))
+    {
+        value = e;
+        return true;
+    }
+}
+return false;
+```
+When `SizingMode` is serialized as an out-of-range integer (e.g., `99`), `Enum.IsDefined` returns false, `TryConvertToken` returns false, and `Populate` skips the property. The property retains its C# initializer default. For `SizingMode`, that default is `CopierSizingMode.FixedRatio` — the safe, conservative mode. However, for `Mode` (the copy direction enum), if the property initializer is `CopyMode.OneWay` and the file contains `99`, the relationship silently downgrades to `OneWay` instead of refusing the entry. A malformed number on a safety-critical enum field produces a **different mode than configured** with no error, no refusal, and no log. The ticket explicitly requires that a malformed number "must fail closed -- refusing the entry is fine, keeping the intended default is fine, silently producing zero is not." While this retains the initializer (not zero), it silently changes behavior for enum fields where the initializer is a non-trivial operational mode. The entire relationship should be rejected (not added to `_relationships`) when a present JSON property fails conversion, so the operator sees the config didn't load rather than getting a silently-different mode.
+
+- [BLOCKER] R1: The `TryConvertToken` fallback for unrecognized types silently swallows conversion errors via `token.ToObject(targetType)` in a try/catch that returns false, causing the property to retain its initializer. This is the exact "blanket swallow" pattern the ticket warns about. The code reads:
+```csharp
+try
+{
+    value = token.ToObject(targetType);
+    return true;
+}
+catch
+{
+    return false;
+}
+```
+If a future property type is added (e.g., a nested object or struct) and the JSON value is type-mismatched, `ToObject` throws, the catch swallows it, and the property keeps its initializer. For numeric fields this is safe (initializer is non-zero), but the ticket's concern is broader: "A blanket Json.NET Error handler that swallows everything leaves a type-mismatched field at the CLR default." This fallback catch does exactly that for any type not explicitly handled above. If a future `MaxPositionSize`-like field is added as a custom struct with a CLR default of 0, this path silently produces zero. The relationship should be rejected, not silently loaded with a wrong value.
+
+- [MAJOR] R1: `Populate` does not distinguish "property absent from JSON" from "property present but conversion failed." Both cases result in the property not being added to the `present` set, and the property retains its initializer. This means a file containing `"MaxPositionSize": "not_a_number"` silently produces `MaxPositionSize = 100` (the initializer) with no error, no log, and the relationship is still added. The ticket says "keeping the intended default is fine" for a malformed number, but it also says "refusing the entry is fine." The problem is that there is **no signal to the operator** that their config was malformed. A config that says `"maxPositionSize": "abc"` looks loaded (the relationship appears in the engine) but applies 100 instead of the intended value. At minimum, a log line must be emitted when a present property fails conversion, so the operator can diagnose why their cap isn't what they wrote.
+
+- [MAJOR] R1: The `present` HashSet uses `StringComparer.OrdinalIgnoreCase`, but `Populate` adds `prop.Name` (the canonical PascalCase name from reflection) while `ParseRelationship` and `ParseGroup` check `present.Contains("Id")`, `present.Contains("LeaderAccountName")`, etc. with string literals. This works because `OrdinalIgnoreCase` makes `"Id"` match `"Id"`. However, if a JSON file contains both `"Id"` and `"id"` (the alias), `aliasMap` maps `"id"` to `"Id"`, reflection finds the `Id` property, and `present.Add("Id")` is called twice — which is fine for a HashSet. But if a file contains both `"LeaderAccountName"` and `"leaderAccount"`, both map to the same property, the second one overwrites the first, and only one `present.Add("LeaderAccountName")` call occurs. The last-wins behavior is correct, but there is no test pinning that alias and canonical don't conflict. This is a test adequacy gap, not a code bug.
+
+- [MAJOR] R1: The flat-legacy path deserializes the entire JSON string a second time via `JsonConvert.DeserializeObject<Dictionary<string, JObject>>(json)` even though `jRoot` is already parsed as a `JObject`. This is not a correctness bug, but if the JSON is large, it doubles the parse cost. More importantly, `JObject.Parse(json)` already succeeded (line `var jRoot = JObject.Parse(json)`), so the second deserialize cannot fail on malformed JSON — but if the JSON root is an array instead of an object, `JObject.Parse` would have already thrown, so the flat-legacy path is unreachable for array roots. This is acceptable but wasteful. Consider iterating `jRoot.Properties()` directly instead.
+
+- [MINOR] R1: The `TryConvertToken` method is defined as a local function inside `LoadFromDisk`, meaning it is recompiled (or at least re-JITted) on every call. For a method that runs at startup and on config reload, this is not a performance concern, but it makes the method harder to unit test in isolation. Consider extracting it to a private static method.
+
+- [MINOR] R1: The `aliasMap` dictionary is allocated on every `LoadFromDisk` call. It could be a static readonly field. Not a bug, but wasteful for a 20-entry dictionary allocated on every config reload.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- Distinguish "property present but conversion failed" from "property absent" in `Populate`. Return a struct or tuple containing both the `present` set and a `failed` set (or list of failed property names). In `ParseRelationship` and `ParseGroup`, if any property was present in the JSON but failed conversion, either (a) skip adding the relationship/group to `_relationships`/`_groups` entirely (fail closed), or (b) log a warning with the property name and JSON value so the operator can diagnose the mismatch. Do not silently load a relationship with a property at its initializer when the JSON explicitly provided a value that couldn't be parsed.
+- For the enum integer branch in `TryConvertToken`, when `Enum.IsDefined` returns false for an integer token, do not return false silently. Either throw (to be caught by the outer try/catch which clears all config) or add the property name to the `failed` set so the caller can refuse the entry. A malformed enum integer must not silently downgrade to the initializer.
+- For the `token.ToObject(targetType)` fallback catch block, do not swallow exceptions silently. Either log the exception or add the property to the `failed` set. The caller must be able to distinguish "type not handled" from "type handled but value malformed."
+- Add a test case that saves a relationship with `SizingMode = PerTickerMatrix`, `PerTickerRatios` populated, and `CustomSymbolMappings` populated, then loads it back and verifies all three fields are intact and the ratio table is used for sizing. This is the ticket's primary acceptance criterion and is not visible in the test suite provided.
+- Add a test case that provides a malformed numeric value (e.g., `"maxPositionSize": "abc"`) and verifies that either the relationship is refused (not added) or a warning is logged. Verify that `MaxPositionSize` does not silently become 0.
+- Add a test case that provides an unrecognized enum name (e.g., `"sizingMode": "NonExistentMode"`) and verifies the relationship is still loaded with `SizingMode` at its initializer default, not thrown out entirely. This pins constraint 3's "unrecognised enum must NOT throw."
+- Add a test case that provides both `"LeaderAccountName"` and `"leaderAccount"` in the same JSON object and verifies the last-wins behavior is deterministic (document which wins: JSON property order is insertion-ordered in JObject, so the last one in document order wins).
+- Extract `TryConvertToken` to a private static method so it is testable without going through `LoadFromDisk`.
+- Make `aliasMap` a `static readonly` field so it is allocated once.
+<<<END REQUIRED>>>

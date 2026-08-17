@@ -1,0 +1,18 @@
+<<<VERDICT>>>
+REJECT
+<<<END VERDICT>>>
+<<<FINDINGS>>>
+- [BLOCKER] R1: The `Populate` method uses `type.GetProperty(propName, ..., BindingFlags.IgnoreCase)` which, combined with the `aliasMap` logic, creates a collision path that violates Constraint 2. Specifically, if a JSON object contains both `"leaderAccount"` (alias) and `"LeaderAccountName"` (canonical), the `aliasMap` resolves `"leaderAccount"` to `"LeaderAccountName"`. The loop then calls `prop.SetValue` for the canonical property twice. While this seems harmless, the `present` HashSet tracks `prop.Name` (the canonical name). If the canonical property is malformed (causing `TryConvertToken` to return false) but the alias is valid, the `present` set will be updated by the alias. This masks the failure of the canonical field, potentially leading to the "silent default" behavior the ticket explicitly forbids.
+
+- [MAJOR] R1: The `TryConvertToken` implementation for `Enum` is too permissive, violating Constraint 3. The code uses `Enum.TryParse(targetType, s, true, out object e)`. If the string `s` is a valid integer string (e.g., `"999"`), `Enum.TryParse` will successfully parse it as the underlying integer type of the enum even if that value is not defined in the enum declaration. Although `Enum.IsDefined` is called immediately after, the logic for `JTokenType.Integer` also uses `Enum.ToObject` followed by `Enum.IsDefined`. The risk is that any failure in `Enum.IsDefined` returns `false`, which causes `Populate` to skip `present.Add(prop.Name)`. This means a malformed enum value triggers the fallback to the property initializer's default. While this is "safe" for some fields, for critical risk guards, a malformed value in the config should be treated as a failure to load that specific entry, not a silent revert to a default that might be dangerously different from the user's intent.
+
+- [MAJOR] R1: The `Populate` method uses `System.Reflection` inside a lock (`lock (_lock)`). While not a deadlock risk, the use of `GetProperty` with `BindingFlags.IgnoreCase` on every property of every relationship/group during every disk load is inefficient. More critically, if `CopierRelationship` or `CopierGroup` properties are renamed in future versions but the `aliasMap` is not updated, the `IgnoreCase` flag will cause silent mapping to the wrong properties if names are similar, bypassing the explicit alias control required by Constraint 2.
+
+- [MINOR] R1: In `ParseRelationship`, the fallback for `FollowerAccountName` is hardcoded to `"SimCopy2"`. If the legacy flat-file format is used and the key is `Leader_Follower`, the split logic works, but if the key is just `Leader`, it defaults to `"SimCopy2"`. This is a regression in flexibility compared to the previous implementation which handled the split more robustly.
+<<<END FINDINGS>>>
+<<<REQUIRED>>>
+- Remove `BindingFlags.IgnoreCase` from `type.GetProperty`. Property mapping must be explicit via the `aliasMap` or exact canonical match to ensure Constraint 2 is strictly enforced.
+- Refactor `Populate` to ensure that if both a canonical name and an alias are present in the JSON, the canonical name takes precedence and a failure to parse the canonical name is not "hidden" by a successful parse of the alias.
+- Ensure `Enum` parsing strictly rejects any value not defined in the Enum metadata before updating the `present` set.
+- Move the `aliasMap` and reflection-based property lookups outside of the `lock (_lock)` block to minimize lock contention.
+<<<END REQUIRED>>>

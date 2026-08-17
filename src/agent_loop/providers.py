@@ -520,11 +520,9 @@ def _call_github(model, messages, temperature, max_tokens, timeout, num_ctx, thi
 AGY_BIN_DEFAULT = os.path.join(
     os.path.expanduser("~"), "AppData", "Local", "agy", "bin", "agy.exe"
 )
-# CreateProcess caps a Windows command line at 32767 characters, and agy takes
-# the prompt as an ARGUMENT. Refuse above this rather than truncate: a silently
-# shortened arbiter prompt would drop the end of the diff and the model would
-# rule on a patch it was never shown.
-_AGY_PROMPT_LIMIT = 30000
+# agy takes prompts via @file reference (written to a temp dir), so there is
+# no command-line length limit. The old `-p <prompt>` approach capped at ~32K
+# chars due to Windows CreateProcess's 32767-char limit.
 
 
 def _call_agy(model, messages, temperature, max_tokens, timeout, num_ctx, think=None, cache=False):
@@ -561,29 +559,27 @@ def _call_agy(model, messages, temperature, max_tokens, timeout, num_ctx, think=
         )
 
     prompt = "\n\n".join(m.get("content", "") for m in messages if m.get("content"))
-    if len(prompt) > _AGY_PROMPT_LIMIT:
-        raise ProviderError(
-            f"agy: prompt is {len(prompt)} chars, over the {_AGY_PROMPT_LIMIT} limit "
-            f"imposed by the Windows command line (agy takes the prompt as an "
-            f"argument). Refusing rather than truncating -- a shortened prompt would "
-            f"silently drop the end of the diff. Use an HTTP backend for inputs this "
-            f"large."
-        )
 
     env = os.environ.copy()
     env["PATH"] = os.path.dirname(binpath) + os.pathsep + env.get("PATH", "")
-    cmd = [
-        binpath, "--sandbox", "--dangerously-skip-permissions",
-        f"--model={model}", f"--print-timeout={timeout}s", "-p", prompt,
-    ]
-    t0 = time.time()
-    # NOT TemporaryDirectory(): agy keeps a file open in its working directory,
-    # so the context manager's cleanup raises WinError 32 -- AFTER a successful
-    # call -- and the exception discards a completion that had already arrived.
-    # Clean up best-effort instead; a leftover temp dir is a smaller problem
-    # than losing the answer.
+
+    # Write the prompt to a temp file and reference it via @ syntax, bypassing
+    # the Windows command line length limit (32767 chars). The old approach
+    # passed the full prompt as a `-p` argument, which capped agy calls at
+    # ~32K chars and made every large reviewer/arbiter prompt UNREACHABLE.
+    # The `@` syntax is agy-native: it reads the file into context directly.
     scratch = tempfile.mkdtemp(prefix="agy-")
+    prompt_file = os.path.join(scratch, "prompt.md")
     try:
+        with open(prompt_file, "w", encoding="utf-8") as f:
+            f.write(prompt)
+        cmd = [
+            binpath, "--sandbox", "--dangerously-skip-permissions",
+            f"--model={model}", f"--print-timeout={timeout}s",
+            "--add-dir", scratch,
+            "-p", f"Follow all instructions in @prompt.md",
+        ]
+        t0 = time.time()
         proc = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout + 30,
             env=env, cwd=scratch,
@@ -593,10 +589,6 @@ def _call_agy(model, messages, temperature, max_tokens, timeout, num_ctx, think=
     except OSError as exc:
         raise ProviderError(f"agy: could not run {binpath}: {exc}")
     finally:
-        # Belt and braces. `ignore_errors=True` swallows OSError, which covers
-        # the observed WinError 32, but this runs in a `finally`: ANY exception
-        # escaping here replaces a completed answer with a cleanup failure.
-        # Nothing about removing a temp directory is worth that.
         import shutil
         try:
             shutil.rmtree(scratch, ignore_errors=True)

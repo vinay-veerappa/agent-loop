@@ -36,7 +36,7 @@
       "think": false
     },
     "compactor": {
-      "model": "glm-5.2:cloud",
+      "model": "gemma4:31b-cloud",
       "max_tokens": 8000,
       "think": false
     }

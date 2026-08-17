@@ -291,10 +291,12 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     "mistral-large-3:675b-cloud": ModelProfile(
         "675B", 262_144, ("text", "vision"), False, True, 0.0, 0.0,
         ("arbiter",),
-        "MEASURED best arbiter: 3 of 5 correct findings upheld on ALL FOUR runs, "
-        "and one of only three arms (of ten) to refuse the patch at all. NOTE it has NO "
-        "thinking capability, so think must be False -- setting it True is not "
-        "a trade-off, it is a no-op. Misses findings about test quality.",
+        "RE-BENCHMARKED 2026-08-17: 2/5 correct findings upheld on both reps "
+        "(down from 3/5 in the prior benchmark). Still the BEST arbiter available "
+        "-- every other model scores 0-1/5. Upholds finding #3 (a design question, "
+        "not a real defect), which inflates its score. As reviewer: REVISE with "
+        "5-6 findings, 0-1 hits -- finds things but not the labelled ones. NOTE it "
+        "has NO thinking capability, so think must be False.",
     ),
     "gemma4:31b-cloud": ModelProfile(
         "32.7B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
@@ -367,15 +369,17 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     "agy:gemini-3.7-flash-high": ModelProfile(
         "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
         (),
-        "UNTESTED. Gemini 3.7 Flash at high reasoning effort, via agy. "
-        "Newer than 3.6 -- worth benchmarking as arbiter and reviewer "
-        "before assigning a role.",
+        "RE-BENCHMARKED 2026-08-17 via @file provider. As reviewer: rep1 REVISE "
+        "(2 findings, 1 hit), rep2 APPROVE (0 findings) -- unstable. As arbiter: "
+        "0/5, ESCALATE both reps. The high reasoning effort did not help "
+        "adjudication. Slow: 371s on rep1 as reviewer vs 14s for glm-5.2.",
     ),
     "agy:gemini-3.7-flash-medium": ModelProfile(
         "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
         (),
-        "UNTESTED. Gemini 3.7 Flash at medium reasoning effort, via agy. "
-        "Cheaper than high; may be enough for reviewer or compactor.",
+        "RE-BENCHMARKED 2026-08-17 via @file provider. As reviewer: APPROVE "
+        "(0 findings) both reps -- rubber stamp. As arbiter: 0/5, ESCALATE both "
+        "reps. Not useful as reviewer or arbiter on this corpus.",
     ),
     "agy:claude-opus-4-6-thinking": ModelProfile(
         "unpublished", 0, ("text", "vision"), True, True, 0.0, 0.0,
@@ -524,8 +528,12 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
         capability="strong-reasoner",
     ),
     # Summarisation only, and its output is bounded by construction.
+    # Switched from glm-5.2 (756B) to gemma4:31b (32B): the compactor benchmark
+    # measured both at 7/8 planted rejections carried forward, twice, identically.
+    # A 756B model on mechanical summarisation was a waste -- the user's principle
+    # is "cheapest models do the heavy work, analytical models do the thinking."
     "compactor": RoleSettings(
-        model="glm-5.2:cloud", max_tokens=8000, think=False, capability="cheap",
+        model="gemma4:31b-cloud", max_tokens=8000, think=False, capability="cheap",
     ),
 }
 

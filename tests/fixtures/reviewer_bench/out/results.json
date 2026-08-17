@@ -19,7 +19,9 @@
     "case": "cm2_roundtrip",
     "model": "agy:claude-sonnet-4-6",
     "reasoning": "default",
+    "rep": 1,
     "think": false,
+    "temperature": null,
     "status": "UNREACHABLE",
     "findings": 0,
     "hits": [],
@@ -28,8 +30,26 @@
     "out_tokens": 0,
     "think_chars": 0,
     "chars": 0,
-    "secs": 0.0,
-    "error": "agy: prompt is 32481 chars, over the 30000 limit imposed by the Windows command "
+    "secs": 15.7,
+    "error": "agy: claude-sonnet-4-6 returned nothing (exit 1). stderr: Error: Agent execution"
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "agy:claude-sonnet-4-6",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "UNREACHABLE",
+    "findings": 0,
+    "hits": [],
+    "noise": [],
+    "severity": {},
+    "out_tokens": 0,
+    "think_chars": 0,
+    "chars": 0,
+    "secs": 15.0,
+    "error": "agy: claude-sonnet-4-6 returned nothing (exit 1). stderr: Error: Agent execution"
   },
   {
     "case": "cm2_roundtrip",
@@ -62,6 +82,83 @@
     "chars": 0,
     "secs": 0.0,
     "error": "agy: prompt is 32481 chars, over the 30000 limit imposed by the Windows command "
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "agy:gemini-3.7-flash-high",
+    "reasoning": "default",
+    "rep": 1,
+    "think": false,
+    "temperature": null,
+    "status": "REVISE",
+    "findings": 2,
+    "hits": [
+      "null-section-wipes-config"
+    ],
+    "noise": [],
+    "severity": {
+      "BLOCKER": 1,
+      "MAJOR": 1
+    },
+    "out_tokens": 0,
+    "think_chars": 0,
+    "chars": 1565,
+    "secs": 371.4,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "agy:gemini-3.7-flash-high",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "APPROVE",
+    "findings": 0,
+    "hits": [],
+    "noise": [],
+    "severity": {},
+    "out_tokens": 0,
+    "think_chars": 0,
+    "chars": 121,
+    "secs": 50.3,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "agy:gemini-3.7-flash-medium",
+    "reasoning": "default",
+    "rep": 1,
+    "think": false,
+    "temperature": null,
+    "status": "APPROVE",
+    "findings": 0,
+    "hits": [],
+    "noise": [],
+    "severity": {},
+    "out_tokens": 0,
+    "think_chars": 0,
+    "chars": 121,
+    "secs": 35.9,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "agy:gemini-3.7-flash-medium",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "APPROVE",
+    "findings": 0,
+    "hits": [],
+    "noise": [],
+    "severity": {},
+    "out_tokens": 0,
+    "think_chars": 0,
+    "chars": 121,
+    "secs": 35.9,
+    "error": ""
   },
   {
     "case": "cm2_roundtrip",
@@ -126,6 +223,59 @@
     "chars": 0,
     "secs": 0.0,
     "error": "claude-sonnet-5 failed after 1 attempt: HTTPError 404: Not Found -- {\"error\":\"mo"
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "deepseek-v4-flash:0731-cloud",
+    "reasoning": "default",
+    "rep": 1,
+    "think": false,
+    "temperature": null,
+    "status": "REJECT",
+    "findings": 6,
+    "hits": [
+      "duplicate-casing-last-writer-wins"
+    ],
+    "noise": [
+      "tryconvert-swallows-numbers",
+      "flags-enum-speculation"
+    ],
+    "severity": {
+      "BLOCKER": 2,
+      "MAJOR": 2,
+      "MINOR": 2
+    },
+    "out_tokens": 1693,
+    "think_chars": 0,
+    "chars": 6786,
+    "secs": 14.1,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "deepseek-v4-flash:0731-cloud",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "REJECT",
+    "findings": 9,
+    "hits": [
+      "duplicate-casing-last-writer-wins"
+    ],
+    "noise": [
+      "present-tracks-resolved-not-present"
+    ],
+    "severity": {
+      "BLOCKER": 3,
+      "MAJOR": 2,
+      "MINOR": 4
+    },
+    "out_tokens": 2740,
+    "think_chars": 0,
+    "chars": 11238,
+    "secs": 22.6,
+    "error": ""
   },
   {
     "case": "cm2_roundtrip",
@@ -441,37 +591,63 @@
     "case": "cm2_roundtrip",
     "model": "gemma4:31b-cloud",
     "reasoning": "default",
+    "rep": 1,
     "think": false,
+    "temperature": null,
     "status": "REJECT",
     "findings": 4,
     "hits": [],
     "noise": [
-      "present-tracks-resolved-not-present",
       "flags-enum-speculation"
     ],
     "severity": {
       "BLOCKER": 2,
       "MAJOR": 2
     },
-    "out_tokens": 746,
+    "out_tokens": 721,
     "think_chars": 0,
-    "chars": 3064,
-    "secs": 8.4,
+    "chars": 2998,
+    "secs": 7.6,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "gemma4:31b-cloud",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "REJECT",
+    "findings": 4,
+    "hits": [],
+    "noise": [
+      "flags-enum-speculation"
+    ],
+    "severity": {
+      "BLOCKER": 1,
+      "MAJOR": 2,
+      "MINOR": 1
+    },
+    "out_tokens": 825,
+    "think_chars": 0,
+    "chars": 3512,
+    "secs": 12.9,
     "error": ""
   },
   {
     "case": "cm2_roundtrip",
     "model": "glm-5.2:cloud",
     "reasoning": "default",
+    "rep": 1,
     "think": false,
+    "temperature": null,
     "status": "REVISE",
     "findings": 5,
     "hits": [
+      "null-section-wipes-config",
       "duplicate-casing-last-writer-wins"
     ],
     "noise": [
-      "tryconvert-swallows-numbers",
-      "present-tracks-resolved-not-present",
       "flags-enum-speculation"
     ],
     "severity": {
@@ -479,10 +655,34 @@
       "MAJOR": 2,
       "MINOR": 2
     },
-    "out_tokens": 1595,
+    "out_tokens": 1290,
     "think_chars": 0,
-    "chars": 6831,
-    "secs": 10.9,
+    "chars": 5531,
+    "secs": 13.8,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "glm-5.2:cloud",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "REVISE",
+    "findings": 7,
+    "hits": [
+      "duplicate-casing-last-writer-wins"
+    ],
+    "noise": [],
+    "severity": {
+      "BLOCKER": 2,
+      "MAJOR": 3,
+      "MINOR": 2
+    },
+    "out_tokens": 1936,
+    "think_chars": 0,
+    "chars": 8555,
+    "secs": 21.0,
     "error": ""
   },
   {
@@ -929,7 +1129,9 @@
     "case": "cm2_roundtrip",
     "model": "mistral-large-3:675b-cloud",
     "reasoning": "default",
+    "rep": 1,
     "think": false,
+    "temperature": null,
     "status": "REVISE",
     "findings": 6,
     "hits": [],
@@ -939,10 +1141,36 @@
       "MAJOR": 2,
       "MINOR": 2
     },
-    "out_tokens": 1573,
+    "out_tokens": 1677,
     "think_chars": 0,
-    "chars": 6344,
-    "secs": 25.0,
+    "chars": 6460,
+    "secs": 25.6,
+    "error": ""
+  },
+  {
+    "case": "cm2_roundtrip",
+    "model": "mistral-large-3:675b-cloud",
+    "reasoning": "default",
+    "rep": 2,
+    "think": false,
+    "temperature": null,
+    "status": "REVISE",
+    "findings": 5,
+    "hits": [
+      "duplicate-casing-last-writer-wins"
+    ],
+    "noise": [
+      "present-tracks-resolved-not-present"
+    ],
+    "severity": {
+      "BLOCKER": 1,
+      "MAJOR": 2,
+      "MINOR": 2
+    },
+    "out_tokens": 1158,
+    "think_chars": 0,
+    "chars": 4484,
+    "secs": 18.0,
     "error": ""
   },
   {
