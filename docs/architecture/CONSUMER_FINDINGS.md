@@ -529,6 +529,53 @@ and 100k output tokens produced nothing promotable** — and the only artifact l
 new file, which happened to be correct. A retry that cannot retry is worse than a loop that stops
 at round 1, because the budget is spent before the failure is visible.
 
+### CF-15 (new, HIGH) — four rounds returned the IDENTICAL failing test set and the loop never said "this may be unreachable from your regions"
+
+Measured 2026-08-16, same ticket as CF-14, on the clean re-run:
+
+```
+round 1: 219.7s  out=31411  [test] FAIL - 21 regression(s); 2016 passed, 23 failed, 2 expected now green
+round 2: 130.0s  out=18870  [test] FAIL - 21 regression(s); 2016 passed, 23 failed, 2 expected now green
+round 3:  64.5s  out= 9241  [test] FAIL - 21 regression(s); 2016 passed, 23 failed, 2 expected now green
+round 4:  93.5s  out=12757  [test] FAIL - 21 regression(s); 2016 passed, 23 failed, 2 expected now green
+NOT APPLIED: verdict=ARBITER_NEVER_RAN
+```
+
+**The cause was a ticket defect and the model's work was correct throughout.** The ticket gave
+`ModifyStopPrice` as a region and the fix changes its parameter from an id to a name — but
+`RequestStopMove`, the sole caller, was *not* a region, and it passes `bracket.StopOrderId`. So the
+callee wanted a name, the caller kept handing it a GUID, and every stop move failed. **The model
+could not have fixed it**: the one line that needed to change was outside every region it was
+allowed to write.
+
+⚠️ **The numbers are the tell, and the loop has them.** Four rounds, the same 21 regressions, the
+same `23 failed`, the same `2 expected now green` — while `out=` fell 31411 → 9241, i.e. the model
+was *running out of things to try*. That is a distinguishable state from "not converging yet", and
+it has a specific likely cause worth naming:
+
+> Round N produced the same failing test set as round N-1 (and N-2). The fix may be outside the
+> regions this ticket grants. Failing tests reference `RequestStopMove`, which is in
+> `addons/DynamicAtmManager.cs` but not in any region.
+
+Even the first clause alone would have saved three rounds; the last clause is cheap — the loop
+already parses failure output, and it already knows the region set and their files.
+
+⚠️ **`ARBITER_NEVER_RAN` is the wrong last word for this.** It describes the machinery, not the
+run: it reads as *something went wrong with the arbiter*, when what happened is *the rounds never
+produced a candidate worth arbitrating*. Compare `NOT_CONVERGING`, which names the run's own
+condition. A verdict named after a component that was never reached sends the operator to the
+wrong place first — I went looking at the panel config before reading the patch.
+
+**Cost**: 508s of model time and ~72k output tokens across four rounds, all of it correct work
+against an impossible constraint. Combined with CF-14's failed first attempt, one ticket spent
+~21 minutes of model time before the actual defect (mine) was visible — and it was visible in
+`final.patch` in about thirty seconds, because `grep -c RequestStopMove` returned `0`.
+
+**Consumer-side lesson, recorded because it is not the loop's fault**: when a fix changes a
+signature, the region set must include every CALLER, not just the sites that match the pattern you
+grepped for. I grepped for `OrderId` comparisons and got four sites; the fifth site *passes* the
+id and compares nothing.
+
 ### Still true, still worth stating in the docs
 
 The loop measures **HEAD, not your working tree**. CF-2's message now says so at the moment it
