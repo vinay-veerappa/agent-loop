@@ -23,15 +23,22 @@ on:
 jobs:
   test:
     strategy:
-      fail-fast: false   # a failure on one OS must not hide the other's
+      fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            python: "3.12"
-          - os: ubuntu-latest
-            python: "3.12"
-          - os: ubuntu-latest
-            python: "3.10"   # the floor declared in pyproject requires-python
+        # ⚠️ WINDOWS ONLY, and that is a finding rather than a preference.
+        # The first run of this workflow was red on all three jobs and both
+        # causes were pre-existing, invisible because nothing had ever run
+        # this suite anywhere but one developer machine:
+        #
+        #   ubuntu  -- the test FIXTURES shell out with
+        #              os.system('cd /d "{repo}" && git init ...'), which is
+        #              cmd.exe syntax. The suite is not portable, and adding
+        #              a linux job that is permanently red is worse than not
+        #              having one: a CI that is always red is off. Recorded
+        #              as CF-22; when the fixtures are fixed, add it back.
+        #   windows -- 37 of 39 failures were ONE cause, below.
+        os: [windows-latest]
+        python: ["3.12"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +47,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: Give git an identity
+        # ⚠️ 37 of the first run's 39 Windows failures were this. Dozens of
+        # tests build a scratch repo and commit into it; a runner has no
+        # global user.email, so every `git commit` failed, the repo was left
+        # with no HEAD, and the error surfaced as
+        #   "git rev-parse HEAD failed: ambiguous argument 'HEAD'"
+        # which reads as a defect in workspace.py rather than as missing
+        # config. The suite passed locally because the developer machine has
+        # an identity -- local green was evidence about the machine.
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI"
       - name: Install
         run: python -m pip install -e ".[test]"
       - name: Show what is actually resolved

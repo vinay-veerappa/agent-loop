@@ -700,3 +700,38 @@ Fourth instance of *state the region a gate inspects*.
 Suite **716 → 730 passed, 34 skipped**. The 14 new tests were run against the
 pre-fix source first: **6 red**, and the widened encoding gate was driven red by
 un-pinning one site and watched fail by name.
+
+### CF-22 — the suite had never run anywhere but one machine
+
+Adding CI (this repo had none) turned up two pre-existing defects on its first
+run, neither of which is in the loop's runtime and both of which were invisible
+while `pytest -q` was only ever run in one place.
+
+**37 of 39 Windows failures were one cause: no git identity.** Dozens of tests
+build a scratch repo and commit into it. A CI runner has no global
+`user.email`, so every `git commit` silently failed, the repo was left with no
+HEAD, and the symptom surfaced three layers away as
+
+```
+agent_loop.workspace.WorkspaceError: git rev-parse HEAD failed:
+  fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree
+```
+
+which reads as a defect in `workspace.py`. ⚠️ **The suite passed locally because
+the developer machine has an identity** — a green there was evidence about the
+machine, not about the code. Same family as *a worktree is not a fresh checkout*.
+
+**Linux fails for a second, separate reason: the fixtures are not portable.**
+They shell out with
+
+```python
+os.system(f'cd /d "{repo}" && git init && git add -A && git commit -m init --allow-empty')
+```
+
+`cd /d` is cmd.exe. On Linux the whole command is a no-op and the tests that
+depend on it fail in a heap. The linux jobs are **deliberately not in the
+matrix** rather than left red — a CI that is always red is off, which this
+project has already paid for once (10 consecutive red pushes read as green).
+Add them back when the fixtures use `subprocess.run(cwd=...)` instead of a
+shell string; that is a contained change and worth doing, but it is a test-suite
+job and not a loop fix.
