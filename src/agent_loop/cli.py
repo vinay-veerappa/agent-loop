@@ -569,7 +569,6 @@ def _run_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
         agent-loop --mode run-plan --pipeline --feature "..." --apply
         agent-loop --mode run-plan --pipeline --epic "..." --apply
     """
-    from .plan_mode import run_plan as plan_run
     from . import run_plan_mode
 
     intent = args.feature or args.epic or args.defect
@@ -577,7 +576,12 @@ def _run_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
         print("--pipeline needs --feature (or --epic) describing what to build")
         return 2
 
-    is_feature = bool(args.feature or args.epic)
+    # C1: --epic triggers two-tier decomposition (epic → stories → tasks).
+    if args.epic:
+        return _run_epic_pipeline(args, profile, implementer, reviewers, arbiter)
+
+    # --feature: single-tier decomposition.
+    from .plan_mode import run_plan as plan_run
 
     # Step 1: plan mode — decompose into parts.
     print("\n==== PIPELINE STEP 1: PLAN ====")
@@ -590,7 +594,7 @@ def _run_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
         arbiter_model=arbiter,
         max_rounds=args.max_rounds,
         fast_plan=args.fast_plan,
-        feature=is_feature,
+        feature=True,
     )
 
     if not plan_result.get("plan"):
@@ -625,6 +629,67 @@ def _run_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
         apply=True,  # pipeline always applies
         max_rounds=args.max_rounds,
         tdd=True,  # pipeline always uses TDD
+        keep_branch=args.keep_branch,
+        panel_deadline=args.panel_deadline,
+    )
+
+    return 0 if result.status == "complete" else 1
+
+
+def _run_epic_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
+    """C1: two-tier pipeline — epic → stories → tasks → run-plan --tdd --apply.
+
+    Usage:
+        agent-loop --mode run-plan --pipeline --epic "..." --apply
+    """
+    from .plan_mode import run_epic_plan
+    from . import run_plan_mode
+
+    # Step 1: epic decomposition (epic → stories → tasks).
+    print("\n==== PIPELINE STEP 1: EPIC DECOMPOSITION ====")
+    epic_result = run_epic_plan(
+        Path("."),
+        args.epic,
+        profile,
+        implementer,
+        reviewers,
+        arbiter_model=arbiter,
+        max_rounds=args.max_rounds,
+        fast_plan=args.fast_plan,
+    )
+
+    if not epic_result.get("plan"):
+        print(f"\npipeline aborted: epic decomposition produced no plan (verdict: {epic_result.get('verdict', '?')})")
+        return 1
+
+    plan_path = Path("logs/agent_loop/PLAN/plan.json")
+    if not plan_path.is_file():
+        print(f"\npipeline aborted: plan file not found at {plan_path}")
+        return 1
+
+    # Validate the combined plan.
+    from .cli import load_tickets
+    try:
+        tickets = load_tickets(plan_path)
+    except Exception as exc:
+        print(f"\npipeline aborted: plan validation failed: {exc}")
+        return 1
+
+    stories = epic_result.get("stories", [])
+    print(f"\n  [pipeline] epic validated: {len(stories)} story/stories, {len(tickets)} task(s)")
+
+    # Step 2: run-plan --tdd --apply.
+    print("\n==== PIPELINE STEP 2: RUN-PLAN --tdd --apply ====")
+    result = run_plan_mode.run_plan(
+        repo=Path("."),
+        plan_path=plan_path,
+        profile=profile,
+        implementer=implementer,
+        reviewers=reviewers,
+        arbiter_model=arbiter,
+        apply=True,
+        max_rounds=args.max_rounds,
+        tdd=True,
         keep_branch=args.keep_branch,
         panel_deadline=args.panel_deadline,
     )

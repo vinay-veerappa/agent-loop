@@ -513,3 +513,96 @@ def test_d1_feature_verdict_in_plan_result():
     result = PlanResult(plan_id="test", status="complete")
     assert hasattr(result, "feature_verdict")
     assert result.feature_verdict == ""
+
+
+# ---------------------------------------------------------------------------
+# C1: Epic decomposition (story parsing + ID prefixing)
+# ---------------------------------------------------------------------------
+
+def test_c1_parse_stories_extracts_blocks():
+    """C1: _parse_stories extracts <<<STORY>>> blocks in document order."""
+    from agent_loop.plan_mode import _parse_stories
+
+    raw = """<<<STORY>>>
+{"id": "S1", "title": "first", "description": "do thing 1", "acceptance_criteria": ["c1"]}
+<<<END STORY>>>
+<<<STORY>>>
+{"id": "S2", "title": "second", "description": "do thing 2", "acceptance_criteria": ["c2"]}
+<<<END STORY>>>
+"""
+    stories = _parse_stories(raw)
+    assert len(stories) == 2
+    assert stories[0]["id"] == "S1"
+    assert stories[1]["id"] == "S2"
+    assert stories[0]["title"] == "first"
+    assert stories[1]["acceptance_criteria"] == ["c2"]
+
+
+def test_c1_parse_stories_empty_when_absent():
+    """C1: no <<<STORY>>> blocks → empty list."""
+    from agent_loop.plan_mode import _parse_stories
+
+    assert _parse_stories("just text, no blocks") == []
+
+
+def test_c1_parse_stories_skips_malformed():
+    """C1: malformed JSON in a STORY block is skipped, not crashed."""
+    from agent_loop.plan_mode import _parse_stories
+
+    raw = """<<<STORY>>>
+not valid json
+<<<END STORY>>>
+<<<STORY>>>
+{"id": "S1", "title": "ok"}
+<<<END STORY>>>
+"""
+    stories = _parse_stories(raw)
+    assert len(stories) == 1
+    assert stories[0]["id"] == "S1"
+
+
+def test_c1_prefix_task_ids_adds_story_prefix():
+    """C1: _prefix_task_ids prefixes task IDs with the story ID."""
+    from agent_loop.plan_mode import _prefix_task_ids
+
+    tasks = [
+        {"id": "F1", "title": "first", "depends_on": []},
+        {"id": "F2", "title": "second", "depends_on": ["F1"]},
+    ]
+    prefixed = _prefix_task_ids(tasks, "S1")
+
+    assert prefixed[0]["id"] == "S1F1"
+    assert prefixed[1]["id"] == "S1F2"
+    # depends_on is rewritten
+    assert prefixed[1]["depends_on"] == ["S1F1"]
+    # story_id is stamped
+    assert prefixed[0]["story_id"] == "S1"
+    assert prefixed[1]["story_id"] == "S1"
+
+
+def test_c1_prefix_task_ids_preserves_other_fields():
+    """C1: prefixing doesn't lose regions, expect_green, etc."""
+    from agent_loop.plan_mode import _prefix_task_ids
+
+    tasks = [
+        {"id": "F1", "title": "t", "regions": [{"id": "R1", "file": "x.py"}],
+         "expect_green": ["test_x"], "depends_on": []},
+    ]
+    prefixed = _prefix_task_ids(tasks, "S1")
+    assert prefixed[0]["regions"] == [{"id": "R1", "file": "x.py"}]
+    assert prefixed[0]["expect_green"] == ["test_x"]
+
+
+def test_c1_prefix_task_ids_no_collision_across_stories():
+    """C1: two stories with the same task IDs get different prefixed IDs."""
+    from agent_loop.plan_mode import _prefix_task_ids
+
+    story1_tasks = [{"id": "F1", "depends_on": []}]
+    story2_tasks = [{"id": "F1", "depends_on": []}]
+
+    p1 = _prefix_task_ids(story1_tasks, "S1")
+    p2 = _prefix_task_ids(story2_tasks, "S2")
+
+    assert p1[0]["id"] == "S1F1"
+    assert p2[0]["id"] == "S2F1"
+    assert p1[0]["id"] != p2[0]["id"]

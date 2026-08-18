@@ -99,6 +99,36 @@ expect_green tests suffice, omit the block.
 """
 
 
+EPIC_SYSTEM = """You are a senior product engineer decomposing an EPIC into
+user-valued stories. The epic is a large feature that needs to be broken into
+smaller, independently shippable stories.
+
+Your job is to break the epic into the SMALLEST set of stories that each
+deliver value on their own. Each story should be describable in one paragraph
+and have clear acceptance criteria.
+
+Do NOT produce code-level regions, anchors, or expect_green. Those come in
+the NEXT level of decomposition (task-level), where each story is broken into
+technical tasks. You produce stories, not tasks.
+
+OUTPUT FORMAT - obey exactly, one block per story:
+<<<STORY>>>
+{
+  "id": "S1",
+  "title": "short story title",
+  "description": "what this story delivers, in one paragraph",
+  "acceptance_criteria": ["criterion 1", "criterion 2"]
+}
+<<<END STORY>>>
+<<<STORY>>>
+{ ...the next story... }
+<<<END STORY>>>
+<<<NOTES>>>
+- why this decomposition, and the build order
+<<<END NOTES>>>
+"""
+
+
 def run_plan(
     repo: Path,
     defect_description: str,
@@ -455,6 +485,204 @@ def _parse_feature_acceptance(raw: str) -> List[str]:
     except json.JSONDecodeError:
         pass
     return []
+
+
+# ---------------------------------------------------------------------------
+# C1: Epic decomposition (story-level)
+# ---------------------------------------------------------------------------
+
+_STORY_RE = re.compile(r"<<<STORY>>>\s*(\{.*?\})\s*<<<END\s*STORY>>>", re.DOTALL)
+
+
+def _parse_stories(raw: str) -> List[Dict[str, Any]]:
+    """C1: parse every <<<STORY>>> block from the epic-level response.
+
+    Each story has id, title, description, acceptance_criteria. Returns them
+    in document order (the build order the planner chose).
+    """
+    out: List[Dict[str, Any]] = []
+    for m in _STORY_RE.finditer(raw):
+        try:
+            s = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(s, dict) and "id" in s:
+            out.append(s)
+    return out
+
+
+def _prefix_task_ids(tasks: List[Dict[str, Any]], story_id: str) -> List[Dict[str, Any]]:
+    """Prefix task IDs with the story ID to avoid collisions across stories.
+
+    S1's tasks F1, F2 become S1F1, S1F2. depends_on references are rewritten
+    to use the prefixed IDs. This keeps each story's internal dependency
+    graph intact while preventing collisions when stories are merged.
+    """
+    # Build the old→new ID map.
+    id_map = {t["id"]: f"{story_id}{t['id']}" for t in tasks if "id" in t}
+
+    out = []
+    for t in tasks:
+        t2 = dict(t)
+        t2["id"] = id_map.get(t["id"], t["id"])
+        # Rewrite depends_on.
+        deps = t.get("depends_on") or []
+        t2["depends_on"] = [id_map.get(d, d) for d in deps]
+        # Stamp the story_id for traceability.
+        t2["story_id"] = story_id
+        out.append(t2)
+    return out
+
+
+def run_epic_plan(
+    repo: Path,
+    epic_description: str,
+    profile: profiles.Profile,
+    implementer: str,
+    reviewers: Sequence[str],
+    arbiter_model: str = "",
+    max_rounds: int = 4,
+    fast_plan: bool = False,
+) -> Dict[str, Any]:
+    """C1: two-tier decomposition — epic → stories → tasks.
+
+    Step 1: run the planner with EPIC_SYSTEM to decompose the epic into
+    user-valued stories (no code regions, no anchors).
+
+    Step 2: for each story, run the existing `run_plan(feature=True)` to
+    decompose it into technical tasks (tickets with regions, anchors,
+    expect_green).
+
+    Step 3: combine all stories' tasks into one plan JSON, prefixing task
+    IDs with the story ID (S1F1, S1F2, etc.) to avoid collisions.
+
+    Returns a result dict like run_plan, but with `stories` and a combined
+    `plan` (all tasks from all stories).
+    """
+    tid = "EPIC"
+    art = repo / "logs" / "agent_loop" / tid
+    art.mkdir(parents=True, exist_ok=True)
+
+    result: Dict[str, Any] = {"ticket": tid, "rounds": [], "plan": None,
+                              "verdict": "", "stories": []}
+
+    # --- Step 1: story-level decomposition ---
+    prompt = f"# Epic to decompose\n\n{epic_description}\n\n"
+    prompt += f"## Context\nLanguage: {profile.language}\n"
+
+    # Add layout context so the planner knows the codebase structure.
+    layout = build_layout_context(repo, profile)
+    if layout:
+        prompt += layout + "\n"
+
+    history: List[Dict[str, str]] = [
+        {"role": "system", "content": EPIC_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+
+    stories: List[Dict[str, Any]] = []
+    final = "MAX_ROUNDS_EXHAUSTED"
+    cfg = config.get().mode("plan")
+
+    for rnd in range(1, max_rounds + 1):
+        try:
+            out = chat(implementer, history, max_tokens=cfg.max_tokens, think=cfg.think)
+        except ProviderError as exc:
+            result["error"] = str(exc)
+            break
+
+        raw = out.text
+        (art / f"r{rnd}_epic_raw.txt").write_text(raw, encoding="utf-8")
+        print(f"  epic round {rnd}: {out.usage_line()}")
+
+        stories = _parse_stories(raw)
+        if not stories:
+            history += [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": "Your output did not contain a <<<STORY>>> block. Re-emit with the correct format."},
+            ]
+            continue
+
+        result["stories"] = stories
+        result["verdict"] = "APPROVE"
+        final = "APPROVE"
+        break
+
+    result["verdict"] = final
+    (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    if not stories:
+        print(f"  epic decomposition failed: {final}")
+        return result
+
+    print(f"\n  epic decomposed into {len(stories)} stories:")
+    for s in stories:
+        print(f"    {s.get('id', '?'):<5} {s.get('title', '')}")
+
+    # --- Step 2: task-level decomposition per story ---
+    all_tasks: List[Dict[str, Any]] = []
+    all_feature_acceptance: List[str] = []
+
+    for s in stories:
+        sid = s.get("id", "?")
+        desc = s.get("description", s.get("title", ""))
+        print(f"\n==== STORY {sid}: {s.get('title', '')} ====")
+        print(f"  decomposing into tasks...")
+
+        story_result = run_plan(
+            repo,
+            desc,
+            profile,
+            implementer,
+            reviewers,
+            arbiter_model=arbiter_model,
+            max_rounds=max_rounds,
+            fast_plan=fast_plan,
+            feature=True,
+        )
+
+        story_plan = story_result.get("plan")
+        if not story_plan:
+            print(f"  story {sid} produced no tasks (verdict: {story_result.get('verdict', '?')})")
+            continue
+
+        story_tasks = story_plan if isinstance(story_plan, list) else [story_plan]
+        prefixed = _prefix_task_ids(story_tasks, sid)
+        all_tasks.extend(prefixed)
+
+        # Collect feature_acceptance from each story.
+        # Read the story's plan.json for feature_acceptance.
+        story_plan_path = repo / "logs" / "agent_loop" / "PLAN" / "plan.json"
+        # Note: this overwrites the previous story's plan.json, so we read
+        # it right after each story runs. The final plan.json is the last
+        # story's; we overwrite it with the combined plan below.
+        if story_plan_path.exists():
+            try:
+                sp = json.loads(story_plan_path.read_text(encoding="utf-8"))
+                fa = sp.get("feature_acceptance", [])
+                all_feature_acceptance.extend(fa)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        print(f"  story {sid}: {len(prefixed)} task(s)")
+
+    # --- Step 3: write combined plan ---
+    if not all_tasks:
+        print("\nepic produced no tasks")
+        return result
+
+    combined_plan: Dict[str, Any] = {"tickets": all_tasks}
+    if all_feature_acceptance:
+        combined_plan["feature_acceptance"] = all_feature_acceptance
+
+    plan_dir = repo / "logs" / "agent_loop" / "PLAN"
+    plan_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = plan_dir / "plan.json"
+    plan_path.write_text(json.dumps(combined_plan, indent=2), encoding="utf-8")
+    print(f"\n  EPIC PLAN -> {plan_path} ({len(all_tasks)} task(s) across {len(stories)} story/stories)")
+
+    result["plan"] = all_tasks
+    return result
 
 
 def _validate_feature_plan(
