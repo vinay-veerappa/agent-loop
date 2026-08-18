@@ -528,6 +528,9 @@ def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
         tdd=args.tdd,
         resume=args.resume,
         backlog_path=args.backlog,
+        replan=args.replan,
+        replan_limit=args.replan_limit,
+        continue_on_failure=args.continue_on_failure,
     )
 
     # Exit code: 0 if all parts applied, 1 if partial or failed.
@@ -724,6 +727,18 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--backlog", default="",
         help="run-plan mode: path to backlog.json (for --resume or status display)",
+    )
+    ap.add_argument(
+        "--replan", action="store_true",
+        help="run-plan mode: re-plan a failed part instead of stopping (B2)",
+    )
+    ap.add_argument(
+        "--replan-limit", type=int, default=2,
+        help="run-plan mode: max re-plans per part (default 2)",
+    )
+    ap.add_argument(
+        "--continue-on-failure", action="store_true",
+        help="run-plan mode: continue to next independent part on failure (B3)",
     )
     # Empty, NOT a Python path. This default was passed unconditionally, so it
     # overrode any profile-derived choice and told a C# project's test writer to

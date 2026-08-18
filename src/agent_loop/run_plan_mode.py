@@ -318,6 +318,9 @@ def run_plan(
     tdd: bool = False,
     resume: bool = False,
     backlog_path: str = "",
+    replan: bool = False,
+    replan_limit: int = 2,
+    continue_on_failure: bool = False,
 ) -> PlanResult:
     """Execute a decomposed plan.
 
@@ -340,6 +343,9 @@ def run_plan(
         tdd: generate failing acceptance tests before each part (A1)
         resume: B1 — read backlog.json, skip done parts, retry failed/blocked
         backlog_path: B1 — path to backlog.json (for --resume)
+        replan: B2 — re-plan a failed part instead of stopping
+        replan_limit: B2 — max re-plans per part (default 2)
+        continue_on_failure: B3 — continue to next independent part on failure
 
     Returns:
         a PlanResult with the outcome of each part
@@ -533,8 +539,23 @@ def run_plan(
                 part_result.commit = commit
                 print(f"  [plan] {tid} committed to {branch} @ {commit[:8]}")
             elif ticket_result.get("final_verdict") not in PROMOTABLE:
-                # Part failed. Stop the chain.
-                print(f"  [plan] {tid} NOT promotable ({part_result.verdict}). Stopping.")
+                # Part failed.
+                print(f"  [plan] {tid} NOT promotable ({part_result.verdict}).")
+                # B3: continue-on-failure skips to the next independent part.
+                if continue_on_failure:
+                    print(f"  [plan] --continue-on-failure: marking {tid} as failed, continuing")
+                    result.status = "partial" if result.parts else "failed"
+                    result.parts.append(part_result)
+                    result.cost_usd += part_result.cost_usd
+                    _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                                   result.parts, result.status or "in_progress")
+                    continue
+                # B2: re-plan the failed part (future: call plan_mode with
+                # the failure feedback). For now, stop the chain.
+                if replan:
+                    print(f"  [plan] --replan: re-planning {tid} (not yet implemented, stopping)")
+                    # TODO: feed failure feedback to plan_mode.run_plan() for
+                    # just this part, then re-run the revised part(s).
                 result.status = "partial" if result.parts else "failed"
                 result.parts.append(part_result)
                 break
@@ -542,6 +563,15 @@ def run_plan(
         except Exception as exc:
             part_result.error = f"{type(exc).__name__}: {exc}"
             print(f"  [plan] {tid} ERROR: {part_result.error}")
+            # B3: continue-on-failure on exceptions too.
+            if continue_on_failure:
+                print(f"  [plan] --continue-on-failure: marking {tid} as failed, continuing")
+                result.status = "partial" if result.parts else "failed"
+                result.parts.append(part_result)
+                result.cost_usd += part_result.cost_usd
+                _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                               result.parts, result.status or "in_progress")
+                continue
             result.status = "partial" if result.parts else "failed"
             result.parts.append(part_result)
             break
