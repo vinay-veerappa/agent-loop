@@ -413,3 +413,63 @@ def test_a1_planner_prompt_includes_test_path_pattern(tmp_path):
     assert "test_F1Generated" in path, (
         f"default_test_path should include part ID, got: {path}"
     )
+
+
+# ---------------------------------------------------------------------------
+# B1: backlog.json persistent state
+# ---------------------------------------------------------------------------
+
+def test_b1_write_backlog_creates_file(tmp_path):
+    """B1: _write_backlog creates backlog.json next to the manifest."""
+    from agent_loop.run_plan_mode import _write_backlog, PartResult
+    from agent_loop.workspace import _git
+
+    _init_git_repo(tmp_path)
+    tickets = [{"id": "F1", "title": "first"}, {"id": "F2", "title": "second"}]
+    parts = [PartResult(id="F1", title="first", applied=True, commit="abc123")]
+
+    bl_path = _write_backlog(tmp_path, "test-plan-1", "agent-loop/plan-test-1",
+                             "base123", tickets, parts, "partial")
+
+    assert bl_path.exists(), "backlog.json should be created"
+    backlog = json.loads(bl_path.read_text(encoding="utf-8"))
+    assert backlog["plan_id"] == "test-plan-1"
+    assert backlog["branch"] == "agent-loop/plan-test-1"
+    assert backlog["status"] == "partial"
+    assert len(backlog["parts"]) == 2
+    # F1 is done, F2 is pending
+    f1 = next(p for p in backlog["parts"] if p["id"] == "F1")
+    assert f1["status"] == "done"
+    f2 = next(p for p in backlog["parts"] if p["id"] == "F2")
+    assert f2["status"] == "pending"
+
+
+def test_b1_read_backlog_returns_dict(tmp_path):
+    """B1: _read_backlog reads and returns the backlog dict."""
+    from agent_loop.run_plan_mode import _read_backlog
+
+    bl_path = tmp_path / "backlog.json"
+    data = {"plan_id": "test-1", "parts": [{"id": "F1", "status": "done"}]}
+    bl_path.write_text(json.dumps(data), encoding="utf-8")
+
+    backlog = _read_backlog(bl_path)
+    assert backlog["plan_id"] == "test-1"
+    assert len(backlog["parts"]) == 1
+
+
+def test_b1_read_backlog_raises_on_missing_file(tmp_path):
+    """B1: _read_backlog raises PlanError when the file doesn't exist."""
+    from agent_loop.run_plan_mode import _read_backlog, PlanError
+
+    with pytest.raises(PlanError, match="not found"):
+        _read_backlog(tmp_path / "nonexistent.json")
+
+
+def test_b1_backlog_path_is_next_to_manifest(tmp_path):
+    """B1: backlog.json lives at logs/agent_loop/plan-<plan_id>/backlog.json,
+    next to the plan manifest, not next to the input plan."""
+    from agent_loop.run_plan_mode import _backlog_path
+
+    bl_path = _backlog_path(tmp_path, "test-42")
+    assert "plan-test-42" in str(bl_path)
+    assert bl_path.name == "backlog.json"

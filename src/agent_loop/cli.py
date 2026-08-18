@@ -500,6 +500,10 @@ def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
     if args.pipeline:
         return _run_pipeline(args, profile, implementer, reviewers, arbiter)
 
+    # E2: --backlog without --apply shows the backlog status.
+    if args.backlog and not args.apply:
+        return _show_backlog(args.backlog)
+
     if not args.plan:
         print("--mode run-plan needs --plan (path to the plan JSON) or --pipeline")
         return 2
@@ -522,10 +526,37 @@ def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
         keep_branch=args.keep_branch,
         panel_deadline=args.panel_deadline,
         tdd=args.tdd,
+        resume=args.resume,
+        backlog_path=args.backlog,
     )
 
     # Exit code: 0 if all parts applied, 1 if partial or failed.
     return 0 if result.status == "complete" else 1
+
+
+def _show_backlog(backlog_path: str) -> int:
+    """E2: print the current state of the backlog (the agile 'standup')."""
+    from .run_plan_mode import _read_backlog, PlanError
+
+    try:
+        backlog = _read_backlog(Path(backlog_path))
+    except PlanError as exc:
+        print(f"  {exc}")
+        return 2
+
+    print(f"\n==== BACKLOG STATUS ====")
+    print(f"plan_id: {backlog.get('plan_id', '?')}")
+    print(f"branch:  {backlog.get('branch', '?')}")
+    print(f"status:  {backlog.get('status', '?')}")
+    print()
+    for p in backlog.get("parts", []):
+        status = p.get("status", "pending")
+        tag = {"done": "OK", "failed": "FAIL", "blocked": "BLOCK",
+               "in_progress": "WIP", "pending": "TODO"}.get(status, status)
+        print(f"  {p.get('id', '?'):<5} [{tag:<5}] {p.get('title', '')}")
+        if p.get("last_error"):
+            print(f"         error: {p['last_error']}")
+    return 0
 
 
 def _run_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
@@ -685,6 +716,14 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--epic", default="",
         help="plan/run-plan mode: an epic to decompose into stories then tasks",
+    )
+    ap.add_argument(
+        "--resume", action="store_true",
+        help="run-plan mode: read backlog.json, skip done parts, retry failed/blocked",
+    )
+    ap.add_argument(
+        "--backlog", default="",
+        help="run-plan mode: path to backlog.json (for --resume or status display)",
     )
     # Empty, NOT a Python path. This default was passed unconditionally, so it
     # overrode any profile-derived choice and told a C# project's test writer to

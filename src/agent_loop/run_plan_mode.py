@@ -181,6 +181,71 @@ def _commit_to_branch(
     return commit
 
 
+# ---------------------------------------------------------------------------
+# B1: backlog.json — persistent plan state
+# ---------------------------------------------------------------------------
+
+def _backlog_path(repo: Path, plan_id: str) -> Path:
+    """Where backlog.json lives: next to the plan manifest."""
+    return repo / "logs" / "agent_loop" / f"plan-{plan_id}" / "backlog.json"
+
+
+def _write_backlog(
+    repo: Path,
+    plan_id: str,
+    branch: str,
+    base_commit: str,
+    tickets: List[Dict[str, Any]],
+    parts: List[PartResult],
+    status: str,
+) -> Path:
+    """Write backlog.json after each part completes.
+
+    The backlog is the plan JSON + a status field per part. It's written
+    next to the plan manifest at logs/agent_loop/plan-<plan_id>/backlog.json.
+    The planner's plan.json is never mutated.
+    """
+    bl_path = _backlog_path(repo, plan_id)
+    bl_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build a status map from parts.
+    part_status: Dict[str, Dict[str, Any]] = {}
+    for p in parts:
+        part_status[p.id] = {
+            "status": "done" if p.applied else "failed",
+            "verdict": p.verdict,
+            "commit": p.commit,
+            "attempts": 1,
+            "last_error": p.error,
+        }
+
+    # Merge tickets with status.
+    backlog_parts = []
+    for t in tickets:
+        tid = t["id"]
+        st = part_status.get(tid, {"status": "pending"})
+        backlog_parts.append({**t, **st})
+
+    backlog = {
+        "plan_id": plan_id,
+        "branch": branch,
+        "base_commit": base_commit,
+        "status": status,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "parts": backlog_parts,
+    }
+
+    bl_path.write_text(json.dumps(backlog, indent=2), encoding="utf-8")
+    return bl_path
+
+
+def _read_backlog(backlog_path: Path) -> Dict[str, Any]:
+    """Read backlog.json. Returns the backlog dict, or raises if not found."""
+    if not backlog_path.is_file():
+        raise PlanError(f"backlog file not found: {backlog_path}")
+    return json.loads(backlog_path.read_text(encoding="utf-8"))
+
+
 def run_plan(
     repo: Path,
     plan_path: Path,
@@ -194,6 +259,8 @@ def run_plan(
     keep_branch: bool = False,
     panel_deadline: int = 0,
     tdd: bool = False,
+    resume: bool = False,
+    backlog_path: str = "",
 ) -> PlanResult:
     """Execute a decomposed plan.
 
@@ -214,6 +281,8 @@ def run_plan(
         keep_branch: do not delete the scratch branch on failure
         panel_deadline: panel deadline in seconds (0 = use config)
         tdd: generate failing acceptance tests before each part (A1)
+        resume: B1 — read backlog.json, skip done parts, retry failed/blocked
+        backlog_path: B1 — path to backlog.json (for --resume)
 
     Returns:
         a PlanResult with the outcome of each part
@@ -222,7 +291,32 @@ def run_plan(
     from .cli import load_tickets
     tickets = load_tickets(plan_path)
 
-    plan_id = f"{int(time.time())}"
+    # B1: resume reads plan_id, branch, and per-part status from backlog.json.
+    # Without this, plan_id is regenerated (int(time.time())) and the branch
+    # name won't match the existing one — the "branch already exists" error
+    # is unreachable for exactly this reason.
+    done_ids: set = set()
+    if resume and backlog_path:
+        bl_path = Path(backlog_path)
+        try:
+            backlog = _read_backlog(bl_path)
+        except PlanError as exc:
+            print(f"  RESUME REFUSED: {exc}")
+            return PlanResult(plan_id="", status="failed", parts=[], started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        plan_id = backlog.get("plan_id", "")
+        branch = backlog.get("branch", "")
+        base_commit = backlog.get("base_commit", "")
+        # Skip done parts; retry failed/blocked parts.
+        done_ids = {p["id"] for p in backlog.get("parts", []) if p.get("status") == "done"}
+        if done_ids:
+            print(f"  [resume] skipping done parts: {sorted(done_ids)}")
+        # Verify the branch still exists.
+        existing = _git(repo, "branch", "--list", branch, check=False).strip()
+        if not existing:
+            print(f"  RESUME REFUSED: branch {branch} no longer exists")
+            return PlanResult(plan_id=plan_id, status="failed", parts=[], started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    else:
+        plan_id = f"{int(time.time())}"
 
     # Sort by dependency order.
     try:
@@ -244,13 +338,14 @@ def run_plan(
         print(f"  Use --apply to execute.")
         return PlanResult(plan_id=plan_id, status="complete", parts=[], started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
 
-    # Create the scratch branch.
-    base_commit = _git(repo, "rev-parse", "HEAD").strip()
-    try:
-        branch = _create_plan_branch(repo, plan_id, base_commit)
-    except PlanError as exc:
-        print(f"  PLAN REFUSED: {exc}")
-        return PlanResult(plan_id=plan_id, status="failed", parts=[], started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    # Create the scratch branch (or reuse existing on resume).
+    if not resume:
+        base_commit = _git(repo, "rev-parse", "HEAD").strip()
+        try:
+            branch = _create_plan_branch(repo, plan_id, base_commit)
+        except PlanError as exc:
+            print(f"  PLAN REFUSED: {exc}")
+            return PlanResult(plan_id=plan_id, status="failed", parts=[], started_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
 
     print(f"  [plan] branch={branch} @ {base_commit[:8]}")
 
@@ -265,6 +360,10 @@ def run_plan(
     skip = bool(from_part)
     for t in ordered:
         tid = t["id"]
+        # B1: skip done parts on resume.
+        if tid in done_ids:
+            print(f"  [plan] skipping {tid} (done in prior run)")
+            continue
         if skip:
             if tid == from_part:
                 skip = False
@@ -385,6 +484,11 @@ def run_plan(
         result.parts.append(part_result)
         result.cost_usd += part_result.cost_usd
 
+        # B1: write backlog.json after each part so a crash or failure
+        # leaves a trace of which parts succeeded.
+        _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                       result.parts, result.status or "in_progress")
+
     # Determine plan status.
     if not result.status:
         all_applied = all(p.applied for p in result.parts)
@@ -420,6 +524,11 @@ def run_plan(
         ],
     }, indent=2), encoding="utf-8")
     print(f"\n  [plan] manifest: {manifest_path}")
+
+    # B1: write final backlog with the final status.
+    bl_path = _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                             result.parts, result.status)
+    print(f"  [plan] backlog: {bl_path}")
 
     # Clean up the scratch branch if the plan failed and --keep-branch was
     # not set. But only if no part committed to it — a branch with committed
