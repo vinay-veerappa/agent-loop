@@ -414,6 +414,7 @@ def adjudicate(
             # nothing at all. The measured answer is still False; see the
             # arbiter role in config.py for the numbers.
             think=_arbiter_think(),
+            cache=True,
         )
     except ProviderError as exc:
         return Adjudication(False, error=str(exc), prompt=prompt)

@@ -574,6 +574,7 @@ def review_panel(
                 [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 max_tokens=budget,
                 think=think_flag,
+                cache=True,
             )
         except ProviderError as exc:
             return Vote(model, UNREACHABLE, secs=round(time.time() - t0, 1), error=str(exc))
