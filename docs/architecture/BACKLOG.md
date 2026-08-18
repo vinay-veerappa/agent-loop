@@ -384,11 +384,8 @@ in `tests/acceptance/test_docs_mode_cli.py` drive `main(argv)` so argparse is in
 the loop; 17 of the 18 fail against the pre-fix `cli.py`. `changelog` and
 `handover` have now been run end to end against a live model.
 
-**Still OPEN (MED):** the README claims docs mode follows the doc-architect
-skill's conventions. It does not — the four system prompts in `docs_mode.py` are
-hardcoded and contain nothing project-specific, so generated docs do not match
-any repo's house format. Either inject the skill's conventions into the system
-prompt or add a `Profile.docs_conventions` field. README now says so explicitly.
+**CLOSED (commit `beb108d`):** `Profile.docs_conventions` field added. Docs mode
+prepends it to the system prompt when set. README updated to document the field.
 
 #### O12. Per-model token budgets in the registry are dead configuration — CLOSED (`2fbf1b6` + config.py)
 
@@ -1496,10 +1493,11 @@ still cannot ask for one:
   prompt that asks for new files and emits `op` per region.
 * Plan emits ONE ticket. A feature is usually several with an order, and the
   loader already accepts a list.
-* Question 4 is still unanswered: what is the acceptance criterion for a feature?
-  `expect_green` presumes tests that exist. Test mode can generate them, and the
-  O34 exception now lets them be red for the right reason — but that path has not
-  been run end to end.
+* Question 4 is now ANSWERED: the acceptance criterion for a feature is
+  `feature_acceptance` — integration-level tests that run after all parts
+  are done, against the scratch branch HEAD. Implemented in the AGILE
+  Pipeline plan, phase D (commit `587f24f`). See
+  [AGILE_PIPELINE_PLAN.md](./AGILE_PIPELINE_PLAN.md) §D for details.
 
 Original text follows.
 

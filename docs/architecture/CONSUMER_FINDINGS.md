@@ -312,10 +312,15 @@ Reporting  _looks_like_code=True   in_call_tokens=False  -> WARNS
 interior-transition rule the comment already claims. Adding `Do`/`Five`/`Reporting` to the
 stop-word list would be the wrong fix — the list is already 19 words long and English is not.
 
-### CF-5 — the fields were added; neither one identifies the tool ⚠️ NOT FIXED
+### CF-5 — the fields were added; neither one identifies the tool ✅ FIXED (commit `0a588ba`)
 
-This is the finding to re-open. Both fields are set unconditionally at the top of `run_ticket`,
-and here is what they evaluate to on this box:
+**Fixed:** `agent_loop_describe` added to `result.json` — `git describe --tags
+--always --dirty` gives `v0.6.7-23-g23ba872` (23 commits past the tag), which
+distinguishes a tag run from a HEAD run. The packaging constant
+(`agent_loop_version`) is kept for compatibility but is no longer the only
+version surface. Also printed in the terminal summary as `tool: v0.6.7-23-g23ba872`.
+
+The original finding is preserved below for context.
 
 ```
 agent_loop_version = 0.6.7            <- importlib.metadata, the packaging constant

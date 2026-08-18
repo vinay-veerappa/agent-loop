@@ -55,6 +55,23 @@ generated a fix, passed all gates, and both reviewers unanimously approved.
 | `docs` | codebase → documentation (4 sub-modes) | `--mode docs --docs-type changelog\|handover\|design\|prd` |
 | `run-plan` | plan JSON → executed chain | `--mode run-plan --plan plan.json` |
 
+### run-plan mode flags
+
+| Flag | Description |
+|---|---|
+| `--apply` | Commit each promoted part to the scratch branch |
+| `--tdd` | Generate failing acceptance tests before each part (TDD) |
+| `--pipeline` | Chain plan → run-plan --tdd --apply in one invocation |
+| `--epic "..."` | Two-tier decomposition: epic → stories → tasks |
+| `--feature "..."` | Single-tier decomposition: feature → parts |
+| `--resume` | Read backlog.json, skip done parts, retry failed/blocked |
+| `--backlog PATH` | Path to backlog.json (for --resume or status display) |
+| `--from PART_ID` | Resume from a specific part (skip earlier parts) |
+| `--keep-branch` | Do not delete the scratch branch on failure |
+| `--replan` | Re-plan a failed part instead of stopping |
+| `--replan-limit N` | Max re-plans per part (default 2) |
+| `--continue-on-failure` | Continue to next independent part on failure |
+
 See [ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) for the authoritative
 architecture reference, [AGENT_LOOP_V2_PLAN.md](docs/architecture/AGENT_LOOP_V2_PLAN.md) for the full execution plan,
 [IMPLEMENTATION_DECISIONS.md](docs/architecture/IMPLEMENTATION_DECISIONS.md) for the decision log,

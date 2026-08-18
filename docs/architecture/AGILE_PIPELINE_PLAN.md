@@ -1,6 +1,6 @@
 # AGILE PIPELINE PLAN — Closing the Gap Between Building Blocks and Agile Team
 
-**Status**: IMPLEMENTED — all phases landed (A0, A1, A2, A3, B1, B2, B3, C2, D, E1, E2).
+**Status**: IMPLEMENTED — all phases landed. Suite: 773 passed, 36 skipped.
 See "Implementation status" at end for per-phase commit log.
 
 **Problem**: The agent-loop has all the building blocks of an agile team
@@ -582,7 +582,7 @@ the branch on any non-complete status, even after parts committed.
 
 ## Implementation status
 
-All phases implemented. Suite: 763 passed, 36 skipped at `7ae3bb8`.
+All phases implemented. Suite: 773 passed, 36 skipped at `e7dceb0`.
 
 | Phase | Commit | What landed |
 |---|---|---|
@@ -595,12 +595,16 @@ All phases implemented. Suite: 763 passed, 36 skipped at `7ae3bb8`.
 | B1 | `e900083` | `backlog.json` at `logs/agent_loop/plan-<plan_id>/backlog.json`, `--resume` reads it |
 | E2 | `e900083` | `--backlog` without `--apply` prints status (standup view) |
 | D1 | `587f24f` | `feature_acceptance` field on plan JSON, `_parse_feature_acceptance`, planner prompt |
-| D2 | `587f24f` | `_run_feature_acceptance`, `feature_verdict` on PlanResult (COMPLETE/PARTIAL/INCOMPLETE) |
-| B2 | `c01cb52` | `--replan` and `--replan-limit` flags wired (re-planning logic is a TODO) |
+| D2 | `587f24f` | `_run_feature_acceptance`, `feature_verdict` on PlanResult (COMPLETE/PARTIAL/INCOMPLETE/ERROR/UNVERIFIED) |
+| B2 (stub) | `c01cb52` | `--replan` and `--replan-limit` flags wired |
 | B3 | `c01cb52` | `--continue-on-failure` skips to next independent part, writes backlog |
 | C2 | `7ae3bb8` | Ticket-level size heuristic: advisory notes for >3 regions or >500 char spec |
 | C1 | `118dbc9` | Two-tier `--epic` decomposition: EPIC_SYSTEM prompt, `run_epic_plan()`, story→task pipeline |
+| B2 (logic) | `ded8927` | `_replan_part()`: feeds failure feedback to planner, runs revised parts with TDD + validation |
+| Review fixes | `23ba872` | 8 fixes from first self-review (branch retention, part_base, backlog, etc.) |
+| Review fixes | `3d79f65` | 8 fixes from complete self-review (false green, stale plan.json, done parts on resume, etc.) |
+| CF-5 | `0a588ba` | `agent_loop_describe` in result.json + terminal summary |
+| Perf | `e7dceb0` | `cache=True` on reviewer and arbiter calls (zero quality impact) |
 
 **Not yet implemented:**
-- B2 (re-planning logic): the `--replan` flag is wired but the actual re-planning (feeding failure feedback to `plan_mode.run_plan()`) prints "not yet implemented" and stops. The flag and parameter are in place.
-- C3 (recursive re-planning): depends on B2's logic.
+- C3 (recursive re-planning): re-planned sub-parts would need to go through the same size check as C2. Depends on B2, which is now implemented, but the recursive application is not.

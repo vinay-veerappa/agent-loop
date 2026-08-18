@@ -1,9 +1,16 @@
 # Plan Runner Architecture
 
-> **Status:** done (Wave 0.5, R5-1/R5-2 fixed in fifth review)
+> **Status:** done. Extended by the AGILE Pipeline (see
+> [AGILE_PIPELINE_PLAN.md](./AGILE_PIPELINE_PLAN.md) for the full feature set).
 > **Parent doc:** [ARCHITECTURE.md](./ARCHITECTURE.md) §12 (Modes)
 > **Review origin:** [AGENT_LOOP_WORK_BREAKDOWN_AND_THROUGHPUT_REVIEW.md](./AGENT_LOOP_WORK_BREAKDOWN_AND_THROUGHPUT_REVIEW.md) §A, W1–W3, W7
 > **Fixes:** [AGENT_LOOP_FIFTH_REVIEW.md](./AGENT_LOOP_FIFTH_REVIEW.md) R5-1, R5-2
+
+> **Canonical doc:** AGILE_PIPELINE_PLAN.md is now canonical for the pipeline
+> features (--tdd, --pipeline, --resume, --backlog, --replan,
+> --continue-on-failure, --epic, feature_acceptance). This doc covers the
+> original plan runner core (branch management, per-part execution, manifest).
+> The stale items below have been corrected in the AGILE_PIPELINE_PLAN.md.
 
 ## Problem
 
@@ -68,7 +75,11 @@ was promoted before the failure, and the manifest records which parts completed.
 
 #### D4. Plan-level evidence ledger
 
-The runner writes a manifest at `logs/agent_loop/<plan_id>/plan_manifest.json`:
+The runner writes a manifest at `logs/agent_loop/plan-<plan_id>/plan_manifest.json`:
+
+> **Note:** `plan_id` is a unix timestamp (`int(time.time())`), not the
+> `PLAN-YYYYMMDD-N` format shown in the example below. The manifest path
+> is `plan-<plan_id>/`, not `<plan_id>/`.
 
 ```json
 {
@@ -141,7 +152,12 @@ Step 4: Promote (manual)
 | Part 2 fails (part 1 promoted) | Plan stops. Branch has part 1's commit. Operator can inspect, fix, and re-run from part 2 with `--from F2`. |
 | `depends_on` names unknown id | Refused before any part runs. No branch created. |
 | Cycle in `depends_on` | Refused before any part runs. No branch created. |
-| Branch already exists | Refused. Operator deletes it or uses `--resume`. |
+| Branch already exists | Refused. Operator deletes it or uses `--resume --backlog <path>`. |
+
+> **`--resume`** now exists (implemented in the AGILE Pipeline plan, phase B1).
+> It reads `backlog.json` from `logs/agent_loop/plan-<plan_id>/backlog.json`,
+> reuses the `plan_id` and `branch`, skips `done` parts, and retries
+> `failed`/`blocked` parts. See AGILE_PIPELINE_PLAN.md §B1 for details.
 | Suite doesn't build at baseline | Part is refused (T-BLG1/O64). For `op=create`, message explains the scaffold-first workaround. |
 
 ### CLI
