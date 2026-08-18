@@ -559,5 +559,23 @@ def _validate_feature_plan(
                             f"every round and the panel cannot converge."
                         )
             else:
+                # C2: greenfield regions (file created by an earlier part)
+                # skip the max_region_lines check because there's nothing to
+                # look in. But we CAN check the ticket-level size: if the
+                # spec is very large or has many regions, the part may not
+                # converge. This is advisory, not a hard refusal.
                 _note(tid, spec, f"({op}, anchor deferred: file is created by an earlier part)")
+
+    # C2: ticket-level size check. A part with >3 regions or a spec >500
+    # chars is advisory — the planner can argue the part is cohesive.
+    # This catches the greenfield case that the per-region check misses.
+    for t in tickets:
+        tid = t.get("id", "?")
+        regs = t.get("regions", [])
+        spec = t.get("spec", "")
+        if len(regs) > 3:
+            _note(tid, regs[0] if regs else {}, f"advisory: {len(regs)} regions — consider splitting")
+        if len(spec) > 500:
+            _note(tid, {}, f"advisory: spec is {len(spec)} chars — consider splitting")
+
     return ""
