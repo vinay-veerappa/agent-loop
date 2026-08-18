@@ -272,11 +272,20 @@ def run_plan(
 
         print(f"\n=== Part {tid}: {t.get('title', '')} ===")
 
-        # Determine the base for this part's worktree. If the previous part
-        # was promoted and committed to the plan branch, the worktree should
-        # be at the plan branch's HEAD so it sees the previous part's code.
-        # Otherwise, at the original base.
-        if result.parts and result.parts[-1].applied:
+        # Determine the base for this part's worktree. If the plan branch
+        # has advanced past base_commit (because a prior part was promoted
+        # and committed to it), the worktree should be at the plan branch's
+        # HEAD so it sees the prior parts' code. Otherwise, at the original
+        # base.
+        #
+        # A0-2: the old check was `result.parts[-1].applied` — which only
+        # looked at the immediately preceding part. Under --continue-on-failure
+        # or --from, a skipped/failed part made the next independent part
+        # build at HEAD without prior parts' code. The correct rule: use the
+        # branch if it has advanced past base_commit, regardless of which
+        # part advanced it.
+        branch_head = _git(repo, "rev-parse", branch, check=False).strip()
+        if branch_head and branch_head != base_commit:
             part_base = branch
         else:
             part_base = "HEAD"
@@ -366,10 +375,22 @@ def run_plan(
     }, indent=2), encoding="utf-8")
     print(f"\n  [plan] manifest: {manifest_path}")
 
-    # Clean up the branch if the plan failed and --keep-branch was not set.
-    if result.status != "complete" and not keep_branch:
+    # Clean up the scratch branch if the plan failed and --keep-branch was
+    # not set. But only if no part committed to it — a branch with committed
+    # work is evidence the operator may need for --resume or --from, and
+    # deleting it makes those commits unreachable.
+    #
+    # A0-1: the old code deleted the branch on any non-complete status,
+    # even after parts had committed. _commit_to_branch soft-resets the
+    # user's HEAD, so the files survive in the working tree, but the commits
+    # become unreachable and a fresh worktree at HEAD won't see them.
+    any_committed = any(p.commit for p in result.parts)
+    if result.status != "complete" and not keep_branch and not any_committed:
         print(f"  [plan] deleting scratch branch {branch} (use --keep-branch to retain)")
         _git(repo, "branch", "-D", branch, check=False)
+    elif result.status != "complete" and any_committed:
+        print(f"  [plan] retaining scratch branch {branch} ({sum(1 for p in result.parts if p.commit)} part(s) committed)")
+        print(f"  [plan] use --resume or --from to continue from a specific part")
 
     # Print summary.
     print(f"\n==== PLAN SUMMARY ====")

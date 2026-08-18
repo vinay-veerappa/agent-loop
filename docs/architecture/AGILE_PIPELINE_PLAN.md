@@ -1,6 +1,6 @@
 # AGILE PIPELINE PLAN — Closing the Gap Between Building Blocks and Agile Team
 
-**Status**: PROPOSED — awaiting review.
+**Status**: PROPOSED — revised after code review (see "Review findings" at end).
 
 **Problem**: The agent-loop has all the building blocks of an agile team
 (decomposition, TDD, dependency ordering, per-chunk verification, sequential
@@ -13,6 +13,74 @@ The gaps identified in the feature review:
 4. No persistent backlog state across runs
 5. No re-planning on part failure
 6. No feature-level acceptance criteria
+
+**The premise is stronger than "weak gating."** `loop.py:1036-1073`
+**refuses** the ticket when an `expect_green` name isn't in the baseline
+failure set — `final_verdict = "TICKET_REJECTED"`, which is not in
+`PROMOTABLE`, so `run_plan_mode.py:316-321` stops the chain at part 1.
+`--mode run-plan --apply` on a planner-generated feature plan doesn't
+produce weak gating today; it produces **zero parts** and then deletes
+the branch. Phase A isn't an enhancement; it's the fix that makes
+`run-plan --apply` functional at all.
+
+---
+
+## Phase A0: Fix shipped defects in run-plan (prerequisite for all phases)
+
+Two live defects in `run_plan_mode.py` are inherited by every phase below.
+Both are ~10-line fixes with end-to-end tests. Both must land before B1/B3,
+which assume branch history is durable and parts build on their predecessors.
+
+### A0-1: Branch retention (finding 4)
+
+`run_plan_mode.py:370-372` deletes the scratch branch with `git branch -D`
+on any status other than `complete`, even when parts have already been
+committed to it. `_commit_to_branch` soft-resets the user's HEAD, so the
+*files* survive in the working tree, but the commits become unreachable,
+and a fresh worktree at `HEAD` won't see them.
+
+This is already a live defect: `PLAN_RUNNER.md:141` documents "Part 2 fails
+(part 1 promoted) → Plan stops. Branch has part 1's commit. Operator can
+… re-run from part 2 with `--from F2`." The code deletes that branch.
+
+**Fix**: make branch retention the default when any part has committed.
+Only delete the branch when *no* part committed (truly empty run). This
+preserves the `--keep-branch` flag for the "I want to inspect after a
+complete run" case.
+
+### A0-2: `part_base` selection (finding 5)
+
+`run_plan_mode.py:278-282`:
+
+```python
+if result.parts and result.parts[-1].applied:
+    part_base = branch
+else:
+    part_base = "HEAD"
+```
+
+Under B3 (`--continue-on-failure`): part 1 lands, part 2 fails, part 3 is
+independent → `parts[-1].applied` is `False` → part 3's worktree is built
+at `HEAD`, **without part 1's code**. The same hole exists today for
+`--from`: skipping parts leaves `result.parts` empty, so the resumed part
+never sees the work it was meant to build on.
+
+**Fix**: the rule should be "`branch` if the branch has advanced past
+`base_commit`", not "if the last part applied." Compare the branch HEAD
+to `base_commit`; if different, use `branch`.
+
+### A0-3: End-to-end test for `run_plan(apply=True)`
+
+`tests/acceptance/test_run_plan_mode.py` has 8 tests: 5 are topological
+sort, one is `apply=False`, one is `_commit_to_branch` in isolation, one
+is `run_ticket` accepting `base_ref`. **Nothing exercises
+`run_plan(apply=True)` end to end, the branch-deletion path, `part_base`
+selection, or `--from`.** Findings 4 and 5 above are exactly what that
+gap hides.
+
+**Fix**: add an end-to-end test that runs a 2-part plan with `apply=True`,
+verifies part 1's commit survives a part 2 failure, and verifies a
+resumed part 3 builds on part 1's code.
 
 ---
 
@@ -31,15 +99,46 @@ patch mode for each part:
 
 ```
 for each part in dependency order:
-    1. test_mode.run_test(part) -> generate failing acceptance tests
-    2. verify tests fail at baseline (test_mode already does this)
-    3. run_ticket(part) with the generated test file in the worktree
-    4. commit promoted files + test file to scratch branch
+    1. derive test_file from the part's first expect_green entry
+    2. test_mode.run_test(part) -> generate failing acceptance tests
+    3. commit the test file to the plan branch (separate commit)
+    4. run_ticket(part) with the test file in the worktree
+    5. commit promoted files to scratch branch
 ```
 
-The test file path comes from `default_test_path(profile, part_id)`. The
-generated tests are committed alongside the fix so later parts' baselines
-include them.
+**Test path resolution (finding 1).** The test file path must match the
+planner's `expect_green` entries, or `names_match` won't find them in
+the baseline failure output. Two approaches; the second is more robust:
+
+- **Option A (smaller change)**: derive `test_file` from the part's first
+  `expect_green` entry by stripping the `::` suffix. So
+  `tests/acceptance/test_trailing_stop.py::test_follows_price` →
+  `test_file = tests/acceptance/test_trailing_stop.py`.
+- **Option B (more robust)**: have the feature planner emit `expect_green`
+  entries rooted at `default_test_path(profile, part_id)`. `plan_mode`
+  gets told the path, not just the glob. The planner writes
+  `tests/acceptance/test_F1Generated.py::test_follows_price` and the
+  runner uses the same path. This eliminates the collision class entirely.
+
+**This plan adopts Option B.** `plan_mode.py` is updated to pass
+`default_test_path(profile, part_id)` to the planner prompt, so the
+planner writes `expect_green` entries that the runner's test generation
+will actually produce.
+
+**Step ordering (finding 2).** The test must be committed to the plan
+branch *before* `run_ticket`, as its own commit. `run_ticket` builds its
+worktree with `git worktree add --detach <root> <commit>`
+(`workspace.py:406`) — a clean checkout at a ref. An uncommitted test
+file in the live tree is not in that worktree, and `loop.py:1060-1062`
+already names this exact failure ("uncommitted — the worktree is built
+from HEAD"). Committing the test as a separate commit also gives better
+evidence: the red commit and the green commit are separable.
+
+**`--tdd` implies `--path-isolated`.** The repo already has an
+independence property (`test_mode.py:41-47`, C-section 1): a test
+generated with sight of the implementation can be tautological. For
+`--tdd` this matters more, not less, because the same implementer model
+writes both. `--tdd` sets `path_isolated=True` unconditionally.
 
 **Why not always-on**: test generation costs a model call per part. For plans
 where tests already exist (hand-written or from a prior `--mode test` run),
@@ -61,6 +160,13 @@ This runs:
 
 Output: a plan manifest + a feature-level verdict.
 
+**Plan re-validation (finding: TODO at `run_plan_mode.py:234`).** Nothing
+re-validates the plan before running it. `--pipeline` chains planner →
+runner in one process, where a stale tree is less likely, but C2's size
+heuristic and E1's `--resume` both want that validation to exist. A2
+adds the `--list` validation call before execution. This is the TODO at
+`run_plan_mode.py:234` made real.
+
 **Why a flag, not a new mode**: `run-plan` already orchestrates execution.
 Adding `--pipeline` makes it the single entry point for the full flow without
 creating a new mode that duplicates its logic. The sub-steps (brainstorm,
@@ -76,13 +182,29 @@ inside `run-plan`, it needs to handle the per-part workflow:
 
 The test for part 2 must run against a worktree that includes part 1's code.
 This already works because `run-plan` commits each part to the scratch branch
-and the next part's worktree is created at the branch HEAD. The test
-generation just needs to happen inside that worktree, not against the base
-tree.
+and the next part's worktree is created at the branch HEAD.
 
-**Change**: `test_mode.run_test()` already takes a `repo: Path` — pass the
-worktree root, not the live repo root. This is a one-line change in
-`run_plan_mode.py`'s per-part loop.
+**Correction (finding 3).** The original plan said "pass the worktree root,
+not the live repo root. This is a one-line change." That doesn't work for
+three reasons:
+
+1. `run_plan_mode` has no worktree root to pass. `run_ticket` creates and
+   disposes its worktree internally (`loop.py`, via `open_workspace`); the
+   runner only sees `base_ref`.
+2. `run_test` writes artifacts to `repo/logs/agent_loop/<tid>/`
+   (`test_mode.py:134`) — including `test_raw.txt`. Point `repo` at a
+   throwaway worktree and the evidence is deleted with it.
+3. `run_test` opens *its own* workspace for baseline verification
+   (`test_mode.py:250`), which takes a run lock at
+   `repo/logs/agent_loop/.runlock`. Nesting that inside a worktree gives
+   you a lock at a different path — no deadlock, but also no mutual
+   exclusion, and a baseline computed from the worktree's HEAD rather
+   than its contents.
+
+**The correct shape**: keep `repo` = the live repo, and pass `base`
+through to `open_workspace` so the baseline is taken at the **plan branch
+HEAD** (which includes all prior parts' code). This is a real one-line
+change, in `test_mode.py:250`, plus a new `base` parameter on `run_test`.
 
 ---
 
@@ -99,6 +221,8 @@ which parts succeeded.
 ```json
 {
   "feature": "Add trailing stop to copier",
+  "plan_id": "1755000000",
+  "branch": "agent-loop/plan-1755000000",
   "created_at": "...",
   "updated_at": "...",
   "parts": [
@@ -124,6 +248,27 @@ which parts succeeded.
   ]
 }
 ```
+
+**Location (finding: unstated decision).** `plan.json` is written to
+`logs/agent_loop/<tid>/plan.json` (`plan_mode.py:353`); the plan manifest
+to `logs/agent_loop/plan-<plan_id>/` (`run_plan_mode.py:341`). Writing
+`backlog.json` next to the input plan would mutate the planner's artifact.
+**Decision**: `backlog.json` lives at `logs/agent_loop/plan-<plan_id>/backlog.json`,
+next to the manifest. The planner's `plan.json` is never mutated.
+
+**`plan_id` persistence (finding: unstated decision).** `plan_id` is
+regenerated every run (`int(time.time())`, `run_plan_mode.py:223`). Resume
+must read it from the backlog, or the branch name won't match. The
+"branch already exists → use `--resume`" message at `run_plan_mode.py:129`
+is unreachable today for exactly this reason. **Decision**: `--resume`
+reads `plan_id` and `branch` from `backlog.json`, not from the CLI. The
+`--backlog` flag points at the backlog file; everything else is derived.
+
+**`--resume` vs `--from` (finding: unstated decision).** They overlap.
+**Decision**: `--from` is subsumed by `--resume`. `--resume` reads
+`backlog.json`, skips `done` parts, and retries `failed`/`blocked` parts.
+`--from` is kept as the manual escape hatch for when the backlog is
+corrupt or the operator wants to skip a specific part without a backlog.
 
 `run-plan` writes `backlog.json` after each part. On re-run with
 `--resume`, it reads `backlog.json` instead of `plan.json`, skips `done`
@@ -158,6 +303,9 @@ doesn't `depend_on` the failed part). Dependent parts are marked `blocked`.
 This is the agile behaviour: a blocked story doesn't stop the sprint, it
 moves to the backlog and the team pulls the next available story.
 
+**Depends on A0-2.** Without the `part_base` fix, a skipped part makes the
+next independent part build at `HEAD` without prior parts' code.
+
 ---
 
 ## Phase C: Multi-level decomposition (addresses gap 3)
@@ -189,7 +337,10 @@ Output: a `backlog.json` with two levels of nesting — stories contain tasks.
 The plan mode prompt asks for "the SMALLEST parts." But the model's
 definition of "small" varies. A mechanical check already exists:
 `_validate_feature_plan()` rejects regions > `max_region_lines` (default
-150). 
+150) — **but only for files that already exist**
+(`plan_mode.py:485-504`). Regions in files an earlier part creates
+(the greenfield case) skip the check entirely. C2's ticket-level check
+would close that hole, not just add a second opinion.
 
 **Add a ticket-level size check**: if a part's `spec` exceeds a token
 threshold (e.g., 500 tokens) or it has > 3 regions, the planner is asked to
@@ -205,6 +356,10 @@ same size check. If a sub-part is still too large, it's split again. The
 ---
 
 ## Phase D: Feature-level acceptance (addresses gap 6)
+
+This answers BACKLOG O36 question 4: "what is the acceptance criterion for a
+feature?" (`BACKLOG.md:1499`). The answer: `feature_acceptance` tests that
+run after all parts are done.
 
 ### D1: `feature_acceptance` field on plan JSON
 
@@ -257,18 +412,24 @@ agent-loop --mode run-plan --pipeline --feature "..." --apply
 agent-loop --mode run-plan --plan plan.json --tdd --apply
 
 # Resume a partial run
-agent-loop --mode run-plan --backlog backlog.json --resume --apply
+agent-loop --mode run-plan --backlog logs/agent_loop/plan-<plan_id>/backlog.json --resume --apply
 ```
 
 ### E2: Status command
 
 ```bash
-agent-loop --mode backlog --backlog backlog.json
+agent-loop --mode run-plan --backlog backlog.json
 ```
 
 Prints the current state of the backlog: which parts are done/in-progress/
 blocked/failed, with verdicts and error summaries. This is the agile
 "standup" — what's done, what's in progress, what's blocked.
+
+**Correction (finding: E2 contradicts "does not add new modes").** The
+original plan proposed `--mode backlog` as a new mode. This revision folds
+it into `--mode run-plan --backlog X` without `--apply` (which already
+prints-and-returns, `run_plan_mode.py:238-245`). No new mode; the "does
+not add new modes" claim now holds.
 
 ---
 
@@ -276,33 +437,37 @@ blocked/failed, with verdicts and error summaries. This is the agile
 
 | Phase | Depends on | Effort | Priority |
 |---|---|---|---|
-| A (TDD-integrated execution) | nothing | medium | **highest** — without this, the TDD promise is hollow |
-| B (backlog state) | A (partially) | medium | high — enables resume and re-planning |
-| E1 (single-command pipeline) | A + B | small | high — ergonomic wrapper, not new logic |
+| **A0** (fix shipped defects) | nothing | small | **highest** — live defects, prerequisites for B1/B3 |
+| A (TDD-integrated execution) | A0 | medium | **highest** — without this, run-plan --apply produces zero parts |
+| B1 (backlog state) | A0 (partially) | medium | high — enables resume and re-planning |
+| E1 (single-command pipeline) | A + B1 | small | high — ergonomic wrapper, not new logic |
 | D (feature acceptance) | A | small | medium — important but not blocking the pipeline |
-| C (multi-level decomposition) | B | large | medium — needed for large epics, not for typical features |
 | B2 (re-plan on failure) | B1 | medium | medium — nice to have, not blocking |
-| B3 (skip and continue) | B1 | small | low — simple once backlog exists |
+| B3 (skip and continue) | B1 + A0-2 | small | low — simple once backlog exists; A0-2 is the real fix |
+| C (multi-level decomposition) | B1 | large | medium — needed for large epics, not for typical features |
 | E2 (status command) | B1 | small | low — convenience |
 
-**Recommended order**: A -> B1 -> E1 -> D -> B2 -> B3 -> C -> E2
+**Recommended order**: A0 → A → B1 → E1 → D → B2 → B3 → C → E2
 
 ---
 
 ## What this plan does NOT do
 
 - **Does not add new modes.** Everything is an extension of existing modes
-  (plan, test, run-plan). No new state machine, no new gate ladder.
+  (plan, test, run-plan). No new state machine, no new gate ladder. E2 was
+  originally proposed as `--mode backlog`; this revision folds it into
+  `--mode run-plan --backlog X` to keep the claim true.
 - **Does not change the verification stack.** The panel + arbiter + gates
   are unchanged. The pipeline just chains them.
 - **Does not change the model registry.** The same models serve the same
   roles. Test generation uses the `test` mode's config (implementer model).
 - **Does not add human-in-the-loop checkpoints between parts.** The pipeline
   runs autonomously. Human review happens at the end (feature verdict) or
-  via `--apply` (which requires explicit confirmation). A `--pause-on-part`
+  via `--apply` (which requires the operator to pass `--apply`; there is no
+  prompt — `cli.py:563` is a bare `store_true`). A `--pause-on-part`
   flag could be added later if desired.
 - **Does not address docs mode conventions (O10).** That's a separate
-  backlog item.
+  backlog item, now fixed (see commit `beb108d`).
 
 ---
 
@@ -318,18 +483,96 @@ blocked/failed, with verdicts and error summaries. This is the agile
    indefinitely. `--replan-limit` caps this. After the limit, the part is
    `blocked` and the operator decides.
 
-3. **Cost.** `--tdd` adds one model call per part (test generation).
-   `--replan` adds plan + test + patch calls per re-plan attempt. A 4-part
-   feature with 2 re-plans could cost 4 + 4 + 2*(plan+test+patch) = ~14
-   model calls. This is still cheaper than a human doing the same work.
+3. **Cost.** The original plan estimated "~14 model calls" for a 4-part
+   feature with 2 re-plans. That treated a patch as one call. Defaults
+   are `max_rounds=4` (`config.py:645`) with 2 reviewers + arbiter → up
+   to 4 calls per round, 16 per part. A 4-part feature converging in
+   **one round each** is already ~20 calls; worst case (4 rounds each,
+   2 re-plans) is ~68. The conclusion (cheaper than a human) survives;
+   the number should not be quoted as-is.
 
 4. **Scratch branch complexity.** The branch management in `run-plan` is
    already subtle (commit to branch, reset user HEAD). Adding test files and
-   re-planned parts increases the surface. Mitigation: the existing tests
-   for `run_plan_mode` cover the branch logic; extend them.
+   re-planned parts increases the surface. **The existing tests for
+   `run_plan_mode` do NOT cover the branch logic** —
+   `tests/acceptance/test_run_plan_mode.py` has 8 tests, none exercises
+   `run_plan(apply=True)` end to end, the branch-deletion path, `part_base`
+   selection, or `--from`. A0-3 adds that test; every subsequent phase
+   extends it.
 
 5. **Multi-level decomposition prompt quality.** Two-tier decomposition
    relies on the model producing good story-level descriptions before
    task-level tickets. If the story decomposition is wrong, every task
    under it is wrong. Mitigation: the panel reviews the story-level plan
    before task-level decomposition proceeds.
+
+---
+
+## Cross-references
+
+- **`PLAN_RUNNER.md`** is the existing design doc for the component being
+  extended. It is stale in three ways (documents a `--resume` and
+  `--ticket ID` that don't exist; manifest path
+  `logs/agent_loop/<plan_id>/` vs the code's `plan-<plan_id>/`; `plan_id`
+  format `PLAN-20260816-1` vs a unix timestamp). This plan is canonical;
+  `PLAN_RUNNER.md` is updated when A0 lands.
+- **`BACKLOG.md:1499`** tracks this as **O36**, and its open question 4 —
+  "what is the acceptance criterion for a feature?" — is exactly what
+  Phase D answers. The closure propagates back to O36 when D lands.
+- **O10 (docs mode conventions)** — mentioned in the original plan as out
+  of scope; now fixed in commit `beb108d`.
+
+---
+
+## Review findings (incorporated above)
+
+This plan was reviewed against the code at `beb108d` (plan doc from
+`28d888d`, 5 commits back). Every load-bearing claim was verified against
+the source. The findings below are incorporated into the phases above;
+this section records them for traceability.
+
+**Premise strengthened.** The plan said "the TDD promise is structural,
+not operational." It's worse: `loop.py:1036-1073` refuses the ticket
+(`TICKET_REJECTED` ∉ `PROMOTABLE`), so `run-plan --apply` on a
+planner-generated plan produces **zero parts** today, not weak gating.
+The intro now says this.
+
+**Finding 1 (A1 test path collision).** `default_test_path` yields
+`test_F1Generated.py` but the planner writes `expect_green` as
+`tests/acceptance/test_trailing_stop.py::test_follows_price`. `names_match`
+does a whole-identifier regex over the failure line → the planner's nodeid
+won't appear in a failure line from `test_F1Generated.py` →
+`TICKET_REJECTED`. **Fix**: Option B adopted — planner emits
+`expect_green` rooted at `default_test_path(profile, part_id)`.
+
+**Finding 2 (A1 step ordering).** Worktree is `git worktree add --detach`
+— uncommitted test in live tree is invisible. **Fix**: test committed to
+plan branch before `run_ticket`, as its own commit.
+
+**Finding 3 (A3 one-line change isn't).** `run_plan_mode` has no worktree
+handle; `run_test` writes artifacts to `repo/logs/`; nested worktree gives
+a lock at a different path. **Fix**: keep `repo` = live repo, pass `base`
+to `open_workspace` so baseline is taken at plan branch HEAD.
+
+**Finding 4 (A0-1, branch deletion).** `run_plan_mode.py:370-372` deletes
+the branch on any non-complete status, even after parts committed.
+**Fix**: A0-1 makes retention the default when any part committed.
+
+**Finding 5 (A0-2, part_base).** `run_plan_mode.py:278-282` looks only at
+`result.parts[-1].applied`. **Fix**: A0-2 compares branch HEAD to
+`base_commit`.
+
+**Unstated decisions made:**
+- `--tdd` implies `path_isolated=True`
+- `backlog.json` lives at `logs/agent_loop/plan-<plan_id>/backlog.json`
+- `--resume` reads `plan_id` and `branch` from `backlog.json`
+- `--from` subsumed by `--resume`, kept as manual escape hatch
+- Plan re-validation (TODO at `run_plan_mode.py:234`) added to A2
+
+**Smaller corrections:**
+- E2 folded into `--mode run-plan --backlog X` — "does not add new modes" now holds
+- Risk 3 cost: ~20-68 calls, not ~14
+- Risk 4: existing tests don't cover `apply=True` — A0-3 adds that test
+- C2: greenfield regions skip `max_region_lines` check — C2 closes that hole
+- `--apply` "requires explicit confirmation" → "requires the operator to pass `--apply`"
+- Cross-references to `PLAN_RUNNER.md` and `BACKLOG.md` O36 added

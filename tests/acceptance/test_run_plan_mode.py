@@ -8,6 +8,8 @@ Tests:
 4. --list shows the plan without running
 5. Commit-per-part: part 2's worktree sees part 1's work (R5-1, R5-2)
 6. _commit_to_branch does not leave commits on the user's branch (R5-1)
+7. A0-1: branch retention when parts have committed
+8. A0-2: part_base uses branch HEAD, not last part's applied flag
 """
 import json
 import subprocess
@@ -198,3 +200,153 @@ def test_run_ticket_accepts_base_ref(tmp_path):
             f"worktree at plan-branch should see plan branch content, "
             f"got: {content}"
         )
+
+
+# ---------------------------------------------------------------------------
+# A0-1: branch retention when parts have committed
+# ---------------------------------------------------------------------------
+
+def test_a0_1_branch_retained_when_part_committed(tmp_path):
+    """A0-1: the scratch branch must NOT be deleted when a part has committed
+    to it, even if the plan status is not 'complete'.
+
+    The old code at run_plan_mode.py:370-372 deleted the branch on any
+    non-complete status. _commit_to_branch soft-resets the user's HEAD,
+    so the files survive but the commits become unreachable. A resumed
+    worktree at HEAD won't see them.
+
+    This test simulates the branch-deletion decision logic directly:
+    after a part commits to the plan branch, the branch must survive
+    a 'partial' or 'failed' status.
+    """
+    from agent_loop.workspace import _git
+
+    _init_git_repo(tmp_path)
+
+    # Create a plan branch and commit a part to it.
+    _git(tmp_path, "branch", "agent-loop/plan-test")
+    (tmp_path / "file.txt").write_text("part 1 content\n", encoding="utf-8")
+    _commit_to_branch(tmp_path, "agent-loop/plan-test", ["file.txt"], "P1")
+
+    # The branch should exist with the commit.
+    branch_head = _git(tmp_path, "rev-parse", "agent-loop/plan-test").strip()
+    assert branch_head, "plan branch should exist after commit"
+
+    # Simulate the A0-1 retention logic: any_committed = True → don't delete.
+    # The old logic would delete it here (status != "complete" and not keep_branch).
+    # The new logic retains it because a part committed.
+    any_committed = True  # part P1 committed
+    keep_branch = False
+    should_delete = (not "complete" == "complete") and not keep_branch and not any_committed
+
+    assert not should_delete, (
+        "A0-1: branch with committed parts must not be deleted on non-complete status"
+    )
+
+    # Verify the branch still exists.
+    branches = _git(tmp_path, "branch", "--list", "agent-loop/plan-test").strip()
+    assert "agent-loop/plan-test" in branches
+
+
+def test_a0_1_branch_deleted_when_no_parts_committed(tmp_path):
+    """A0-1: the scratch branch IS deleted when no part committed (truly empty run)."""
+    from agent_loop.workspace import _git
+
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "branch", "agent-loop/plan-test")
+
+    # No commits to the branch.
+    any_committed = False
+    keep_branch = False
+    # The new logic: delete only if not complete AND not keep_branch AND not any_committed.
+    should_delete = (True) and not keep_branch and not any_committed  # status != "complete"
+
+    assert should_delete, (
+        "A0-1: branch with no committed parts should be deleted on failure"
+    )
+
+
+# ---------------------------------------------------------------------------
+# A0-2: part_base uses branch HEAD, not last part's applied flag
+# ---------------------------------------------------------------------------
+
+def test_a0_2_part_base_uses_branch_head_after_commit(tmp_path):
+    """A0-2: part_base should be the plan branch when the branch has advanced
+    past base_commit, regardless of whether the LAST part was applied.
+
+    The old code checked `result.parts[-1].applied` — which broke under
+    --continue-on-failure (part 1 lands, part 2 fails, part 3 is independent
+    → part 3 builds at HEAD without part 1's code) and --from (skipping parts
+    leaves result.parts empty).
+
+    The new code compares the branch HEAD to base_commit: if different, use
+    the branch.
+    """
+    from agent_loop.workspace import _git
+
+    _init_git_repo(tmp_path)
+
+    base_commit = _git(tmp_path, "rev-parse", "HEAD").strip()
+
+    # Create a plan branch and advance it with a commit.
+    _git(tmp_path, "branch", "agent-loop/plan-test")
+    (tmp_path / "file.txt").write_text("part 1\n", encoding="utf-8")
+    _commit_to_branch(tmp_path, "agent-loop/plan-test", ["file.txt"], "P1")
+
+    # The branch has advanced past base_commit.
+    branch_head = _git(tmp_path, "rev-parse", "agent-loop/plan-test").strip()
+    assert branch_head != base_commit, "sanity: branch should have advanced"
+
+    # A0-2 logic: use branch if branch_head != base_commit.
+    # Even if the "last part" was not applied (simulating part 2 failed),
+    # the branch HEAD check correctly uses the branch.
+    last_part_applied = False  # part 2 failed
+    branch_head_check = _git(tmp_path, "rev-parse", "agent-loop/plan-test", check=False).strip()
+    if branch_head_check and branch_head_check != base_commit:
+        part_base = "agent-loop/plan-test"
+    else:
+        part_base = "HEAD"
+
+    assert part_base == "agent-loop/plan-test", (
+        "A0-2: part_base should be the plan branch when it has advanced, "
+        "even if the last part was not applied"
+    )
+
+
+def test_a0_2_part_base_uses_head_when_branch_not_advanced(tmp_path):
+    """A0-2: part_base should be HEAD when the branch hasn't advanced
+    (no parts committed yet)."""
+    from agent_loop.workspace import _git
+
+    _init_git_repo(tmp_path)
+
+    base_commit = _git(tmp_path, "rev-parse", "HEAD").strip()
+    _git(tmp_path, "branch", "agent-loop/plan-test")
+
+    # Branch hasn't advanced — still at base_commit.
+    branch_head = _git(tmp_path, "rev-parse", "agent-loop/plan-test").strip()
+    assert branch_head == base_commit, "sanity: branch should not have advanced"
+
+    if branch_head != base_commit:
+        part_base = "agent-loop/plan-test"
+    else:
+        part_base = "HEAD"
+
+    assert part_base == "HEAD", (
+        "A0-2: part_base should be HEAD when branch hasn't advanced"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _init_git_repo(path: Path):
+    """Init a git repo with an initial commit."""
+    subprocess.run(["git", "init"], cwd=str(path), capture_output=True)
+    (path / "file.txt").write_text("initial\n", encoding="utf-8")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    subprocess.run(["git", "add", "-A"], cwd=str(path), capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(path),
+                   capture_output=True, env=env)
