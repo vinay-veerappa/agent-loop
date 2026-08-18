@@ -267,6 +267,121 @@ def _read_backlog(backlog_path: Path) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# B2: Re-plan a failed part
+# ---------------------------------------------------------------------------
+
+_REPLAN_SYSTEM = """You are a senior software engineer re-planning a FAILED part
+of a decomposed feature plan. The part was attempted and failed. Your job is to
+produce a REVISED version of the part that addresses the failure, or split it
+into smaller sub-parts that can each succeed.
+
+You are given:
+- The original part's spec, regions, and expect_green
+- The failure verdict (why it failed)
+- The gate summary (what went wrong in the build/test/review cycle)
+- The last round's arbiter findings (if any)
+
+Produce a revised plan. You may:
+1. Refine the regions (different anchors, different files)
+2. Refine the spec (more specific, smaller scope)
+3. Split into 2+ sub-parts (new IDs, depends_on the original part's dependencies)
+4. Change the approach entirely
+
+OUTPUT FORMAT - obey exactly, one block per revised part:
+<<<TICKET>>>
+{
+  "id": "F2a",
+  "title": "revised part title",
+  "defect": "what is missing today",
+  "spec": "what this revised part must do",
+  "depends_on": [],
+  "regions": [
+    {"id": "R1", "file": "path/to/file.py", "op": "create"}
+  ],
+  "expect_green": ["tests/path/test_x.py::test_the_new_behaviour"]
+}
+<<<END TICKET>>>
+<<<NOTES>>>
+- why this revision, and what changed from the original
+<<<END NOTES>>>
+"""
+
+
+def _replan_part(
+    repo: Path,
+    failed_ticket: Dict[str, Any],
+    failure_result: Dict[str, Any],
+    profile: profiles.Profile,
+    implementer: str,
+    reviewers: Sequence[str],
+    arbiter_model: str,
+    max_rounds: int,
+    fast_plan: bool,
+) -> List[Dict[str, Any]]:
+    """B2: re-plan a failed part by feeding failure feedback to the planner.
+
+    Returns a list of revised part(s), or [] if re-planning failed.
+    """
+    from .plan_mode import _parse_tickets
+    from .providers import chat as _chat, ProviderError
+
+    tid = failed_ticket.get("id", "?")
+    art = repo / "logs" / "agent_loop" / f"REPLAN-{tid}"
+    art.mkdir(parents=True, exist_ok=True)
+
+    # Build the re-plan prompt from the failure feedback.
+    prompt = f"# Failed part to re-plan\n\n"
+    prompt += f"## Original part\n```json\n{json.dumps(failed_ticket, indent=2)}\n```\n\n"
+
+    verdict = failure_result.get("final_verdict", "unknown")
+    prompt += f"## Failure verdict\n{verdict}\n\n"
+
+    # Extract gate summary and arbiter findings from the last round.
+    rounds = failure_result.get("rounds", [])
+    if rounds:
+        last_round = rounds[-1]
+        gate_summary = last_round.get("gate_summary", "(none)")
+        prompt += f"## Last round gate summary\n{gate_summary}\n\n"
+
+        arbiter = last_round.get("arbiter")
+        if arbiter:
+            prompt += f"## Last round arbiter\n{arbiter}\n\n"
+
+    prompt += f"## Context\nLanguage: {profile.language}\n"
+    prompt += f"File suffixes: {', '.join(profile.file_suffixes)}\n"
+    if profile.test_sources:
+        prompt += f"Tests live in: {', '.join(profile.test_sources)}\n"
+
+    prompt += "\nProduce a revised plan for this part. Output one <<<TICKET>>> block per revised part.\n"
+
+    from . import config
+    cfg = config.get().mode("plan")
+
+    history = [
+        {"role": "system", "content": _REPLAN_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        out = _chat(implementer, history, max_tokens=cfg.max_tokens, think=cfg.think)
+    except ProviderError as exc:
+        print(f"  [replan] model error: {exc}")
+        return []
+
+    raw = out.text
+    (art / "replan_raw.txt").write_text(raw, encoding="utf-8")
+    print(f"  [replan] {out.usage_line()}")
+
+    revised = _parse_tickets(raw)
+    if not revised:
+        print(f"  [replan] no parseable <<<TICKET>>> blocks in re-plan output")
+        return []
+
+    (art / "revised_parts.json").write_text(json.dumps(revised, indent=2), encoding="utf-8")
+    return revised
+
+
+# ---------------------------------------------------------------------------
 # D1: Feature-level acceptance verification
 # ---------------------------------------------------------------------------
 
@@ -400,11 +515,13 @@ def run_plan(
         tdd: generate failing acceptance tests before each part (A1)
         resume: B1 — read backlog.json, skip done parts, retry failed/blocked
         backlog_path: B1 — path to backlog.json (for --resume)
-        replan: B2 — re-plan a failed part instead of stopping (STUB: flag is
-            accepted but the re-planning logic is not yet implemented; the
-            plan stops with a message. The flag and parameter are wired for
-            future use.)
-        replan_limit: B2 — max re-plans per part (default 2). Currently unused.
+        replan: B2 — re-plan a failed part instead of stopping. Feeds the
+            failure feedback (verdict, gate summary, arbiter findings) to the
+            planner, which produces a revised part or a split into sub-parts.
+            The revised part(s) are re-run through the same TDD + patch cycle.
+        replan_limit: B2 — max re-plans per part (default 2). After N replans,
+            the part is marked failed and the chain stops (or continues if
+            --continue-on-failure is also set).
         continue_on_failure: B3 — continue to next independent part on failure.
             Parts that depend on the failed part are skipped (marked BLOCKED).
 
@@ -500,6 +617,7 @@ def run_plan(
     # Run each part in dependency order.
     skip = bool(from_part)
     failed_ids: set = set()  # B2: track failed parts for continue-on-failure
+    replan_attempts: Dict[str, int] = {}  # B2: track re-plan attempts per part
     for t in ordered:
         tid = t["id"]
         # B1: skip done parts on resume.
@@ -626,6 +744,75 @@ def run_plan(
                 # Part failed.
                 print(f"  [plan] {tid} NOT promotable ({part_result.verdict}).")
                 failed_ids.add(tid)  # B2: track for continue-on-failure
+
+                # B2: re-plan the failed part. Feed the failure feedback
+                # to plan_mode and get a revised part (or a split into
+                # sub-parts). Then re-run the revised part(s).
+                if replan and replan_attempts.get(tid, 0) < replan_limit:
+                    replan_attempts[tid] = replan_attempts.get(tid, 0) + 1
+                    attempt = replan_attempts[tid]
+                    print(f"  [plan] --replan: re-planning {tid} (attempt {attempt}/{replan_limit})")
+
+                    revised_parts = _replan_part(
+                        repo, t, ticket_result, profile,
+                        implementer, reviewers, arbiter_model,
+                        max_rounds, fast_plan=False,
+                    )
+
+                    if revised_parts:
+                        # Replace the failed part with the revised part(s)
+                        # in the ordered list. The current loop index is
+                        # past `t`, so we insert the revised parts at the
+                        # current position and continue from there.
+                        # Simplest: run them inline.
+                        print(f"  [plan] {tid} re-planned into {len(revised_parts)} part(s)")
+                        for rp in revised_parts:
+                            rp_id = rp["id"]
+                            print(f"\n=== Re-planned Part {rp_id}: {rp.get('title', '')} ===")
+
+                            # Use the same part_base (branch if advanced).
+                            branch_head = _git(repo, "rev-parse", branch, check=False).strip()
+                            rp_base = branch if (branch_head and branch_head != base_commit) else "HEAD"
+
+                            rp_result = PartResult(id=rp_id, title=rp.get("title", ""))
+                            try:
+                                rp_ticket = run_ticket(
+                                    repo, rp, profile, implementer, reviewers,
+                                    max_rounds=max_rounds,
+                                    apply=True, allow_unapproved=True,
+                                    arbiter_model=arbiter_model,
+                                    panel_deadline=panel_deadline,
+                                    keep_worktree=keep_branch,
+                                    base_ref=rp_base,
+                                )
+                                rp_result.verdict = rp_ticket.get("final_verdict", "")
+                                rp_result.applied = rp_ticket.get("applied", False)
+                                rp_result.rounds = len(rp_ticket.get("rounds", []))
+                                rp_result.cost_usd = rp_ticket.get("cost_usd", 0.0)
+                                rp_result.tests = rp.get("expect_green", [])
+
+                                if rp_ticket.get("applied") and rp_ticket.get("touched"):
+                                    commit = _commit_to_branch(repo, branch, rp_ticket["touched"], rp_id)
+                                    rp_result.commit = commit
+                                    print(f"  [plan] {rp_id} committed to {branch} @ {commit[:8]}")
+                                elif rp_ticket.get("final_verdict") not in PROMOTABLE:
+                                    print(f"  [plan] {rp_id} NOT promotable ({rp_result.verdict})")
+                                    failed_ids.add(rp_id)
+                            except Exception as exc:
+                                rp_result.error = f"{type(exc).__name__}: {exc}"
+                                print(f"  [plan] {rp_id} ERROR: {rp_result.error}")
+                                failed_ids.add(rp_id)
+
+                            result.parts.append(rp_result)
+                            result.cost_usd += rp_result.cost_usd
+                            _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                                           result.parts, result.status or "in_progress")
+
+                        # After re-planned parts, continue the main loop.
+                        continue
+                    else:
+                        print(f"  [plan] {tid} re-plan produced no parts")
+
                 # B3: continue-on-failure skips to the next independent part.
                 if continue_on_failure:
                     print(f"  [plan] --continue-on-failure: marking {tid} as failed, continuing")
@@ -639,12 +826,6 @@ def run_plan(
                     _write_backlog(repo, plan_id, branch, base_commit, tickets,
                                    result.parts, result.status)
                     continue
-                # B2: re-plan the failed part (future: call plan_mode with
-                # the failure feedback). For now, stop the chain.
-                if replan:
-                    print(f"  [plan] --replan: re-planning {tid} (not yet implemented, stopping)")
-                    # TODO: feed failure feedback to plan_mode.run_plan() for
-                    # just this part, then re-run the revised part(s).
                 result.status = "partial" if result.parts else "failed"
                 result.parts.append(part_result)
                 # B4: write backlog on break paths too.
