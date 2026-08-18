@@ -599,8 +599,8 @@ All phases implemented. Suite: 763 passed, 36 skipped at `7ae3bb8`.
 | B2 | `c01cb52` | `--replan` and `--replan-limit` flags wired (re-planning logic is a TODO) |
 | B3 | `c01cb52` | `--continue-on-failure` skips to next independent part, writes backlog |
 | C2 | `7ae3bb8` | Ticket-level size heuristic: advisory notes for >3 regions or >500 char spec |
+| C1 | `118dbc9` | Two-tier `--epic` decomposition: EPIC_SYSTEM prompt, `run_epic_plan()`, story→task pipeline |
 
 **Not yet implemented:**
-- C1 (two-tier `--epic` decomposition): the `--epic` flag is wired through and treated as `--feature`. Actual story→task decomposition needs a second planner prompt.
 - B2 (re-planning logic): the `--replan` flag is wired but the actual re-planning (feeding failure feedback to `plan_mode.run_plan()`) prints "not yet implemented" and stops. The flag and parameter are in place.
 - C3 (recursive re-planning): depends on B2's logic.
