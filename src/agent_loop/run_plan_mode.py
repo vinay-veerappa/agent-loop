@@ -205,20 +205,39 @@ def _write_backlog(
     The backlog is the plan JSON + a status field per part. It's written
     next to the plan manifest at logs/agent_loop/plan-<plan_id>/backlog.json.
     The planner's plan.json is never mutated.
+
+    B8: on resume, attempts are incremented from the existing backlog so
+    retry counts are preserved across runs.
     """
     bl_path = _backlog_path(repo, plan_id)
-    bl_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # B8: read existing backlog to preserve attempt counts on resume.
+    existing_attempts: Dict[str, int] = {}
+    if bl_path.exists():
+        try:
+            old = json.loads(bl_path.read_text(encoding="utf-8"))
+            for p in old.get("parts", []):
+                existing_attempts[p.get("id", "")] = p.get("attempts", 0)
+        except (json.JSONDecodeError, OSError):
+            pass
 
     # Build a status map from parts.
     part_status: Dict[str, Dict[str, Any]] = {}
     for p in parts:
-        part_status[p.id] = {
+        pid = p.id
+        prev_attempts = existing_attempts.get(pid, 0)
+        # Increment attempts only if this part already had a status
+        # (i.e., it's being retried on resume, not run for the first time).
+        attempts = prev_attempts + 1 if prev_attempts > 0 else 1
+        part_status[pid] = {
             "status": "done" if p.applied else "failed",
             "verdict": p.verdict,
             "commit": p.commit,
-            "attempts": 1,
+            "attempts": attempts,
             "last_error": p.error,
         }
+
+    bl_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Merge tickets with status.
     backlog_parts = []
@@ -262,6 +281,7 @@ def _run_feature_acceptance(
     Returns a feature verdict:
     - FEATURE_COMPLETE: all parts done + acceptance tests pass
     - FEATURE_PARTIAL: all parts done but acceptance tests fail
+    - FEATURE_ERROR: infrastructure error (workspace creation, runner crash)
     - FEATURE_INCOMPLETE: some parts failed (caller checks this before calling)
     """
     from . import gates, workspace
@@ -275,18 +295,26 @@ def _run_feature_acceptance(
 
     print(f"  [feature] running {len(acceptance_tests)} acceptance test(s) against {branch}")
 
+    # B6: distinguish infrastructure errors from test failures. A workspace
+    # creation failure (stale worktree, disk full, lock contention) is NOT
+    # "tests failed" — it's "tests didn't run." Lumping them together makes
+    # the operator think the feature is broken when the real problem is a
+    # leftover worktree.
     try:
         with workspace.open_workspace(repo, "feature-acceptance", base=branch) as ws:
             outcome = gates.run_tests(profile.test_cmd, ws.root)
     except Exception as exc:
-        print(f"  [feature] acceptance run failed: {exc}")
-        return "FEATURE_PARTIAL"
+        print(f"  [feature] acceptance workspace/runner error: {exc}")
+        return "FEATURE_ERROR"
 
     if not outcome.ran:
         print(f"  [feature] test runner produced no parseable result")
-        return "FEATURE_PARTIAL"
+        return "FEATURE_ERROR"
 
-    # Check if the acceptance tests pass.
+    # B1: a test name that matches neither a failure NOR a pass is a test
+    # that never ran — treat it as failing, not passing. The old logic
+    # only checked for failures, so a misspelled name or a test file that
+    # wasn't committed would be silently green.
     passing = []
     failing = []
     for name in acceptance_tests:
@@ -294,13 +322,42 @@ def _run_feature_acceptance(
         if matched_fail:
             failing.append(name)
         else:
-            passing.append(name)
+            # Check if the test actually passed. outcome.passed is a COUNT,
+            # not a set of names, so we can't check membership directly.
+            # But if the test isn't in failures and the suite ran, we can
+            # check the raw output for the test name appearing in a pass
+            # context. If it's not in the raw output at all, it didn't run.
+            if name in outcome.raw or any(
+                gates.names_match(name, p) for p in _extract_passed_names(outcome.raw)
+            ):
+                passing.append(name)
+            else:
+                failing.append(f"{name} (not found in output — did not run)")
 
     print(f"  [feature] {len(passing)} passed, {len(failing)} failed")
     if failing:
         print(f"  [feature] failing: {failing}")
         return "FEATURE_PARTIAL"
     return "FEATURE_COMPLETE"
+
+
+def _extract_passed_names(raw: str) -> set:
+    """Extract passed test names from pytest output.
+
+    Pytest prints passed tests as 'test_name PASSED' or in the short test
+    summary as 'test_file.py::test_name PASSED'. We extract these so
+    _run_feature_acceptance can verify a test actually ran and passed,
+    not just that it didn't fail.
+    """
+    import re
+    # Match lines like 'tests/test_foo.py::test_bar PASSED' or 'test_bar PASSED'
+    passed = set()
+    for m in re.finditer(r"(\S+)::(\S+)\s+PASSED", raw):
+        passed.add(m.group(2))
+        passed.add(m.group(0).replace(" PASSED", ""))
+    for m in re.finditer(r"^(\S+)\s+PASSED\s*$", raw, re.MULTILINE):
+        passed.add(m.group(1))
+    return passed
 
 
 def run_plan(
@@ -343,9 +400,13 @@ def run_plan(
         tdd: generate failing acceptance tests before each part (A1)
         resume: B1 — read backlog.json, skip done parts, retry failed/blocked
         backlog_path: B1 — path to backlog.json (for --resume)
-        replan: B2 — re-plan a failed part instead of stopping
-        replan_limit: B2 — max re-plans per part (default 2)
-        continue_on_failure: B3 — continue to next independent part on failure
+        replan: B2 — re-plan a failed part instead of stopping (STUB: flag is
+            accepted but the re-planning logic is not yet implemented; the
+            plan stops with a message. The flag and parameter are wired for
+            future use.)
+        replan_limit: B2 — max re-plans per part (default 2). Currently unused.
+        continue_on_failure: B3 — continue to next independent part on failure.
+            Parts that depend on the failed part are skipped (marked BLOCKED).
 
     Returns:
         a PlanResult with the outcome of each part
@@ -377,6 +438,15 @@ def run_plan(
         plan_id = backlog.get("plan_id", "")
         branch = backlog.get("branch", "")
         base_commit = backlog.get("base_commit", "")
+        # B5: validate that the current repo HEAD matches the backlog's
+        # base_commit. If the operator ran git reset --hard to a different
+        # commit, base_commit is stale and any diff against it is wrong.
+        current_head = _git(repo, "rev-parse", "HEAD").strip()
+        if current_head != base_commit:
+            print(f"  [resume] WARNING: current HEAD ({current_head[:8]}) != "
+                  f"backlog base_commit ({base_commit[:8]})")
+            print(f"  [resume] updating base_commit to current HEAD")
+            base_commit = current_head
         # Skip done parts; retry failed/blocked parts.
         done_ids = {p["id"] for p in backlog.get("parts", []) if p.get("status") == "done"}
         if done_ids:
@@ -429,12 +499,23 @@ def run_plan(
 
     # Run each part in dependency order.
     skip = bool(from_part)
+    failed_ids: set = set()  # B2: track failed parts for continue-on-failure
     for t in ordered:
         tid = t["id"]
         # B1: skip done parts on resume.
         if tid in done_ids:
             print(f"  [plan] skipping {tid} (done in prior run)")
             continue
+        # B2: skip parts that depend on a failed part under --continue-on-failure.
+        if failed_ids and continue_on_failure:
+            deps = set(t.get("depends_on") or [])
+            blocked_by = deps & failed_ids
+            if blocked_by:
+                print(f"  [plan] skipping {tid} (blocked by failed: {sorted(blocked_by)})")
+                part_result = PartResult(id=tid, title=t.get("title", ""),
+                                         verdict="BLOCKED", error=f"blocked by failed: {sorted(blocked_by)}")
+                result.parts.append(part_result)
+                continue
         if skip:
             if tid == from_part:
                 skip = False
@@ -494,6 +575,9 @@ def run_plan(
                     part_result.error = f"tdd: {test_result['error']}"
                     result.status = "partial" if result.parts else "failed"
                     result.parts.append(part_result)
+                    # B4: write backlog on break paths too.
+                    _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                                   result.parts, result.status)
                     break
 
                 # Commit the generated test to the plan branch before
@@ -541,14 +625,19 @@ def run_plan(
             elif ticket_result.get("final_verdict") not in PROMOTABLE:
                 # Part failed.
                 print(f"  [plan] {tid} NOT promotable ({part_result.verdict}).")
+                failed_ids.add(tid)  # B2: track for continue-on-failure
                 # B3: continue-on-failure skips to the next independent part.
                 if continue_on_failure:
                     print(f"  [plan] --continue-on-failure: marking {tid} as failed, continuing")
-                    result.status = "partial" if result.parts else "failed"
+                    # B3 fix: set "partial" unconditionally, not "failed" when
+                    # result.parts is empty. The old code set "failed" on the
+                    # first failure, which was never overwritten even if later
+                    # parts succeeded.
+                    result.status = "partial"
                     result.parts.append(part_result)
                     result.cost_usd += part_result.cost_usd
                     _write_backlog(repo, plan_id, branch, base_commit, tickets,
-                                   result.parts, result.status or "in_progress")
+                                   result.parts, result.status)
                     continue
                 # B2: re-plan the failed part (future: call plan_mode with
                 # the failure feedback). For now, stop the chain.
@@ -558,22 +647,29 @@ def run_plan(
                     # just this part, then re-run the revised part(s).
                 result.status = "partial" if result.parts else "failed"
                 result.parts.append(part_result)
+                # B4: write backlog on break paths too.
+                _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                               result.parts, result.status)
                 break
 
         except Exception as exc:
             part_result.error = f"{type(exc).__name__}: {exc}"
             print(f"  [plan] {tid} ERROR: {part_result.error}")
+            failed_ids.add(tid)  # B2: track for continue-on-failure
             # B3: continue-on-failure on exceptions too.
             if continue_on_failure:
                 print(f"  [plan] --continue-on-failure: marking {tid} as failed, continuing")
-                result.status = "partial" if result.parts else "failed"
+                result.status = "partial"  # B3 fix: always "partial", not "failed"
                 result.parts.append(part_result)
                 result.cost_usd += part_result.cost_usd
                 _write_backlog(repo, plan_id, branch, base_commit, tickets,
-                               result.parts, result.status or "in_progress")
+                               result.parts, result.status)
                 continue
             result.status = "partial" if result.parts else "failed"
             result.parts.append(part_result)
+            # B4: write backlog on break paths too.
+            _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                           result.parts, result.status)
             break
 
         result.parts.append(part_result)

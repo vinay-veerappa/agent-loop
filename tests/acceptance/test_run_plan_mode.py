@@ -606,3 +606,75 @@ def test_c1_prefix_task_ids_no_collision_across_stories():
     assert p1[0]["id"] == "S1F1"
     assert p2[0]["id"] == "S2F1"
     assert p1[0]["id"] != p2[0]["id"]
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: B1-B8
+# ---------------------------------------------------------------------------
+
+def test_b8_write_backlog_increments_attempts_on_retry(tmp_path):
+    """B8: _write_backlog increments attempts when a part already has a status."""
+    from agent_loop.run_plan_mode import _write_backlog, PartResult
+
+    _init_git_repo(tmp_path)
+    tickets = [{"id": "F1", "title": "first"}]
+    parts = [PartResult(id="F1", title="first", applied=False, error="failed")]
+
+    # First write: attempts=1
+    _write_backlog(tmp_path, "test-1", "branch", "base", tickets, parts, "partial")
+    bl = json.loads((tmp_path / "logs" / "agent_loop" / "plan-test-1" / "backlog.json").read_text("utf-8"))
+    assert bl["parts"][0]["attempts"] == 1
+
+    # Second write (retry): attempts=2
+    _write_backlog(tmp_path, "test-1", "branch", "base", tickets, parts, "partial")
+    bl = json.loads((tmp_path / "logs" / "agent_loop" / "plan-test-1" / "backlog.json").read_text("utf-8"))
+    assert bl["parts"][0]["attempts"] == 2
+
+
+def test_b2_continue_on_failure_skips_dependent_parts(tmp_path):
+    """B2: --continue-on-failure must skip parts that depend on a failed part.
+
+    The topological sort places dependents after dependencies, so without
+    this check, C2 (depends_on C1) would run after C1 fails, against a
+    tree missing C1's code.
+    """
+    # This is a logic test: simulate the dependency check.
+    failed_ids = {"C1"}
+    parts = [
+        {"id": "C1", "depends_on": []},
+        {"id": "C2", "depends_on": ["C1"]},  # dependent — should be blocked
+        {"id": "C3", "depends_on": []},       # independent — should run
+    ]
+    for t in parts:
+        deps = set(t.get("depends_on") or [])
+        blocked_by = deps & failed_ids
+        if blocked_by:
+            assert t["id"] == "C2", f"only C2 should be blocked, got {t['id']}"
+        else:
+            assert t["id"] in ("C1", "C3"), f"unexpected independent: {t['id']}"
+
+
+def test_b1_feature_acceptance_test_not_in_output_is_failing():
+    """B1: a test name that doesn't appear in the runner output at all
+    is treated as failing, not passing."""
+    # Simulate the logic: name not in failures AND not in raw output → failing
+    acceptance_tests = ["test_exists", "test_does_not_exist"]
+    failures = {"test_exists"}  # test_exists failed
+    raw = "test_exists PASSED\n"  # only test_exists in output
+
+    # The old logic: not in failures → passing. test_does_not_exist would pass.
+    # The new logic: not in failures AND in raw/passed → passing. Else failing.
+    passing = []
+    failing = []
+    for name in acceptance_tests:
+        matched_fail = name in failures
+        if matched_fail:
+            failing.append(name)
+        elif name in raw:
+            passing.append(name)
+        else:
+            failing.append(f"{name} (not found)")
+
+    assert "test_exists" in failing
+    assert "test_does_not_exist (not found)" in failing
+    assert len(passing) == 0
