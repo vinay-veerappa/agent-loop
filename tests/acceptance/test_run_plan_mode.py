@@ -473,3 +473,43 @@ def test_b1_backlog_path_is_next_to_manifest(tmp_path):
     bl_path = _backlog_path(tmp_path, "test-42")
     assert "plan-test-42" in str(bl_path)
     assert bl_path.name == "backlog.json"
+
+
+# ---------------------------------------------------------------------------
+# D1: Feature-level acceptance
+# ---------------------------------------------------------------------------
+
+def test_d1_parse_feature_acceptance_returns_list():
+    """D1: _parse_feature_acceptance extracts test names from the block."""
+    from agent_loop.plan_mode import _parse_feature_acceptance
+
+    raw = '<<<FEATURE_ACCEPTANCE>>>\n["test_a", "test_b"]\n<<<END FEATURE_ACCEPTANCE>>>'
+    result = _parse_feature_acceptance(raw)
+    assert result == ["test_a", "test_b"]
+
+
+def test_d1_parse_feature_acceptance_empty_when_absent():
+    """D1: no FEATURE_ACCEPTANCE block → empty list."""
+    from agent_loop.plan_mode import _parse_feature_acceptance
+
+    raw = "just some text without the block"
+    result = _parse_feature_acceptance(raw)
+    assert result == []
+
+
+def test_d1_parse_feature_acceptance_handles_bad_json():
+    """D1: malformed JSON in the block → empty list, not a crash."""
+    from agent_loop.plan_mode import _parse_feature_acceptance
+
+    raw = '<<<FEATURE_ACCEPTANCE>>>\nnot valid json\n<<<END FEATURE_ACCEPTANCE>>>'
+    result = _parse_feature_acceptance(raw)
+    assert result == []
+
+
+def test_d1_feature_verdict_in_plan_result():
+    """D1: PlanResult has a feature_verdict field."""
+    from agent_loop.run_plan_mode import PlanResult
+
+    result = PlanResult(plan_id="test", status="complete")
+    assert hasattr(result, "feature_verdict")
+    assert result.feature_verdict == ""

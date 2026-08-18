@@ -84,9 +84,18 @@ OUTPUT FORMAT - obey exactly, one block per part, in build order:
 <<<TICKET>>>
 {{ ...the next part... }}
 <<<END TICKET>>>
+<<<FEATURE_ACCEPTANCE>>>
+["test_feature_works_end_to_end", "test_feature_edge_case"]
+<<<END FEATURE_ACCEPTANCE>>>
 <<<NOTES>>>
 - why this decomposition, and why this order
 <<<END NOTES>>>
+
+The FEATURE_ACCEPTANCE block is optional but recommended: it names
+integration-level tests that verify the WHOLE feature works after all
+parts are done. These run against the scratch branch HEAD (which has
+all parts' code). If the feature is small enough that per-part
+expect_green tests suffice, omit the block.
 """
 
 
@@ -226,6 +235,9 @@ def run_plan(
                 {"role": "user", "content": "Your output did not contain a parseable <<<TICKET>>> block. Re-emit with the correct format."},
             ]
             continue
+
+        # D1: parse feature_acceptance (optional, feature plans only).
+        feature_acceptance = _parse_feature_acceptance(raw) if feature else []
 
         last_parsed = tickets if feature else ticket
 
@@ -370,8 +382,12 @@ def run_plan(
         # writing the canonical one keeps the documented pipeline honest and
         # makes the file paste-able into a hand-written ticket set.
         plan = result["plan"]
+        plan_wrapper = {"tickets": plan if isinstance(plan, list) else [plan]}
+        # D1: include feature_acceptance if the planner emitted it.
+        if feature and feature_acceptance:
+            plan_wrapper["feature_acceptance"] = feature_acceptance
         (art / "plan.json").write_text(
-            json.dumps({"tickets": plan if isinstance(plan, list) else [plan]}, indent=2),
+            json.dumps(plan_wrapper, indent=2),
             encoding="utf-8",
         )
         print(f"  PLAN -> {art / 'plan.json'}")
@@ -392,6 +408,9 @@ def run_plan(
 
 
 _TICKET_RE = re.compile(r"<<<TICKET>>>\s*(\{.*?\})\s*<<<END\s*TICKET>>>", re.DOTALL)
+_FEATURE_ACCEPTANCE_RE = re.compile(
+    r"<<<FEATURE_ACCEPTANCE>>>\s*(.*?)\s*<<<END\s*FEATURE_ACCEPTANCE>>>", re.DOTALL
+)
 
 
 def _parse_ticket(raw: str) -> Optional[Dict[str, Any]]:
@@ -417,6 +436,25 @@ def _parse_tickets(raw: str) -> List[Dict[str, Any]]:
         if isinstance(t, dict):
             out.append(t)
     return out
+
+
+def _parse_feature_acceptance(raw: str) -> List[str]:
+    """D1: parse the <<<FEATURE_ACCEPTANCE>>> block.
+
+    Returns a list of integration-level test names, or [] if the block
+    is absent. These run after all parts are done, against the scratch
+    branch HEAD.
+    """
+    m = _FEATURE_ACCEPTANCE_RE.search(raw)
+    if not m:
+        return []
+    try:
+        names = json.loads(m.group(1))
+        if isinstance(names, list):
+            return [str(n) for n in names]
+    except json.JSONDecodeError:
+        pass
+    return []
 
 
 def _validate_feature_plan(

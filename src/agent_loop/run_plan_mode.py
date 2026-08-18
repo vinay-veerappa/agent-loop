@@ -56,6 +56,7 @@ class PlanResult:
     status: str = ""  # complete | partial | failed
     parts: List[PartResult] = field(default_factory=list)
     cost_usd: float = 0.0
+    feature_verdict: str = ""  # D1: FEATURE_COMPLETE | FEATURE_PARTIAL | FEATURE_INCOMPLETE | FEATURE_FAILED
 
 
 def _topological_sort(tickets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -246,6 +247,62 @@ def _read_backlog(backlog_path: Path) -> Dict[str, Any]:
     return json.loads(backlog_path.read_text(encoding="utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# D1: Feature-level acceptance verification
+# ---------------------------------------------------------------------------
+
+def _run_feature_acceptance(
+    repo: Path,
+    profile: profiles.Profile,
+    acceptance_tests: List[str],
+    branch: str,
+) -> str:
+    """Run feature-level acceptance tests against the scratch branch HEAD.
+
+    Returns a feature verdict:
+    - FEATURE_COMPLETE: all parts done + acceptance tests pass
+    - FEATURE_PARTIAL: all parts done but acceptance tests fail
+    - FEATURE_INCOMPLETE: some parts failed (caller checks this before calling)
+    """
+    from . import gates, workspace
+
+    if not profile.test_cmd:
+        print("  [feature] no test_cmd configured — skipping acceptance verification")
+        return "FEATURE_COMPLETE"
+
+    if not acceptance_tests:
+        return "FEATURE_COMPLETE"
+
+    print(f"  [feature] running {len(acceptance_tests)} acceptance test(s) against {branch}")
+
+    try:
+        with workspace.open_workspace(repo, "feature-acceptance", base=branch) as ws:
+            outcome = gates.run_tests(profile.test_cmd, ws.root)
+    except Exception as exc:
+        print(f"  [feature] acceptance run failed: {exc}")
+        return "FEATURE_PARTIAL"
+
+    if not outcome.ran:
+        print(f"  [feature] test runner produced no parseable result")
+        return "FEATURE_PARTIAL"
+
+    # Check if the acceptance tests pass.
+    passing = []
+    failing = []
+    for name in acceptance_tests:
+        matched_fail = any(gates.names_match(name, f) for f in outcome.failures)
+        if matched_fail:
+            failing.append(name)
+        else:
+            passing.append(name)
+
+    print(f"  [feature] {len(passing)} passed, {len(failing)} failed")
+    if failing:
+        print(f"  [feature] failing: {failing}")
+        return "FEATURE_PARTIAL"
+    return "FEATURE_COMPLETE"
+
+
 def run_plan(
     repo: Path,
     plan_path: Path,
@@ -290,6 +347,14 @@ def run_plan(
     # Load the plan.
     from .cli import load_tickets
     tickets = load_tickets(plan_path)
+
+    # D1: load feature_acceptance from the plan JSON (optional).
+    feature_acceptance: List[str] = []
+    try:
+        plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+        feature_acceptance = plan_data.get("feature_acceptance", [])
+    except (json.JSONDecodeError, OSError):
+        pass
 
     # B1: resume reads plan_id, branch, and per-part status from backlog.json.
     # Without this, plan_id is regenerated (int(time.time())) and the branch
@@ -524,6 +589,23 @@ def run_plan(
         ],
     }, indent=2), encoding="utf-8")
     print(f"\n  [plan] manifest: {manifest_path}")
+
+    # D1: feature-level acceptance verification.
+    # After all parts are done, if feature_acceptance tests are present,
+    # run them against the scratch branch HEAD (which has all parts' code).
+    feature_verdict = ""
+    if feature_acceptance and result.status == "complete":
+        feature_verdict = _run_feature_acceptance(
+            repo, profile, feature_acceptance, branch
+        )
+    elif feature_acceptance:
+        feature_verdict = "FEATURE_INCOMPLETE"
+        print(f"  [feature] skipping acceptance tests (plan status: {result.status})")
+    else:
+        feature_verdict = "FEATURE_COMPLETE" if result.status == "complete" else "FEATURE_INCOMPLETE"
+
+    result.feature_verdict = feature_verdict
+    print(f"  [feature] verdict: {feature_verdict}")
 
     # B1: write final backlog with the final status.
     bl_path = _write_backlog(repo, plan_id, branch, base_commit, tickets,
