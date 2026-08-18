@@ -898,6 +898,11 @@ def run_ticket(
     # record "0.6.7" and the divergence is invisible. Fixed: sha uses the
     # agent-loop package's own directory, and the resolved package path
     # is recorded so an editable install is distinguishable from a wheel.
+    #
+    # CF-5 final fix: the packaging constant (0.6.7) is frozen at the tag
+    # and never moves. `git describe --tags --always` gives the REAL
+    # version: "v0.6.7-23-g23ba872" = 23 commits past v0.6.7, at sha 23ba872.
+    # This is the number that distinguishes a tag run from a HEAD run.
     try:
         import agent_loop as _al_pkg
         result["agent_loop_path"] = os.path.dirname(
@@ -913,6 +918,14 @@ def run_ticket(
     try:
         import subprocess as _sp
         _al_dir = result.get("agent_loop_path", "")
+        # git describe: the real version. "v0.6.7-23-g23ba872" means 23
+        # commits past the v0.6.7 tag. A clean tag checkout gives just
+        # "v0.6.7". This is what the packaging constant SHOULD be.
+        result["agent_loop_describe"] = _sp.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            cwd=_al_dir or None, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5,
+        ).stdout.strip() or "unknown"
         result["agent_loop_sha"] = _sp.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=_al_dir or None, capture_output=True, text=True,
@@ -920,6 +933,7 @@ def run_ticket(
         ).stdout.strip() or "unknown"
     except Exception:
         result["agent_loop_sha"] = "unknown"
+        result["agent_loop_describe"] = "unknown"
     convergence: List[Tuple[int, set]] = []
     # CF-15: track test failure sets across rounds to detect when the loop
     # is stuck on an identical failing set (likely cause: fix is outside the
@@ -1815,6 +1829,17 @@ def run_ticket(
                     )
                 else:
                     print(f"  NOT APPLIED: verdict={final}. Patch for review: {patch}")
+
+    # CF-5: print the tool version in the summary so it's visible in the
+    # terminal output, not just in result.json. agent_loop_describe is the
+    # real version (e.g. "v0.6.7-23-g23ba872"); agent_loop_version is the
+    # frozen packaging constant that may not match what's actually running.
+    describe = result.get("agent_loop_describe", "?")
+    sha = result.get("agent_loop_sha", "?")
+    if describe != "unknown":
+        print(f"  tool: {describe} ({sha})")
+    elif sha != "unknown":
+        print(f"  tool: sha={sha}")
 
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     append_ledger(repo, terminal_ledger_record(tid, result))

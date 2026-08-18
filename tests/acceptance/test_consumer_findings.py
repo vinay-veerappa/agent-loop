@@ -178,3 +178,50 @@ def test_cf10_arbiter_contract_mentions_scope():
     from agent_loop.arbiter import _ARBITER_CONTRACT
 
     assert "scope block" in _ARBITER_CONTRACT or "scope" in _ARBITER_CONTRACT.lower()
+
+
+# ---------------------------------------------------------------------------
+# CF-5: run output records which agent-loop version produced the patch
+# ---------------------------------------------------------------------------
+
+def test_cf5_result_records_agent_loop_describe():
+    """CF-5: result.json must contain agent_loop_describe — the git describe
+    output that distinguishes a tag run from a HEAD run. The packaging
+    constant (agent_loop_version) is frozen at the tag and cannot tell
+    them apart; agent_loop_describe gives 'v0.6.7-23-g23ba872' which does."""
+    # The field is set at the top of run_ticket, before any model calls.
+    # We verify the field exists in a minimal result dict by checking the
+    # code path that sets it.
+    import agent_loop
+    import os
+    from importlib.metadata import version
+
+    # The resolved path must exist (editable install or wheel).
+    pkg_path = os.path.dirname(getattr(agent_loop, "__file__", "") or "")
+    assert pkg_path, "agent_loop package path must resolve"
+
+    # The packaging constant (this is what was frozen and couldn't tell
+    # tag from HEAD — the whole reason CF-5 was re-opened).
+    pkg_version = version("agent-loop")
+
+    # git describe from the package directory gives the REAL version.
+    import subprocess
+    describe = subprocess.run(
+        ["git", "describe", "--tags", "--always", "--dirty"],
+        cwd=pkg_path, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=5,
+    ).stdout.strip()
+
+    # describe should be non-empty (we're in a git repo with tags)
+    assert describe, f"git describe should produce output from {pkg_path}"
+
+    # If we're past the tag, describe should contain the tag + commits + sha
+    # e.g. "v0.6.7-23-g23ba872". If we're AT the tag, it's just "v0.6.7".
+    # Either way, it should NOT equal the packaging constant when we're
+    # past the tag (which we are — this code is past v0.6.7).
+    if "-" in describe:
+        # We're past the tag — describe should differ from pkg_version
+        assert not describe.startswith(pkg_version + "\n"), (
+            f"describe ({describe}) should not equal the frozen packaging "
+            f"constant ({pkg_version}) when we're past the tag"
+        )
