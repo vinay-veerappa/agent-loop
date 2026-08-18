@@ -489,11 +489,19 @@ def _docs(args, profile, implementer) -> int:
 
 
 def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
-    """Run-plan mode: execute a decomposed plan."""
+    """Run-plan mode: execute a decomposed plan.
+
+    With --pipeline, chains plan mode → run-plan --tdd --apply in one
+    invocation. With --plan, executes an existing plan file.
+    """
     from . import run_plan_mode
 
+    # A2: --pipeline chains plan mode → run-plan --tdd --apply.
+    if args.pipeline:
+        return _run_pipeline(args, profile, implementer, reviewers, arbiter)
+
     if not args.plan:
-        print("--mode run-plan needs --plan (path to the plan JSON)")
+        print("--mode run-plan needs --plan (path to the plan JSON) or --pipeline")
         return 2
 
     plan_path = Path(args.plan)
@@ -517,6 +525,76 @@ def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
     )
 
     # Exit code: 0 if all parts applied, 1 if partial or failed.
+    return 0 if result.status == "complete" else 1
+
+
+def _run_pipeline(args, profile, implementer, reviewers, arbiter) -> int:
+    """A2: chain plan mode → run-plan --tdd --apply in one invocation.
+
+    Usage:
+        agent-loop --mode run-plan --pipeline --feature "..." --apply
+        agent-loop --mode run-plan --pipeline --epic "..." --apply
+    """
+    from .plan_mode import run_plan as plan_run
+    from . import run_plan_mode
+
+    intent = args.feature or args.epic or args.defect
+    if not intent:
+        print("--pipeline needs --feature (or --epic) describing what to build")
+        return 2
+
+    is_feature = bool(args.feature or args.epic)
+
+    # Step 1: plan mode — decompose into parts.
+    print("\n==== PIPELINE STEP 1: PLAN ====")
+    plan_result = plan_run(
+        Path("."),
+        intent,
+        profile,
+        implementer,
+        reviewers,
+        arbiter_model=arbiter,
+        max_rounds=args.max_rounds,
+        fast_plan=args.fast_plan,
+        feature=is_feature,
+    )
+
+    if not plan_result.get("plan"):
+        print(f"\npipeline aborted: plan mode produced no plan (verdict: {plan_result.get('verdict', '?')})")
+        return 1
+
+    plan_path = Path("logs/agent_loop/PLAN/plan.json")
+    if not plan_path.is_file():
+        print(f"\npipeline aborted: plan file not found at {plan_path}")
+        return 1
+
+    # A2: plan re-validation (the TODO at run_plan_mode.py:234).
+    # Validate the plan's regions still resolve against the current tree.
+    from .cli import load_tickets
+    try:
+        tickets = load_tickets(plan_path)
+    except Exception as exc:
+        print(f"\npipeline aborted: plan validation failed: {exc}")
+        return 1
+
+    print(f"\n  [pipeline] plan validated: {len(tickets)} part(s)")
+
+    # Step 2: run-plan --tdd --apply.
+    print("\n==== PIPELINE STEP 2: RUN-PLAN --tdd --apply ====")
+    result = run_plan_mode.run_plan(
+        repo=Path("."),
+        plan_path=plan_path,
+        profile=profile,
+        implementer=implementer,
+        reviewers=reviewers,
+        arbiter_model=arbiter,
+        apply=True,  # pipeline always applies
+        max_rounds=args.max_rounds,
+        tdd=True,  # pipeline always uses TDD
+        keep_branch=args.keep_branch,
+        panel_deadline=args.panel_deadline,
+    )
+
     return 0 if result.status == "complete" else 1
 
 
@@ -599,6 +677,14 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--tdd", action="store_true",
         help="run-plan mode: generate failing acceptance tests before each part (TDD)",
+    )
+    ap.add_argument(
+        "--pipeline", action="store_true",
+        help="run-plan mode: chain plan → run-plan --tdd --apply in one invocation",
+    )
+    ap.add_argument(
+        "--epic", default="",
+        help="plan/run-plan mode: an epic to decompose into stories then tasks",
     )
     # Empty, NOT a Python path. This default was passed unconditionally, so it
     # overrode any profile-derived choice and told a C# project's test writer to
