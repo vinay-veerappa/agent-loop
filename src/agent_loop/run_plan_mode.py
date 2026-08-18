@@ -193,6 +193,7 @@ def run_plan(
     from_part: str = "",
     keep_branch: bool = False,
     panel_deadline: int = 0,
+    tdd: bool = False,
 ) -> PlanResult:
     """Execute a decomposed plan.
 
@@ -212,6 +213,7 @@ def run_plan(
         from_part: resume from a specific part (skip earlier parts)
         keep_branch: do not delete the scratch branch on failure
         panel_deadline: panel deadline in seconds (0 = use config)
+        tdd: generate failing acceptance tests before each part (A1)
 
     Returns:
         a PlanResult with the outcome of each part
@@ -293,6 +295,50 @@ def run_plan(
         part_result = PartResult(id=tid, title=t.get("title", ""))
 
         try:
+            # A1: TDD test generation. When --tdd is passed, generate the
+            # failing acceptance tests BEFORE running the part, and commit
+            # them to the plan branch as a separate commit. This ensures:
+            #   1. The test file is in the worktree (built from the branch
+            #      HEAD, not from an uncommitted live file)
+            #   2. The red commit and green commit are separable
+            #   3. expect_green names match what the runner produces
+            if tdd and t.get("expect_green"):
+                from .test_mode import run_test, default_test_path
+
+                test_file = default_test_path(profile, tid)
+                print(f"  [tdd] generating tests for {tid} at {test_file}")
+
+                test_result = run_test(
+                    repo,
+                    defect_description=t.get("defect", t.get("title", "")),
+                    ticket=t,
+                    profile=profile,
+                    implementer=implementer,
+                    test_file=test_file,
+                    path_isolated=True,  # A1: --tdd implies path_isolated
+                    base=part_base,  # A3: baseline at plan branch HEAD
+                )
+
+                if test_result.get("error"):
+                    print(f"  [tdd] test generation failed: {test_result['error']}")
+                    part_result.error = f"tdd: {test_result['error']}"
+                    result.status = "partial" if result.parts else "failed"
+                    result.parts.append(part_result)
+                    break
+
+                # Commit the generated test to the plan branch before
+                # run_ticket, so the worktree (built from branch HEAD)
+                # includes it. This is the "red commit."
+                generated_path = test_result.get("test_file", test_file)
+                if generated_path and (repo / generated_path).exists():
+                    test_commit = _commit_to_branch(
+                        repo, branch, [generated_path], tid,
+                        message=f"agent-loop: {tid} generated tests (red)",
+                    )
+                    print(f"  [tdd] test committed to {branch} @ {test_commit[:8]}")
+                    # Update part_base: the branch has now advanced.
+                    part_base = branch
+
             # Run the part. We pass apply=True so the promoted files land
             # in the live working tree, then we commit them to the plan branch.
             # base_ref=part_base ensures part 2's worktree sees part 1's work.

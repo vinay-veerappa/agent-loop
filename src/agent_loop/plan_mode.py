@@ -159,9 +159,27 @@ def run_plan(
     # place the test-first machinery may write. A convention the model is never
     # shown is a convention it cannot honour.
     if profile.test_sources:
+        # A1: tell the planner the EXACT test file path for each part, so
+        # the runner's test generation (default_test_path) and the planner's
+        # expect_green entries agree. Without this the planner invents a path
+        # (e.g. tests/acceptance/test_trailing_stop.py) while the runner
+        # generates tests/acceptance/test_F1Generated.py — names_match
+        # does a whole-identifier regex and won't find the planner's nodeid
+        # in the runner's failure output → TICKET_REJECTED → zero parts run.
+        from .test_mode import default_test_path
+        # We don't know part IDs yet (the planner generates them), so show
+        # the PATTERN: test_<PART_ID>Generated.<ext> under the first glob.
+        first_glob = profile.test_sources[0]
+        if "*" in first_glob:
+            pattern = first_glob.replace("*", "<PART_ID>Generated", 1)
+        else:
+            pattern = first_glob
         prompt += (
             f"Tests live in: {', '.join(profile.test_sources)}\n"
             "Every path in `expect_green` MUST match one of those patterns.\n"
+            f"The runner generates tests at: {pattern}\n"
+            f"Use that exact path (with the part's ID substituted) in `expect_green`.\n"
+            f"For part F1, the test file is: {default_test_path(profile, 'F1')}\n"
         )
 
     history = [

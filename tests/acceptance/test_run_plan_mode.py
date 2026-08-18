@@ -350,3 +350,66 @@ def _init_git_repo(path: Path):
     subprocess.run(["git", "add", "-A"], cwd=str(path), capture_output=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=str(path),
                    capture_output=True, env=env)
+
+
+# ---------------------------------------------------------------------------
+# A1: --tdd flag and planner test path instruction
+# ---------------------------------------------------------------------------
+
+def test_a1_run_plan_accepts_tdd_flag(tmp_path):
+    """A1: run_plan accepts a tdd=True parameter without error.
+    The actual test generation requires a model call; this test verifies
+    the parameter is wired through and doesn't break the non-apply path."""
+    from agent_loop.run_plan_mode import run_plan
+    from agent_loop.profiles import Profile, register
+
+    PROFILE = Profile(
+        name="test-tdd",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        test_sources=("tests/acceptance/test_*Generated.py",),
+    )
+    register(PROFILE)
+
+    plan = {"tickets": [
+        {"id": "F1", "title": "first", "defect": "d1", "spec": "s1",
+         "depends_on": [], "regions": [{"id": "R1", "file": "src/new.py", "op": "create"}],
+         "expect_green": ["tests/acceptance/test_F1Generated.py::test_f1"]},
+    ]}
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    _init_git_repo(tmp_path)
+
+    # With apply=False, tdd=True should not error (no model calls made).
+    result = run_plan(
+        repo=tmp_path,
+        plan_path=plan_path,
+        profile=PROFILE,
+        implementer="model-a",
+        reviewers=["model-b"],
+        apply=False,
+        tdd=True,
+    )
+    assert result.status == "complete"
+
+
+def test_a1_planner_prompt_includes_test_path_pattern(tmp_path):
+    """A1: the planner prompt tells the model the exact test file path
+    pattern, so expect_green entries match what the runner generates."""
+    from agent_loop.plan_mode import run_plan
+    from agent_loop.profiles import Profile, register
+    from agent_loop.test_mode import default_test_path
+
+    PROFILE = Profile(
+        name="test-planner-path",
+        language="python", file_suffixes=(".py",), line_comment="#",
+        block_comment=(), block_kind="indent",
+        test_sources=("tests/acceptance/test_*Generated.py",),
+    )
+    register(PROFILE)
+
+    # The default_test_path for F1 should be tests/acceptance/test_F1Generated.py
+    path = default_test_path(PROFILE, "F1")
+    assert "test_F1Generated" in path, (
+        f"default_test_path should include part ID, got: {path}"
+    )

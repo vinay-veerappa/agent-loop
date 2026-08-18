@@ -513,6 +513,7 @@ def _run_plan(args, profile, implementer, reviewers, arbiter) -> int:
         from_part=args.from_part,
         keep_branch=args.keep_branch,
         panel_deadline=args.panel_deadline,
+        tdd=args.tdd,
     )
 
     # Exit code: 0 if all parts applied, 1 if partial or failed.
@@ -594,6 +595,10 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--keep-branch", action="store_true",
         help="run-plan mode: do not delete the scratch branch on failure",
+    )
+    ap.add_argument(
+        "--tdd", action="store_true",
+        help="run-plan mode: generate failing acceptance tests before each part (TDD)",
     )
     # Empty, NOT a Python path. This default was passed unconditionally, so it
     # overrode any profile-derived choice and told a C# project's test writer to

@@ -224,7 +224,7 @@ def test_tests_green_at_baseline_is_an_error_not_a_warning(monkeypatch, repo):
             return False
 
     monkeypatch.setattr(test_mode, "chat", lambda *a, **k: _Out())
-    monkeypatch.setattr(workspace, "open_workspace", lambda repo, name: _WS(repo))
+    monkeypatch.setattr(workspace, "open_workspace", lambda repo, name, **kw: _WS(repo))
     monkeypatch.setattr(gates, "run_tests", lambda *a, **k: _Outcome())
 
     result = test_mode.run_test(repo, "a defect", TICKET, CSHARP, "stub-model")

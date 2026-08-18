@@ -109,11 +109,13 @@ def run_test(
     implementer: str,
     test_file: Optional[str] = None,
     path_isolated: bool = False,
+    base: str = "",
 ) -> Dict[str, Any]:
     """Run test mode: defect + ticket -> failing acceptance tests.
 
     Args:
-        repo: the repo root
+        repo: the repo root (always the live repo — artifacts are written
+            to repo/logs/agent_loop/<tid>/ and must survive the worktree)
         defect_description: the defect to test
         ticket: the ticket JSON (from plan mode) with regions + expect_green
         profile: the language profile
@@ -124,6 +126,11 @@ def run_test(
             (C-section 1): a test generated from the implementation can be
             tautological. A test generated from the spec alone is independent
             of the implementation path.
+        base: A3 — the git ref to base the baseline verification worktree on.
+            When run from --tdd inside run_plan, this is the plan branch HEAD
+            (which includes prior parts' code). Without this, the baseline is
+            taken at the live repo's HEAD, which doesn't see prior parts'
+            committed work. Empty = use the default (HEAD).
 
     Returns:
         a result dict with the test file path and whether tests fail at baseline
@@ -247,7 +254,12 @@ def run_test(
     # without touching the live tree at all -- which is what workspace.py is for.
     if profile.test_cmd:
         try:
-            with workspace.open_workspace(repo, f"{tid}-testgen") as ws:
+            # A3: pass `base` through so the baseline worktree is created at
+            # the plan branch HEAD (which includes prior parts' code), not at
+            # the live repo's HEAD. Without this, a test for part 2 runs
+            # against a tree that doesn't have part 1's code.
+            ws_base = base or "HEAD"
+            with workspace.open_workspace(repo, f"{tid}-testgen", base=ws_base) as ws:
                 dest = ws.root / test_file
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(test_code, encoding="utf-8")
