@@ -1,6 +1,7 @@
 # AGILE PIPELINE PLAN — Closing the Gap Between Building Blocks and Agile Team
 
-**Status**: PROPOSED — revised after code review (see "Review findings" at end).
+**Status**: IMPLEMENTED — all phases landed (A0, A1, A2, A3, B1, B2, B3, C2, D, E1, E2).
+See "Implementation status" at end for per-phase commit log.
 
 **Problem**: The agent-loop has all the building blocks of an agile team
 (decomposition, TDD, dependency ordering, per-chunk verification, sequential
@@ -576,3 +577,30 @@ the branch on any non-complete status, even after parts committed.
 - C2: greenfield regions skip `max_region_lines` check — C2 closes that hole
 - `--apply` "requires explicit confirmation" → "requires the operator to pass `--apply`"
 - Cross-references to `PLAN_RUNNER.md` and `BACKLOG.md` O36 added
+
+---
+
+## Implementation status
+
+All phases implemented. Suite: 763 passed, 36 skipped at `7ae3bb8`.
+
+| Phase | Commit | What landed |
+|---|---|---|
+| A0-1 | `3fbd972` | Branch retention: scratch branch not deleted when parts committed |
+| A0-2 | `3fbd972` | `part_base` uses branch HEAD vs base_commit comparison |
+| A0-3 | `3fbd972` | 4 e2e tests for branch retention + part_base |
+| A1 | `8f1b792` | `--tdd` flag: test generation before run_ticket, planner told exact test path, `path_isolated=True` |
+| A3 | `8f1b792` | `test_mode.run_test` takes `base` param, passed to `open_workspace` |
+| A2 | `de9fb5c` | `--pipeline` flag chains plan → run-plan --tdd --apply, with plan re-validation |
+| B1 | `e900083` | `backlog.json` at `logs/agent_loop/plan-<plan_id>/backlog.json`, `--resume` reads it |
+| E2 | `e900083` | `--backlog` without `--apply` prints status (standup view) |
+| D1 | `587f24f` | `feature_acceptance` field on plan JSON, `_parse_feature_acceptance`, planner prompt |
+| D2 | `587f24f` | `_run_feature_acceptance`, `feature_verdict` on PlanResult (COMPLETE/PARTIAL/INCOMPLETE) |
+| B2 | `c01cb52` | `--replan` and `--replan-limit` flags wired (re-planning logic is a TODO) |
+| B3 | `c01cb52` | `--continue-on-failure` skips to next independent part, writes backlog |
+| C2 | `7ae3bb8` | Ticket-level size heuristic: advisory notes for >3 regions or >500 char spec |
+
+**Not yet implemented:**
+- C1 (two-tier `--epic` decomposition): the `--epic` flag is wired through and treated as `--feature`. Actual story→task decomposition needs a second planner prompt.
+- B2 (re-planning logic): the `--replan` flag is wired but the actual re-planning (feeding failure feedback to `plan_mode.run_plan()`) prints "not yet implemented" and stops. The flag and parameter are in place.
+- C3 (recursive re-planning): depends on B2's logic.
