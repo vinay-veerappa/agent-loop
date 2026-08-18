@@ -404,6 +404,10 @@ def run_plan(
             ]
 
     result["verdict"] = final
+    # D1: store feature_acceptance in the result dict so run_epic_plan
+    # can collect it without reading the shared plan.json file.
+    if feature and feature_acceptance:
+        result["feature_acceptance"] = feature_acceptance
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     if result["plan"]:
         # The WRAPPER shape, not the bare ticket. Plan mode's output exists to be
@@ -615,6 +619,14 @@ def run_epic_plan(
         print(f"  epic decomposition failed: {final}")
         return result
 
+    # R8: validate unique story IDs.
+    story_ids = [s.get("id", "") for s in stories]
+    if len(set(story_ids)) != len(story_ids):
+        dups = [sid for sid in story_ids if story_ids.count(sid) > 1]
+        print(f"  epic decomposition failed: duplicate story IDs: {sorted(set(dups))}")
+        result["error"] = f"duplicate story IDs: {sorted(set(dups))}"
+        return result
+
     print(f"\n  epic decomposed into {len(stories)} stories:")
     for s in stories:
         print(f"    {s.get('id', '?'):<5} {s.get('title', '')}")
@@ -650,19 +662,14 @@ def run_epic_plan(
         prefixed = _prefix_task_ids(story_tasks, sid)
         all_tasks.extend(prefixed)
 
-        # Collect feature_acceptance from each story.
-        # Read the story's plan.json for feature_acceptance.
-        story_plan_path = repo / "logs" / "agent_loop" / "PLAN" / "plan.json"
-        # Note: this overwrites the previous story's plan.json, so we read
-        # it right after each story runs. The final plan.json is the last
-        # story's; we overwrite it with the combined plan below.
-        if story_plan_path.exists():
-            try:
-                sp = json.loads(story_plan_path.read_text(encoding="utf-8"))
-                fa = sp.get("feature_acceptance", [])
-                all_feature_acceptance.extend(fa)
-            except (json.JSONDecodeError, OSError):
-                pass
+        # R4: collect feature_acceptance from the story_result, not from the
+        # shared plan.json file. The old code read plan.json which is
+        # overwritten by each story — a failed story would read the previous
+        # story's plan.json and duplicate its feature_acceptance.
+        # The feature_acceptance is in the story_result dict directly.
+        story_fa = story_result.get("feature_acceptance", [])
+        if story_fa:
+            all_feature_acceptance.extend(story_fa)
 
         print(f"  story {sid}: {len(prefixed)} task(s)")
 

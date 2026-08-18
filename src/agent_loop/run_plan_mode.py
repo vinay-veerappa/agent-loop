@@ -211,13 +211,15 @@ def _write_backlog(
     """
     bl_path = _backlog_path(repo, plan_id)
 
-    # B8: read existing backlog to preserve attempt counts on resume.
-    existing_attempts: Dict[str, int] = {}
+    # B8: read existing backlog to preserve attempt counts on resume AND
+    # to preserve done parts from prior sessions that aren't in the current
+    # session's parts list (they were skipped via done_ids).
+    existing_parts: Dict[str, Dict[str, Any]] = {}
     if bl_path.exists():
         try:
             old = json.loads(bl_path.read_text(encoding="utf-8"))
             for p in old.get("parts", []):
-                existing_attempts[p.get("id", "")] = p.get("attempts", 0)
+                existing_parts[p.get("id", "")] = p
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -225,7 +227,7 @@ def _write_backlog(
     part_status: Dict[str, Dict[str, Any]] = {}
     for p in parts:
         pid = p.id
-        prev_attempts = existing_attempts.get(pid, 0)
+        prev_attempts = existing_parts.get(pid, {}).get("attempts", 0)
         # Increment attempts only if this part already had a status
         # (i.e., it's being retried on resume, not run for the first time).
         attempts = prev_attempts + 1 if prev_attempts > 0 else 1
@@ -236,6 +238,20 @@ def _write_backlog(
             "attempts": attempts,
             "last_error": p.error,
         }
+
+    # R5: merge existing done parts from prior sessions that aren't in the
+    # current session. Without this, done parts from a prior run are lost
+    # (written as "pending") because they were skipped via done_ids and
+    # aren't in result.parts.
+    for pid, pstatus in existing_parts.items():
+        if pid not in part_status and pstatus.get("status") == "done":
+            part_status[pid] = {
+                "status": "done",
+                "verdict": pstatus.get("verdict", ""),
+                "commit": pstatus.get("commit", ""),
+                "attempts": pstatus.get("attempts", 1),
+                "last_error": pstatus.get("last_error", ""),
+            }
 
     bl_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -402,8 +418,8 @@ def _run_feature_acceptance(
     from . import gates, workspace
 
     if not profile.test_cmd:
-        print("  [feature] no test_cmd configured — skipping acceptance verification")
-        return "FEATURE_COMPLETE"
+        print("  [feature] no test_cmd configured — cannot verify acceptance")
+        return "FEATURE_UNVERIFIED"
 
     if not acceptance_tests:
         return "FEATURE_COMPLETE"
@@ -427,27 +443,25 @@ def _run_feature_acceptance(
         return "FEATURE_ERROR"
 
     # B1: a test name that matches neither a failure NOR a pass is a test
-    # that never ran — treat it as failing, not passing. The old logic
-    # only checked for failures, so a misspelled name or a test file that
-    # wasn't committed would be silently green.
+    # that never ran — treat it as failing, not passing.
+    # R1/R2 fix: the old code used `name in outcome.raw` as a fallback check,
+    # which is a substring check — a test name appearing in a failure
+    # traceback would be falsely marked as passing. Now we ONLY use
+    # _extract_passed_names, and if the pytest output format doesn't print
+    # "PASSED" (e.g. default -q mode), we treat the test as "did not run"
+    # rather than falsely marking it as passing.
+    passed_names = _extract_passed_names(outcome.raw)
     passing = []
     failing = []
     for name in acceptance_tests:
         matched_fail = any(gates.names_match(name, f) for f in outcome.failures)
         if matched_fail:
             failing.append(name)
+        elif any(gates.names_match(name, p) for p in passed_names):
+            passing.append(name)
         else:
-            # Check if the test actually passed. outcome.passed is a COUNT,
-            # not a set of names, so we can't check membership directly.
-            # But if the test isn't in failures and the suite ran, we can
-            # check the raw output for the test name appearing in a pass
-            # context. If it's not in the raw output at all, it didn't run.
-            if name in outcome.raw or any(
-                gates.names_match(name, p) for p in _extract_passed_names(outcome.raw)
-            ):
-                passing.append(name)
-            else:
-                failing.append(f"{name} (not found in output — did not run)")
+            # Not in failures AND not in explicit passes → didn't run.
+            failing.append(f"{name} (not found in output — did not run)")
 
     print(f"  [feature] {len(passing)} passed, {len(failing)} failed")
     if failing:
@@ -463,15 +477,25 @@ def _extract_passed_names(raw: str) -> set:
     summary as 'test_file.py::test_name PASSED'. We extract these so
     _run_feature_acceptance can verify a test actually ran and passed,
     not just that it didn't fail.
+
+    Handles parametrized tests: 'test_foo[param1] PASSED' → extracts
+    'test_foo' and 'test_foo[param1]'.
     """
     import re
-    # Match lines like 'tests/test_foo.py::test_bar PASSED' or 'test_bar PASSED'
     passed = set()
-    for m in re.finditer(r"(\S+)::(\S+)\s+PASSED", raw):
-        passed.add(m.group(2))
-        passed.add(m.group(0).replace(" PASSED", ""))
-    for m in re.finditer(r"^(\S+)\s+PASSED\s*$", raw, re.MULTILINE):
-        passed.add(m.group(1))
+    # Match 'path::test_name[params] PASSED' or 'path::test_name PASSED'
+    for m in re.finditer(r"(\S+)::(\S+?(?:\[[^\]]*\])?)\s+PASSED", raw):
+        full = m.group(2)
+        passed.add(full)
+        # Also add the base name without params
+        if "[" in full:
+            passed.add(full.split("[")[0])
+    # Match bare 'test_name PASSED' (verbose without path)
+    for m in re.finditer(r"^(\S+?(?:\[[^\]]*\])?)\s+PASSED\s*$", raw, re.MULTILINE):
+        full = m.group(1)
+        passed.add(full)
+        if "[" in full:
+            passed.add(full.split("[")[0])
     return passed
 
 
@@ -760,56 +784,91 @@ def run_plan(
                     )
 
                     if revised_parts:
-                        # Replace the failed part with the revised part(s)
-                        # in the ordered list. The current loop index is
-                        # past `t`, so we insert the revised parts at the
-                        # current position and continue from there.
-                        # Simplest: run them inline.
-                        print(f"  [plan] {tid} re-planned into {len(revised_parts)} part(s)")
+                        # R3: validate the revised parts before running them.
+                        # The original plan was validated by _validate_feature_plan;
+                        # re-planned parts must pass the same check.
+                        from .plan_mode import _validate_feature_plan
+                        all_known_ids = {t2["id"] for t2 in ordered}
                         for rp in revised_parts:
-                            rp_id = rp["id"]
-                            print(f"\n=== Re-planned Part {rp_id}: {rp.get('title', '')} ===")
+                            for dep in rp.get("depends_on") or []:
+                                if dep not in all_known_ids and dep not in failed_ids:
+                                    print(f"  [replan] WARNING: {rp['id']} depends on {dep}, "
+                                          f"which is not in the plan")
+                        validation = _validate_feature_plan(repo, revised_parts, profile)
+                        if validation:
+                            print(f"  [replan] validation failed: {validation}")
+                        else:
+                            print(f"  [plan] {tid} re-planned into {len(revised_parts)} part(s)")
+                            for rp in revised_parts:
+                                rp_id = rp["id"]
+                                print(f"\n=== Re-planned Part {rp_id}: {rp.get('title', '')} ===")
 
-                            # Use the same part_base (branch if advanced).
-                            branch_head = _git(repo, "rev-parse", branch, check=False).strip()
-                            rp_base = branch if (branch_head and branch_head != base_commit) else "HEAD"
+                                # Use the same part_base (branch if advanced).
+                                branch_head = _git(repo, "rev-parse", branch, check=False).strip()
+                                rp_base = branch if (branch_head and branch_head != base_commit) else "HEAD"
 
-                            rp_result = PartResult(id=rp_id, title=rp.get("title", ""))
-                            try:
-                                rp_ticket = run_ticket(
-                                    repo, rp, profile, implementer, reviewers,
-                                    max_rounds=max_rounds,
-                                    apply=True, allow_unapproved=True,
-                                    arbiter_model=arbiter_model,
-                                    panel_deadline=panel_deadline,
-                                    keep_worktree=keep_branch,
-                                    base_ref=rp_base,
-                                )
-                                rp_result.verdict = rp_ticket.get("final_verdict", "")
-                                rp_result.applied = rp_ticket.get("applied", False)
-                                rp_result.rounds = len(rp_ticket.get("rounds", []))
-                                rp_result.cost_usd = rp_ticket.get("cost_usd", 0.0)
-                                rp_result.tests = rp.get("expect_green", [])
+                                # R7: pass tdd flag to re-planned parts.
+                                if tdd and rp.get("expect_green"):
+                                    from .test_mode import run_test, default_test_path
+                                    rp_test_file = default_test_path(profile, rp_id)
+                                    print(f"  [tdd] generating tests for {rp_id} at {rp_test_file}")
+                                    rp_test = run_test(
+                                        repo,
+                                        defect_description=rp.get("defect", rp.get("title", "")),
+                                        ticket=rp,
+                                        profile=profile,
+                                        implementer=implementer,
+                                        test_file=rp_test_file,
+                                        path_isolated=True,
+                                        base=rp_base,
+                                    )
+                                    if rp_test.get("error"):
+                                        print(f"  [tdd] test generation failed: {rp_test['error']}")
+                                    else:
+                                        rp_gen = rp_test.get("test_file", rp_test_file)
+                                        if rp_gen and (repo / rp_gen).exists():
+                                            _commit_to_branch(
+                                                repo, branch, [rp_gen], rp_id,
+                                                message=f"agent-loop: {rp_id} generated tests (red)",
+                                            )
+                                            rp_base = branch
 
-                                if rp_ticket.get("applied") and rp_ticket.get("touched"):
-                                    commit = _commit_to_branch(repo, branch, rp_ticket["touched"], rp_id)
-                                    rp_result.commit = commit
-                                    print(f"  [plan] {rp_id} committed to {branch} @ {commit[:8]}")
-                                elif rp_ticket.get("final_verdict") not in PROMOTABLE:
-                                    print(f"  [plan] {rp_id} NOT promotable ({rp_result.verdict})")
+                                rp_result = PartResult(id=rp_id, title=rp.get("title", ""))
+                                try:
+                                    rp_ticket = run_ticket(
+                                        repo, rp, profile, implementer, reviewers,
+                                        max_rounds=max_rounds,
+                                        apply=True, allow_unapproved=True,
+                                        arbiter_model=arbiter_model,
+                                        panel_deadline=panel_deadline,
+                                        keep_worktree=keep_branch,
+                                        base_ref=rp_base,
+                                    )
+                                    rp_result.verdict = rp_ticket.get("final_verdict", "")
+                                    rp_result.applied = rp_ticket.get("applied", False)
+                                    rp_result.rounds = len(rp_ticket.get("rounds", []))
+                                    rp_result.cost_usd = rp_ticket.get("cost_usd", 0.0)
+                                    rp_result.tests = rp.get("expect_green", [])
+
+                                    if rp_ticket.get("applied") and rp_ticket.get("touched"):
+                                        commit = _commit_to_branch(repo, branch, rp_ticket["touched"], rp_id)
+                                        rp_result.commit = commit
+                                        print(f"  [plan] {rp_id} committed to {branch} @ {commit[:8]}")
+                                    elif rp_ticket.get("final_verdict") not in PROMOTABLE:
+                                        print(f"  [plan] {rp_id} NOT promotable ({rp_result.verdict})")
+                                        failed_ids.add(rp_id)
+                                except Exception as exc:
+                                    rp_result.error = f"{type(exc).__name__}: {exc}"
+                                    print(f"  [plan] {rp_id} ERROR: {rp_result.error}")
                                     failed_ids.add(rp_id)
-                            except Exception as exc:
-                                rp_result.error = f"{type(exc).__name__}: {exc}"
-                                print(f"  [plan] {rp_id} ERROR: {rp_result.error}")
-                                failed_ids.add(rp_id)
 
-                            result.parts.append(rp_result)
-                            result.cost_usd += rp_result.cost_usd
-                            _write_backlog(repo, plan_id, branch, base_commit, tickets,
-                                           result.parts, result.status or "in_progress")
+                                result.parts.append(rp_result)
+                                result.cost_usd += rp_result.cost_usd
+                                _write_backlog(repo, plan_id, branch, base_commit, tickets,
+                                               result.parts, result.status or "in_progress")
 
-                        # After re-planned parts, continue the main loop.
-                        continue
+                            # After re-planned parts, continue the main loop.
+                            continue
                     else:
                         print(f"  [plan] {tid} re-plan produced no parts")
 
