@@ -862,3 +862,94 @@ intended hunks by hand.
 
 **Not a blocker for the loop's usefulness.** The logic in that same patch was correct and the run
 was still worth its cost — this is about the diff carrying passengers.
+
+### CF-26 — `--mode plan` runs ZERO rounds on the documented invocation, and calls it MAX_ROUNDS_EXHAUSTED
+
+**Measured on `nt8-riskguard` 2026-08-19, first attempt to use plan mode this session.** The exact
+invocation the consumer's own `CLAUDE.md` documents:
+
+```
+python -m agent_loop --profile nt8-riskguard --profile-module agent.nt8_riskguard \
+    --mode plan --defect "<description>"
+```
+
+returned in under two seconds, having made **no model call at all**:
+
+```json
+{ "ticket": "PLAN", "rounds": [], "plan": null, "verdict": "MAX_ROUNDS_EXHAUSTED" }
+```
+
+**Cause.** `cli.py:740` declares `ap.add_argument("--max-rounds", type=int, default=0)`, and
+`_plan` passes `max_rounds=args.max_rounds` straight through. `plan_mode.py` then does
+`for rnd in range(1, max_rounds + 1)`, which for `0` is `range(1, 1)` — **empty**. `final` keeps its
+initial value of `"MAX_ROUNDS_EXHAUSTED"` and is returned as the verdict.
+
+`plan_mode.py`'s own signature says `max_rounds: int = 4`. That default is unreachable from the CLI,
+because the CLI always supplies a value and the value it supplies is `0`.
+
+**It is a per-mode gap, not a global one.** Two modes already have the fallback:
+
+| site | line | has fallback |
+|---|---|---|
+| `loop.py` (patch) | `max_rounds = max_rounds or _loop_cfg.max_rounds` | ✅ |
+| `replay.py` | `max_rounds = max_rounds or config.get().loop.max_rounds` | ✅ |
+| `plan_mode.py` — BOTH round loops (defect plan and feature plan) | — | ❌ |
+
+So patch mode has worked all along on `--max-rounds 0` and plan mode never has. Passing
+`--max-rounds 4` explicitly makes plan mode work immediately, which is how this was confirmed.
+
+⚠️ **Three separate things make this silent rather than loud**, and the verdict is the least of them:
+
+1. **The verdict misattributes the cause.** `MAX_ROUNDS_EXHAUSTED` with `"rounds": []` is
+   self-contradicting: you cannot exhaust rounds you never entered. Any verdict that a zero-iteration
+   loop can produce is a verdict that says nothing about why.
+2. **No error is surfaced anywhere** — no `error` key, no stderr, and `logs/agent_loop/PLAN/`
+   contains only `result.json`. Patch mode writes `00_implement_prompt.md`; a plan run that made no
+   call writes no prompt, so there is nothing to distinguish "the model refused" from "we never
+   asked".
+3. **It exits 0.** A caller scripting the documented `plan → run-plan` chain sees success and an
+   absent plan.
+
+**Suggested fix**, in the order that matters: give `plan_mode` the same `max_rounds or config`
+fallback both other call sites have — better still, resolve it once in `cli.py` so a third mode
+cannot be added without it. Then make a zero-iteration round loop **impossible to mistake for
+exhaustion**: initialise `final` to something like `"NO_ROUNDS_RAN"`, or assert `max_rounds >= 1`
+at entry. And return non-zero for any verdict that produced no plan.
+
+⚠️ A test for this cannot be "plan mode returns a plan" — that needs a live model. It can be
+`max_rounds=0` raises, or `range` is never empty. **The property is that the loop body runs at least
+once**, which is assertable without a provider.
+
+### CF-27 — `--help` cannot be printed on a Windows console, because of one arrow
+
+**Measured on `nt8-riskguard` 2026-08-19, same session, before anything else was attempted.**
+
+```
+python -m agent_loop --help
+...
+  File "...\encodings\cp1252.py", line 19, in encode
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 4710
+```
+
+`--help` is the tool's front door and it raises a traceback instead of printing. The character is
+`\u2192` (`→`), and it is inside an argparse `help=` string — `cli.py:782`:
+
+```python
+help="run-plan mode: chain plan → run-plan --tdd --apply in one invocation",
+```
+
+`PYTHONIOENCODING=utf-8` works around it, which is how the help was eventually read.
+
+⚠️ **This is the same class the project already gates against, one layer out.**
+`tools/check_batteries_pin_encoding.py` and the consumer's `check_tools_pin_stdout.py` both exist
+because *"a gate dies exactly when it has something to say"*. Here it is not a gate but argparse,
+and it dies whenever the user asks what the flags are. The existing gates cannot see it because they
+inspect scripts for a stdout pin; argparse does the writing.
+
+⚠️ **The arrows are load-bearing prose in this codebase** (`plan → run-plan`, `epic → stories →
+tasks`) and appear in comments and docstrings too, where they are harmless. Only strings that reach
+a console need to be ASCII. Suggested fix: ASCII (`->`) in `help=` and `description=` strings
+specifically, plus a `sys.stdout.reconfigure(encoding='utf-8', errors='replace')` in `main()` before
+argparse can print — the pin the project already requires of every other printing script. A gate
+would be: import the parser, format its help, and encode it as cp1252.
+
