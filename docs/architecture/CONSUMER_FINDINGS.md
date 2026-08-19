@@ -953,3 +953,59 @@ specifically, plus a `sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 argparse can print — the pin the project already requires of every other printing script. A gate
 would be: import the parser, format its help, and encode it as cp1252.
 
+### CF-28 — plan mode invented a file tree, spent 4 rounds failing to anchor it, and discarded the good half
+
+**Measured on `nt8-riskguard` 2026-08-19, `--mode plan --max-rounds 4` against a real defect
+(`P0-171`).** Four real rounds, ~190s, `kimi-k2.7-code:cloud`, ending `MAX_ROUNDS_EXHAUSTED` with the
+ticket written to `plan_rejected.json`. Every region it proposed names a file and a symbol that **do
+not exist anywhere in the repo**:
+
+| the plan's region | what the repo actually has |
+|---|---|
+| `src/Overtrading/DuplicateEntryRule.cs` | `addons/RiskGuardAddOn.cs` (the rule is inline in a 6400-line file) |
+| anchor `Evaluate(` | `ExecuteOrderUpdate` |
+| anchor `class Anchor` | `RecentEntryAnchor`, in `RiskGuardModels.cs` |
+| anchor `IsReducing` | `IsPositionReducingOrder` |
+| anchor `DateTime.UtcNow` | real, but in the wrong file |
+
+There is no `src/` directory in this repo at all. Region validation caught all five and was right to,
+but the run had already spent its budget: round 1 was **148.8s / 18154 out / 77312 thinking chars**,
+and rounds 2-4 were 1008, 1270 and 1935 out — the shape of a model re-emitting the same invented
+structure with cosmetic changes, because nothing in the feedback told it the *architecture* was wrong
+rather than the *format*.
+
+⚠️ **The defect description was behavioural on purpose.** It described observable behaviour, logs and
+required properties, and deliberately named no files, because the point of the exercise was to test
+`--mode test --path-isolated` — tests generated from a spec rather than from an implementation. Plan
+mode responded by inventing an implementation to match the prose. **A plan step that has no grounding
+in the actual tree will confabulate one**, confidently and consistently across four rounds.
+
+⚠️ **THE SPEC IT WROTE IS GOOD, AND IT IS THROWN AWAY.** The rejected ticket's `spec` field
+independently arrived at the correct fix — use the order's placement time rather than the guard's
+observation time; add a staleness horizon so a replayed fill cannot be a duplicate; keep a set of
+already-evaluated order ids so a replay cannot refresh an anchor; run the reducing-position and
+copier exclusions first and unconditionally; prune anchors relative to the candidate. That last-but-one
+item also solves a *different* open defect in the consumer repo (`P1-167`, one refusal per order per
+rule) which the prose never mentioned. **The reasoning was reusable and only the coordinates were
+wrong**, yet both are discarded together into a file named `plan_rejected.json`.
+
+**Suggested fixes, roughly in value order:**
+
+1. **Ground the planner in the tree.** Give it the repo's file list (or the profile's
+   `source_globs` expansion), or let it call a search tool, before it proposes regions. A planner that
+   cannot see the tree cannot anchor to it.
+2. **Tell it WHICH failure it hit.** "Region R1 did not resolve: no such file `src/...`" is a
+   different instruction from "your format was wrong", and the current feedback did not distinguish
+   them — four rounds of the same answer is the evidence. Feed back the *nearest* real paths.
+3. **Separate the spec verdict from the region verdict.** A ticket whose prose is sound and whose
+   anchors are wrong is one search away from usable. Emitting `plan_partial.json` with the spec
+   intact, or failing fast after round 1 on an unresolvable *file* (as opposed to an unresolvable
+   anchor within a real file), would both have saved most of the run.
+4. Consider failing fast: an anchor inside a real file may legitimately need a retry, but a **file
+   that does not exist** will not start existing on round 2.
+
+⚠️ **Consumer-side workaround**, recorded because it is not obvious: name the real files and symbols
+in the `--defect` text. That reintroduces exactly the implementation coupling that
+`--path-isolated` exists to avoid, so the two features are in tension — grounding the *planner*
+without grounding the *test writer* is what resolves it.
+
