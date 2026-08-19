@@ -1087,3 +1087,88 @@ can never sit further ahead than the window. It respected all four constraints t
 imposed, including "do not key on a broker-owned value". **The design was right and the coordinates
 were one field short**, and `plan_rejected.json` is where both went.
 
+### CF-30 — `--mode test --path-isolated` picked the right SCENARIOS and reinvented every SEAM, because isolation hid the test harness too
+
+**Measured on `nt8-riskguard` 2026-08-19.** First real use of test mode. 321s, 37932 output tokens,
+152846 thinking characters, 16467 chars written to `tests/P0171GeneratedTests.cs`. Then:
+
+```
+[test-first] WARNING: cannot verify the generated tests: the runner produced no
+             parseable result summary at baseline
+```
+
+**The generated tests do not compile.** 12 errors, and they fall into two groups.
+
+**Group 1 — it wrote a standalone program into a suite that is one program.**
+
+```
+RiskGuardAddOnTests.cs(24,18):  CS0101 namespace already contains a definition for 'Program'
+RiskGuardAddOnTests.cs(68,29):  CS0111 'Program' already defines a member called 'Run'
+RiskGuardAddOnTests.cs(73,29):  CS0111 ... 'RunNamed'
+RiskGuardAddOnTests.cs(14715,29): CS0111 ... 'Assert'
+RiskGuardAddOnTests.cs(117,28): CS0111 ... 'Main'
+```
+
+The generated file declares its own `class Program` with `Main`, `Run`, `RunNamed` and `Assert`.
+That is correct for a language where each test file is independently runnable, and wrong here: this
+consumer's suite is a single `Program` with one `Main` and a hand-maintained `Run(TestName)` registry.
+The profile declares `test_sources=("tests/*Tests.cs",)`, which says WHERE tests live and nothing
+about their SHAPE.
+
+**Group 2 — it invented a seam that does not exist.**
+
+```
+P0171GeneratedTests.cs(279,37): CS0115 'TestableAddOn.LogEvent(string,string,string)':
+                                no suitable method found to override
+```
+
+It subclassed the addon to intercept logging, and `LogEvent` is not virtual. It also reached for
+reflection to reach private state:
+
+```csharp
+SetField(this, "_config", config);
+SetField(this, "_accountStates", states);
+```
+
+⚠️ **Every one of those seams already exists and is public to tests**: `SetConfigForTest`,
+`SetAccountStateForTest`, and a static `LogEventMessageObserver` hook that exists precisely so a test
+can capture log output. The repo also has a purpose-built harness for this very method
+(`P1160Setup` / `P1160Order` / `P1160Send`) that drives the real `ExecuteOrderUpdate`. The model used
+none of them, because `--path-isolated` withheld the implementation **and, incidentally, the test
+harness with it**.
+
+⚠️ **THE SCENARIOS, THOUGH, ARE RIGHT — and that is the part worth paying for.** All six map exactly
+onto the spec's requirements, with nothing missing and nothing invented:
+
+| generated test | spec requirement |
+|---|---|
+| `TestReplayedOrderNotRefusedAsDuplicate` | 1 |
+| `TestOneOrderDrawsExactlyOneRefusal` | 2 |
+| `TestGenuineDuplicateStillRefused` | 3 |
+| `TestOrderSeenOnlyAsFilledIsStillEvaluated` | 4 |
+| `TestReducingOrderNeverRefused` | 5 |
+| `TestReplaySuppressionExpiresOnItsOwn` | the bounded-suppression constraint |
+
+So path isolation **worked for its stated purpose**: the tests are derived from the spec, they are not
+tautological against an implementation, and they include the two negative controls that stop the fix
+over-reaching. The scenarios were kept and ported by hand into the existing harness; only the
+scaffolding was thrown away.
+
+**The finding is therefore narrow and fixable: isolate the test writer from the CODE UNDER TEST, not
+from the TEST HARNESS.** Suggested, in value order:
+
+1. Give test mode the existing test file's **preamble and one representative test** (or a profile
+   field like `test_style_exemplar`) as context that is always supplied, even under
+   `--path-isolated`. Idioms are not the implementation.
+2. Add a profile notion of test-file **shape** — standalone vs. append-to-existing-class. For an
+   append-style suite, generating into a new file cannot work without also emitting the registration,
+   and this profile's suite needs a `Run(TestName);` line added to `Main`.
+3. **Compile the generated tests before declaring them written.** The run reports
+   `tests written to: ...` and exits **0**, and the only signal that they are unusable is a WARNING
+   line about an unparseable baseline. The tests exist and are not evidence; that should be a
+   non-zero exit.
+4. ⚠️ The baseline message *"the runner produced no parseable result summary"* blames the runner for
+   what is a compile failure in the just-generated file. Surface the `error CS...` lines — the same
+   complaint as `CF-22`'s *"baseline test run produced no parseable result summary"*, which also read
+   as the consumer's fault.
+
