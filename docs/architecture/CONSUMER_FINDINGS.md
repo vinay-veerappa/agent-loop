@@ -907,6 +907,14 @@ So patch mode has worked all along on `--max-rounds 0` and plan mode never has. 
    contains only `result.json`. Patch mode writes `00_implement_prompt.md`; a plan run that made no
    call writes no prompt, so there is nothing to distinguish "the model refused" from "we never
    asked".
+
+   ⚠️ **CORRECTION, from a later run in the same session:** `"rounds": []` is **not** a symptom of the
+   zero-round bug, because it is *always* empty. `plan_mode.py` appends to `result["rounds"]` on
+   exactly one path — `except ProviderError` — so a run that completes four successful rounds writes
+   the identical `{"rounds": [], "plan": null, "verdict": "MAX_ROUNDS_EXHAUSTED"}`. A four-round
+   rejection and a zero-round no-op are **byte-identical in `result.json`**. That is the more serious
+   half of this finding: the artifact cannot distinguish "never asked" from "asked four times and was
+   turned down", and the only way to tell them apart is to count `rN_plan_raw.txt` files by hand.
 3. **It exits 0.** A caller scripting the documented `plan → run-plan` chain sees success and an
    absent plan.
 
@@ -1008,4 +1016,74 @@ wrong**, yet both are discarded together into a file named `plan_rejected.json`.
 in the `--defect` text. That reintroduces exactly the implementation coupling that
 `--path-isolated` exists to avoid, so the two features are in tension — grounding the *planner*
 without grounding the *test writer* is what resolves it.
+
+### CF-29 — the plan prompt omits the `kind` field, so the planner cannot obey the extractor's own advice
+
+**Measured on `nt8-riskguard` 2026-08-19, `--mode plan --max-rounds 4`, second attempt — this time
+with the defect text naming every real file and symbol** (the CF-28 workaround). The plan came back
+`MAX_ROUNDS_EXHAUSTED` again after 4 rounds, ~190s and ~19k output tokens.
+
+This time the regions were **right**. Running the extractor by hand on the rejected ticket gives one
+error, and it is entirely specific:
+
+```
+NoBlockError: line 2232 declares no brace-delimited body:
+  'DateTime dupNow = stateModel.UtcNow();'.
+  kind=decl expands from an opening brace to its match, and there is none here, so it
+  would run on to the end of the enclosing block. Use kind=line to target this single line.
+```
+
+**Adding `"kind": "line"` to that one region — and changing nothing else — makes all three regions
+extract cleanly:**
+
+```
+R1   addons/RiskGuardAddOn.cs    lines 1451-1460
+R2   addons/RiskGuardAddOn.cs    lines 2232-2232
+R3   addons/RiskGuardModels.cs   lines 143-143
+```
+
+So the plan was **one undocumented field away from usable**, and the run was discarded.
+
+⚠️ **The planner could not have known.** `PLAN_SYSTEM` is 627 characters and states the region schema
+as exactly this:
+
+```
+{"id": "REGION_ID", "file": "path/to/file.py", "anchor": "unique anchor string in the file"}
+```
+
+`kind` is never mentioned — not in the schema, not in prose. The extractor's remediation advice
+(*"Use kind=line"*) **is** fed back verbatim (`f"Region extraction failed: {exc}. Fix the anchors and
+re-emit."`), so the model was told the answer three times and could not act on it, because as far as
+its instructions go `kind` is not a legal key. It did the only thing left: swapped anchors. Rounds 2,
+3 and 4 returned 1180, 1583 and 1309 tokens, oscillating between `dupNow = stateModel.UtcNow()` and
+the ambiguous `dupWindowMs`, never once emitting `kind`.
+
+**This also explains the silence.** Neither the `regions: N resolved OK` line nor the `[panel] ...`
+line ever printed, because the `RegionError` branch does `continue` with **no print at all**. From the
+console, four rounds of region failure and four rounds of panel rejection look the same: a list of
+round timings followed by `MAX_ROUNDS_EXHAUSTED`. There is no `r*_arbiter.txt` and no reviewer
+artifact either, so nothing on disk says the panel was never reached.
+
+**Suggested fixes, in value order:**
+
+1. **Document `kind` in `PLAN_SYSTEM`**, with the one-line rule: `decl` for anything with a
+   brace-delimited body, `line` for a bare statement. One sentence recovers this entire class of run.
+2. **Print the region failure.** `print(f"           plan rejected: {exc}")` in the `RegionError`
+   branch, matching what the feature path already does. Right now the single most common rejection
+   reason is invisible.
+3. ⚠️ **Warn on a degenerate region.** With `kind=line` added, `R2` resolves to `2232-2232` — ONE
+   line. That satisfies the extractor and hands the implementer a single statement to edit when the
+   change needs the surrounding block, and a one-line region "prints OK" exactly like a good one.
+   The consumer's own `CLAUDE.md` already carries a warning to read the line ranges by hand for this
+   reason. A span of 1 (or below some floor) deserves a printed caution, not silent success.
+4. Consider **suggesting the fix mechanically**: the extractor already knows the anchor matched a
+   single non-brace line, so it can emit the corrected region rather than describing it.
+
+⚠️ **What was lost is the expensive part.** Both rejected plans contained sound engineering: the
+second independently proposed a bounded `ReplaySuppressionUntilUtc` set in `OnConnectionStatusUpdate`,
+a `DuplicateEntryEvaluatedOrderIds` set to make refusals once-per-order, keeping both fields OUT of
+the persisted shape so a recompile resets them, and a fail-loud assertion that the suppression stamp
+can never sit further ahead than the window. It respected all four constraints the defect text
+imposed, including "do not key on a broker-owned value". **The design was right and the coordinates
+were one field short**, and `plan_rejected.json` is where both went.
 
