@@ -21,6 +21,7 @@ CF-20  and then the fix for CF-1 overshot: requiring content inside the parens
 """
 from __future__ import annotations
 
+import os
 import re
 
 # The call-token rule as it appears in cli.py. Kept here verbatim so a change
@@ -100,3 +101,118 @@ def test_the_rules_here_match_the_rules_in_cli():
     src = inspect.getsource(cli)
     assert CALL_RULE in src, "cli.py's call rule changed and this test went stale"
     assert DOT_RULE in src, "cli.py's dot rule changed and this test went stale"
+
+
+def test_unresolved_symbol_in_file_refuses_by_default():
+    """CF-31: if the spec names a symbol that is in the file but outside every
+    region, _list should auto-attach a readonly region for it.
+    """
+    import tempfile
+    from pathlib import Path
+    from agent_loop import cli, profiles
+
+    prof = profiles.Profile(
+        name="cf31", language="csharp", file_suffixes=(".cs",), line_comment="//",
+        block_comment=("/*", "*/"), block_kind="decl", preprocessor_directives=(),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        (repo / "DynamicAtmManager.cs").write_text(
+            "class DynamicAtmManager {\n"
+            "    public int DuplicateEntryWindowMs { get; set; }\n"
+            "    public void Run() { }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        tickets = [{
+            "id": "T1",
+            "title": "use DuplicateEntryWindowMs",
+            "defect": "missing",
+            "spec": "Use DuplicateEntryWindowMs in the Run method.",
+            "regions": [{"id": "R1", "file": "DynamicAtmManager.cs", "anchor": "public void Run"}],
+            "expect_green": [],
+        }]
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(repo)
+            rc = cli._list(tickets, prof)
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 0, f"expected auto-attach to succeed, got {rc}"
+        assert any(r.get("op") == "readonly" for r in tickets[0]["regions"])
+        readonly = [r for r in tickets[0]["regions"] if r.get("op") == "readonly"][0]
+        assert readonly["file"] == "DynamicAtmManager.cs"
+        assert "DuplicateEntryWindowMs" in readonly["note"]
+
+
+def test_unresolved_symbol_not_in_file_refuses():
+    """CF-31: if the spec names a symbol that is not anywhere in the file, the
+    default should refuse.
+    """
+    import tempfile
+    from pathlib import Path
+    from agent_loop import cli, profiles
+
+    prof = profiles.Profile(
+        name="cf31", language="csharp", file_suffixes=(".cs",), line_comment="//",
+        block_comment=("/*", "*/"), block_kind="decl", preprocessor_directives=(),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        (repo / "DynamicAtmManager.cs").write_text(
+            "class DynamicAtmManager {\n"
+            "    public void Run() { }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        tickets = [{
+            "id": "T1",
+            "title": "use MissingSymbol",
+            "defect": "missing",
+            "spec": "Use MissingSymbol in the Run method.",
+            "regions": [{"id": "R1", "file": "DynamicAtmManager.cs", "anchor": "public void Run"}],
+            "expect_green": [],
+        }]
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(repo)
+            rc = cli._list(tickets, prof)
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 1, f"expected refusal, got {rc}"
+        assert not any(r.get("op") == "readonly" for r in tickets[0]["regions"])
+
+
+def test_allow_unresolved_symbols_opt_out():
+    """CF-31: the operator can opt into the old warn-and-continue behaviour."""
+    import tempfile
+    from pathlib import Path
+    from agent_loop import cli, profiles
+
+    prof = profiles.Profile(
+        name="cf31", language="csharp", file_suffixes=(".cs",), line_comment="//",
+        block_comment=("/*", "*/"), block_kind="decl", preprocessor_directives=(),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        (repo / "DynamicAtmManager.cs").write_text(
+            "class DynamicAtmManager {\n"
+            "    public void Run() { }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        tickets = [{
+            "id": "T1",
+            "title": "use MissingSymbol",
+            "defect": "missing",
+            "spec": "Use MissingSymbol in the Run method.",
+            "regions": [{"id": "R1", "file": "DynamicAtmManager.cs", "anchor": "public void Run"}],
+            "expect_green": [],
+        }]
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(repo)
+            rc = cli._list(tickets, prof, allow_unresolved_symbols=True)
+        finally:
+            os.chdir(old_cwd)
+        assert rc == 0, f"expected opt-out to allow pass, got {rc}"

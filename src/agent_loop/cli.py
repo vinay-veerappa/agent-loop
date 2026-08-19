@@ -17,6 +17,7 @@ import argparse
 import importlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -120,12 +121,82 @@ def _looks_like_code(token: str, spec: str = "") -> bool:
     return False
 
 
-def _list(tickets, profile) -> int:
+def _attach_readonly_context(ticket: dict, file_path: str, symbol: str, profile: profiles.Profile) -> None:
+    """CF-31: add a readonly region for the declaration site of `symbol` in `file_path`.
+
+    The symbol exists in the file but outside every editable region. We attach
+    the surrounding declaration (property/field/constant) so the implementer can
+    see the type and path without being able to edit it. The region is appended
+    to the ticket's `regions` list in place.
+    """
+    from . import regions
+
+    path = Path(".") / file_path
+    src = path.read_text(encoding="utf-8", errors="replace")
+    lines = src.splitlines()
+    # Try to find the declaration line. We look for patterns like:
+    #   int Symbol          (field/property)
+    #   public int Symbol { get; }
+    #   const int Symbol =
+    #   TimeSpan Symbol =
+    # The declaration may be nested in a property path like Overtrading.Symbol.
+    candidates: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        if symbol not in ln:
+            continue
+        stripped = ln.strip()
+        # Heuristic: line contains the symbol and looks like a declaration.
+        # It must not look like a call site (Symbol(...) or .Symbol).
+        if stripped.startswith("//") or stripped.startswith("#"):
+            continue
+        if re.search(rf"\b{re.escape(symbol)}\s*\(", ln):
+            continue
+        # Likely declaration if it has a type-ish token before the symbol.
+        if re.search(rf"[\w\[\]<>\.\*,\?]+\s+{re.escape(symbol)}\b", ln):
+            candidates.append((i, ln))
+    if not candidates:
+        # Fall back to the first line that mentions the symbol.
+        for i, ln in enumerate(lines):
+            if symbol in ln:
+                candidates.append((i, ln))
+                break
+    if not candidates:
+        return
+
+    start, anchor_line = candidates[0]
+    # Expand to a small window around the declaration so path expressions like
+    # _config.Overtrading.DuplicateEntryWindowMs are visible in context.
+    context_lines = 3
+    decl_start = max(0, start - context_lines)
+    decl_end = min(len(lines) - 1, start + context_lines)
+    # Pick a unique anchor: prefer the exact declaration line if it is unique,
+    # otherwise the first line of the window.
+    anchor = anchor_line.strip()
+    if src.count(anchor) != 1:
+        anchor = lines[decl_start].rstrip()
+    readonly_id = f"{ticket['id']}-ctx-{symbol}-{len(ticket.get('regions', []))}"
+    ticket.setdefault("regions", []).append({
+        "id": readonly_id,
+        "file": file_path,
+        "anchor": anchor,
+        "kind": "line",
+        "op": "readonly",
+        "note": f"CF-31 auto-attached read-only context for symbol '{symbol}'",
+    })
+
+
+def _list(tickets, profile, allow_unresolved_symbols: bool = False) -> int:
     """Confirm every ticket's regions still resolve against the current tree.
 
     Also validates expect_green against the test failure set (O65) and warns
     when a capitalized identifier in spec/context is not declared inside any
     region of the same file (O66).
+
+    CF-31: by default an unresolved symbol is now a hard refusal, because the
+    warning used to be printed and then ignored, and the model would invent a
+    property-discovery layer rather than read the field it could not see. Pass
+    allow_unresolved_symbols=True to opt into the old warn-and-continue
+    behaviour for deliberate cases.
     """
     from . import gates
 
@@ -253,9 +324,19 @@ def _list(tickets, profile) -> int:
                         continue
                     # Is it mentioned anywhere in the file?
                     if cap not in file_text:
-                        print(f"      WARN '{cap}' named in spec but not found in {file_path} "
-                              f"-- model will guess; add its declaration to a read-only region",
+                        print(f"      REFUSE '{cap}' named in spec but not found in {file_path} "
+                              f"-- model will guess unless you add its declaration to a "
+                              f"read-only region; pass --allow-unresolved-symbols to override",
                               file=sys.stderr)
+                        if not allow_unresolved_symbols:
+                            bad += 1
+                        continue
+                    # CF-31: the symbol exists in the file but outside every region. The
+                    # implementer cannot see it and will guess. Auto-attach the declaration
+                    # site as a read-only region so the run can proceed without manual edits.
+                    print(f"      AUTO  '{cap}' declared outside every region in {file_path}; "
+                          f"attaching read-only context")
+                    _attach_readonly_context(t, file_path, cap, profile)
 
     return 1 if bad else 0
 
@@ -756,6 +837,12 @@ def main(argv=None) -> int:
         action="store_true",
         help="arbiter override: export/promote even without unanimous APPROVE",
     )
+    ap.add_argument(
+        "--allow-unresolved-symbols",
+        action="store_true",
+        help="CF-31: run even if the spec names symbols not visible in any region "
+             "(default is to refuse, because the model will guess and burn rounds)",
+    )
     ap.add_argument("--resume-raw", default="", help="reuse an rN_impl_raw.txt as round 1")
     ap.add_argument("--orchestrator-note", default="", help="authoritative directive; outranks reviewers")
     ap.add_argument("--panel-deadline", type=int, default=0, help="wall-clock seconds for the whole panel (0 = configured value)")
@@ -1050,7 +1137,7 @@ def main(argv=None) -> int:
         return 2
 
     if args.list:
-        return _list(tickets, profile)
+        return _list(tickets, profile, allow_unresolved_symbols=args.allow_unresolved_symbols)
 
     wanted = args.ticket or [t["id"] for t in tickets]
     unknown = [w for w in wanted if not any(t["id"] == w for t in tickets)]

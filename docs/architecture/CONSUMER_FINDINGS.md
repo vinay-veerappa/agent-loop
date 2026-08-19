@@ -1223,10 +1223,10 @@ The loop had already computed the diagnosis and printed it. Nothing consumed it 
 
 **Suggested fixes, cheapest first.**
 
-1. ⚠️ **Make the `--list` warning binding by default.** A ticket whose spec names a symbol that
+1. ✅ **Make the `--list` warning binding by default.** A ticket whose spec names a symbol that
    appears in no region is not ready to run; refusing costs nothing and the wording is already
    right. `--allow-unresolved-symbols` for the deliberate case.
-2. **Better: resolve it instead of refusing.** The loop can already find the symbol — that is how it
+2. ✅ **Resolve it instead of refusing.** The loop can already find the symbol — that is how it
    knows to warn. Attach the declaration site, or the single line that reads it, as read-only
    context. One line of `_config.Overtrading.DuplicateEntryWindowMs` would have replaced 90 lines of
    reflection.
@@ -1238,6 +1238,22 @@ The loop had already computed the diagnosis and printed it. Nothing consumed it 
    `4 acceptance test(s) still failing` and never once named them. The four share one cause and the
    two that pass share the complement — that is visible at a glance from the names and invisible
    from the count, and the implementer is handed the same undifferentiated number every round.
+
+### Implementation (CF-31 fix)
+
+- Added `readonly` as a region `op` in `src/agent_loop/regions.py`. Readonly regions resolve like
+  replace regions but are skipped by `apply()` and are allowed to overlap editable regions.
+- `cli.py` `_list()` now:
+  - refuses tickets that name a symbol not found in any region's file (unless
+    `--allow-unresolved-symbols` is passed);
+  - auto-attaches a `readonly` region for symbols that exist in the file but outside every editable
+    region, so the implementer can see the type/path without being able to edit it.
+- Added `--allow-unresolved-symbols` CLI flag for the deliberate opt-out case.
+- Patch mode runs the same validation before spending model calls, so a ticket that would have
+  burned rounds is now rejected at the gate.
+- Acceptance tests in `tests/acceptance/test_list_symbol_warning_reads_code_not_prose.py` cover:
+  auto-attach when the symbol exists; refusal when it does not; and opt-out with
+  `--allow-unresolved-symbols`.
 
 **What the run got right, since this reads as a bad outcome and mostly is not.** The two-mechanism
 structure was correct and matched the spec, the placement of the evaluated-order record was correct,

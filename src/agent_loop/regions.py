@@ -204,8 +204,8 @@ def strip_code(line: str, profile: Profile) -> str:
 # Kept on a separate axis on purpose: `kind` (decl/indent/line) is the locator
 # strategy consumed by find_region, and folding an operation into it would give
 # one field two meanings.
-REPLACE, CREATE, INSERT = "replace", "create", "insert"
-OPS = (REPLACE, CREATE, INSERT)
+REPLACE, CREATE, INSERT, READONLY = "replace", "create", "insert", "readonly"
+OPS = (REPLACE, CREATE, INSERT, READONLY)
 
 
 @dataclass
@@ -614,6 +614,40 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
                 f"{spec['id']}: unknown op {op!r}. Expected one of {', '.join(OPS)}."
             )
 
+        if op == READONLY:
+            # CF-31: a readonly region is the declaration site of a symbol the
+            # implementer needs to see but must not edit. It is resolved exactly
+            # like a replace region but the op is preserved so apply() ignores it.
+            if "anchor" not in spec:
+                raise RegionError(
+                    f"{spec['id']}: readonly region is missing the 'anchor' key."
+                )
+            if not path.exists():
+                raise RegionError(f"{spec['id']}: file does not exist: {spec['file']}")
+            language_for(path, profile)
+            lines, _, _ = read_source(path)
+            guard_unsupported_syntax(path, "\n".join(lines), profile)
+            kind = spec.get("kind", profile.block_kind)
+            if kind in ("method", "block"):
+                kind = "decl"
+            start, end = find_region(lines, spec["anchor"], kind, profile)
+            text = "\n".join(lines[start: end + 1])
+            out.append(
+                Region(
+                    id=spec["id"],
+                    file=spec["file"],
+                    path=path,
+                    anchor=spec["anchor"],
+                    kind=kind,
+                    start_line=start,
+                    end_line=end,
+                    text=text,
+                    note=spec.get("note", ""),
+                    op=READONLY,
+                )
+            )
+            continue
+
         if op == CREATE:
             # Nothing to locate: the point of this op is that the file is not
             # there yet, which is exactly what plan mode could not express.
@@ -698,12 +732,15 @@ def _reject_overlaps(out: List[Region]) -> None:
     # `b.start_line <= a.end_line` is unsatisfiable against it -- an explicit skip
     # survived mutation because it could not change any outcome, and an inert
     # branch reads like a rule the arithmetic is not actually relying on.
+    # CF-31: readonly regions are allowed to overlap editable ones because they
+    # are only context; the editable region is the one that gets applied.
     by_file: Dict[str, List[Region]] = {}
     for r in out:
         by_file.setdefault(r.file, []).append(r)
 
     for f, regs in by_file.items():
-        ordered = sorted(regs, key=lambda r: (r.start_line, r.end_line))
+        editable = [r for r in regs if r.op != READONLY]
+        ordered = sorted(editable, key=lambda r: (r.start_line, r.end_line))
         for a, b in zip(ordered, ordered[1:]):
             if b.start_line <= a.end_line:
                 relation = (
@@ -751,6 +788,11 @@ def apply(regions: List[Region], blocks: Dict[str, str]) -> List[str]:
         changed = False
         for r in sorted(regs, key=lambda x: x.start_line, reverse=True):
             body = blocks.get(r.id)
+            # CF-31: readonly regions give the implementer context but are never
+            # rewritten. Skipping them here is the enforcement; they still
+            # appear in prompts because extract() produced them.
+            if r.op == READONLY:
+                continue
             if r.op == INSERT:
                 # Additive: the anchored block STAYS and the new code follows it.
                 # An empty body is a no-op rather than a deletion -- the model
