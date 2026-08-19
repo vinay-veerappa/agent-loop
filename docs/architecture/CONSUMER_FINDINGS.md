@@ -809,3 +809,56 @@ recorded is that they exist and which mode produces which.
 ⚠️ Note the sequencing: `CF-23` changed a real outcome and **`pytest -q` stayed green**, because
 nothing in that suite covered it. The selftest was the only thing that noticed, and it was not
 running. The acceptance test added with `CF-23` covers the arithmetic; this covers the outcome.
+
+### CF-25 — the implementer rewrote 11 unrelated comments to strip non-ASCII, inside protected regions
+
+**Measured on `nt8-riskguard`, ticket `P1-160`, round 3 (`kimi-k2.7-code:cloud`).** The patch that
+passed every mechanical gate — static, compile, test, lock-scope — contained the fix in 5 hunks and
+**11 further hunks that changed nothing but comment text**, across three files:
+
+```diff
+-        // ⚠️ `!= 0.0` AND NOT `> 0`. An account whose equity has gone NEGATIVE is reporting a
++        // WARNING: `!= 0.0` AND NOT `> 0`. An account whose equity has gone NEGATIVE is reporting a
+
+-        // ── helpers ───────────────────────────────────────────────────────────────────
++        // --- helpers -------------------------------------------------------------------
+```
+
+Every `⚠️` in a touched region became `WARNING:`, and two `//` lines inside a parameter comment
+became `///`, which changes what the C# compiler treats as documentation. The consumer repo uses
+`⚠️` as a deliberate convention for the paragraph that records why a line is the way it is —
+several hundred instances — so this is not cosmetic drift, it is the loop rewriting the thing the
+repo uses to keep its own reasoning attached to the code.
+
+**Why the gates could not see it.** `[static]` checks that the emitted blocks are well-formed;
+`[compile]` and `[test]` are indifferent to a comment; `[lock-scope]` reads for broker calls. There
+is no gate that asks *"did this patch change anything the ticket did not ask for"*, and the review
+panel did not raise it either — `glm-5.2` filed 5 findings, none about the rewrites.
+
+**It is NOT the prompt builder, and that was the first thing to rule out.** The saved
+`00_implement_prompt.md` for this run carries **10** warning glyphs, **69** box-drawing characters
+and **zero** replacement characters — the region text reaches the model with its bytes intact.
+So this is not the cp1252 round-trip hazard `CF-22` pins against arriving by another door: the
+model is handed the glyphs and emits ASCII in their place. That narrows the fix to the emit side,
+and it means no amount of hardening the extraction path will help.
+
+⚠️ **The consequence is worse than noise, because the obvious response is to accept the patch.**
+It applies cleanly, the suite is green, and a reviewer skimming a 271-line diff for the logic will
+not read 11 comment hunks. Applying it would have silently degraded three files, and the next
+patch would have carried the degradation forward as context. I filtered the diff down to the 5
+intended hunks by hand.
+
+**Suggested fix, in order of value:**
+
+1. **Say it in the implement prompt.** The prompt tells the model what to change; it does not tell
+   it to reproduce untouched lines byte-for-byte. One sentence — a line you are not changing must
+   come back exactly as given, including non-ASCII — is the cheapest thing to try, and it is
+   testable against this exact run.
+2. **A gate that fails a patch touching a line the ticket's regions do not cover** would be too
+   strict — regions are coarse. But a gate that fails a hunk whose only change is inside a comment,
+   unless the ticket asks for documentation, is cheap and would have caught all 11.
+3. At minimum, **print a count of comment-only hunks** in the round summary, so a human filtering
+   the patch knows how many to look for rather than discovering them by reading.
+
+**Not a blocker for the loop's usefulness.** The logic in that same patch was correct and the run
+was still worth its cost — this is about the diff carrying passengers.
