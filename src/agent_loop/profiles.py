@@ -121,6 +121,11 @@ class Profile:
     # (section headers, ADR format, handover format). Without it, docs mode uses
     # its hardcoded prompts and the output won't match the repo's conventions.
     docs_conventions: str = ""
+    # CF-30: a representative existing test source whose style and scaffolding
+    # should be reproduced even in --path-isolated test generation. Idioms are
+    # not implementation: showing the harness does not violate test independence,
+    # it prevents the model from reinventing Program/Main/Run plumbing.
+    test_style_exemplar: str = ""
     settled: Tuple[str, ...] = ()
 
     @property

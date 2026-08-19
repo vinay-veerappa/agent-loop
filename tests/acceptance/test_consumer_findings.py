@@ -1,4 +1,4 @@
-"""Tests for consumer findings CF-1 through CF-7.
+"""Tests for consumer findings CF-1 through CF-7 and CF-26/27/29/30.
 
 Each test maps to a finding from CONSUMER_FINDINGS.md, documenting what
 was observed in the field and verifying the fix.
@@ -8,7 +8,248 @@ from __future__ import annotations
 import sys
 from io import StringIO
 
+import pytest
+
 from agent_loop.memory import validate_settled, _contradicts_settled
+
+
+# ---------------------------------------------------------------------------
+# CF-7: settled decision that contradicts an upheld finding is dropped
+# ---------------------------------------------------------------------------
+
+def test_cf7_contradictory_settled_is_dropped():
+    """The arbiter upheld 'count when ABSENT' and settled 'count ONLY when
+    PRESENT' — a direct contradiction in the same ruling."""
+    settled = ["The counter may increment only when the order is present"]
+    upheld = ["The counter must increment when the order is absent from account.Orders"]
+    safe, dropped = validate_settled(settled, upheld)
+    assert len(dropped) == 1
+    assert len(safe) == 0
+
+
+def test_cf7_non_contradictory_settled_is_kept():
+    settled = ["Always use trailing stops for prop firm accounts"]
+    upheld = ["The patch lacks trailing stops"]
+    safe, dropped = validate_settled(settled, upheld)
+    assert len(safe) == 1
+    assert len(dropped) == 0
+
+
+def test_cf7_settled_without_only_is_safe():
+    """The crude check keys on 'only' — without it, no contradiction is detected."""
+    settled = ["Use bracket orders for all entries"]
+    upheld = ["The patch does not use bracket orders"]
+    safe, dropped = validate_settled(settled, upheld)
+    assert len(safe) == 1
+    assert len(dropped) == 0
+
+
+def test_cf7_empty_upheld_keeps_all_settled():
+    safe, dropped = validate_settled(["a decision"], [])
+    assert len(safe) == 1
+    assert len(dropped) == 0
+
+
+
+# ---------------------------------------------------------------------------
+# CF-26: --mode plan with default --max-rounds 0 must still run rounds
+# ---------------------------------------------------------------------------
+
+def test_cf26_plan_mode_resolves_max_rounds_from_config(monkeypatch, tmp_path):
+    """The CLI default for --max-rounds is 0, meaning 'use configured value'.
+    Plan mode must receive the configured value, not 0, or it runs zero rounds.
+    """
+    from agent_loop import cli, config, plan_mode, profiles
+
+    cfg = config.get()
+    monkeypatch.setattr(config, "_active", cfg)
+
+    calls = []
+    def fake_run_plan(*a, **k):
+        calls.append(k.get("max_rounds"))
+        return {"ticket": "PLAN", "rounds": [], "plan": None, "verdict": "TEST"}
+    monkeypatch.setattr(plan_mode, "run_plan", fake_run_plan)
+
+    profiles.register(profiles.Profile(
+        name="cf26",
+        language="python",
+        file_suffixes=(".py",),
+        block_comment=(),
+        line_comment="#",
+        block_kind="indent",
+    ))
+
+    cli.main(["--profile", "cf26", "--mode", "plan", "--defect", "x"])
+    assert calls == [cfg.loop.max_rounds]
+
+
+def test_cf26_plan_mode_explicit_max_rounds_overrides_config(monkeypatch, tmp_path):
+    from agent_loop import cli, config, plan_mode, profiles
+
+    cfg = config.get()
+    monkeypatch.setattr(config, "_active", cfg)
+
+    calls = []
+    def fake_run_plan(*a, **k):
+        calls.append(k.get("max_rounds"))
+        return {"ticket": "PLAN", "rounds": [], "plan": None, "verdict": "TEST"}
+    monkeypatch.setattr(plan_mode, "run_plan", fake_run_plan)
+
+    profiles.register(profiles.Profile(
+        name="cf26b",
+        language="python",
+        file_suffixes=(".py",),
+        block_comment=(),
+        line_comment="#",
+        block_kind="indent",
+    ))
+
+    cli.main(["--profile", "cf26b", "--mode", "plan", "--defect", "x", "--max-rounds", "7"])
+    assert calls == [7]
+
+
+# ---------------------------------------------------------------------------
+# CF-27: --help must not crash on a cp1252 Windows console
+# ---------------------------------------------------------------------------
+
+def test_cf27_help_encodes_on_cp1252_console():
+    """The help text contains Unicode arrows. It must be printable on a
+    cp1252-encoded stdout without raising UnicodeEncodeError.
+    """
+    from agent_loop.cli import main
+    import io
+    import sys
+
+    buf = io.BytesIO()
+    # Wrap a cp1252 text writer around a bytes buffer to simulate a Windows
+    # console that cannot encode U+2192. Use 'replace' so the test harness
+    # itself does not crash while we assert the help was written.
+    writer = io.TextIOWrapper(buf, encoding="cp1252", errors="replace")
+    old_stdout = sys.stdout
+    try:
+        sys.stdout = writer
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--help"])
+        assert exc_info.value.code == 0
+    finally:
+        sys.stdout = old_stdout
+    text = buf.getvalue().decode("cp1252", errors="replace")
+    assert "chain plan" in text
+
+
+# ---------------------------------------------------------------------------
+# CF-29: plan system prompt documents the `kind` field
+# ---------------------------------------------------------------------------
+
+def test_cf29_plan_system_documents_kind():
+    """The planner must know about the `kind` region field so it can emit
+    kind=line for bare statements and kind=decl for declarations.
+    """
+    from agent_loop.plan_mode import PLAN_SYSTEM, FEATURE_SYSTEM
+    assert '"kind": "decl"' in PLAN_SYSTEM
+    assert 'kind=decl' in PLAN_SYSTEM or '"kind": "decl"' in PLAN_SYSTEM
+    assert '"line"' in PLAN_SYSTEM
+    assert '"line"' in FEATURE_SYSTEM
+    assert 'kind=line' in FEATURE_SYSTEM or '"line"' in FEATURE_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# CF-30: path-isolated test mode still shows the harness exemplar
+# ---------------------------------------------------------------------------
+
+def test_cf30_path_isolated_includes_exemplar_prompt(tmp_path, monkeypatch):
+    """Even with --path-isolated, the test writer should see the project's
+    harness style so it does not reinvent Program/Main/Run scaffolding.
+    """
+    import json
+    from agent_loop import profiles, test_mode
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_harness.py").write_text(
+        "def helper():\n    pass\n", encoding="utf-8"
+    )
+
+
+    profile = profiles.Profile(
+        name="cf30",
+        language="python",
+        file_suffixes=(".py",),
+        block_comment=(),
+        line_comment="#",
+        block_kind="indent",
+        test_sources=("tests/test_*.py",),
+        test_cmd="python -m pytest tests/ -q",
+    )
+
+    chat_calls = []
+    def fake_chat(model, history, **k):
+        chat_calls.append(history[-1]["content"])
+        from agent_loop.providers import Completion
+        return Completion(text="<<<TESTS>>>\n```python\ndef test_x():\n    pass\n```\n<<<END TESTS>>>", model="m")
+    monkeypatch.setattr(test_mode, "chat", fake_chat)
+
+    ticket = {
+        "id": "T1",
+        "title": "test",
+        "spec": "x should be 2",
+        "regions": [{"id": "R1", "file": "src/target.py", "anchor": "x = 1"}],
+        "expect_green": ["x should be 2"],
+    }
+    result = test_mode.run_test(
+        tmp_path, "x is wrong", ticket, profile, "m", path_isolated=True
+    )
+    assert result.get("test_code")
+    prompt = chat_calls[0]
+    assert "test_harness.py" in prompt
+    assert "harness style exemplar (NOT the code under test)" in prompt
+    # Under path isolation the implementation code is absent from the
+    # code-under-test sections. The ticket JSON (which carries the anchor) may
+    # still appear, so we check the prompt does not show the file content.
+    assert "## Code under test" not in prompt
+
+
+def test_cf30_test_style_exemplar_profile_field(tmp_path, monkeypatch):
+    """If the profile pins test_style_exemplar, that file is used instead of
+    the first glob match.
+    """
+    import json
+    from agent_loop import profiles, test_mode
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "other.py").write_text("# other\n", encoding="utf-8")
+    (tmp_path / "tests" / "exemplar.py").write_text("# exemplar\n", encoding="utf-8")
+
+    profile = profiles.Profile(
+        name="cf30b",
+        language="python",
+        file_suffixes=(".py",),
+        block_comment=(),
+        line_comment="#",
+        block_kind="indent",
+        test_sources=("tests/*.py",),
+        test_style_exemplar="tests/exemplar.py",
+        test_cmd="python -m pytest tests/ -q",
+    )
+
+    chat_calls = []
+    def fake_chat(model, history, **k):
+        chat_calls.append(history[-1]["content"])
+        from agent_loop.providers import Completion
+        return Completion(text="<<<TESTS>>>\n```python\ndef test_x():\n    pass\n```\n<<<END TESTS>>>", model="m")
+    monkeypatch.setattr(test_mode, "chat", fake_chat)
+
+    ticket = {
+        "id": "T1",
+        "title": "test",
+        "spec": "x should be 2",
+        "regions": [],
+        "expect_green": [],
+    }
+    test_mode.run_test(tmp_path, "x is wrong", ticket, profile, "m", path_isolated=True)
+    prompt = chat_calls[0]
+    assert "exemplar.py" in prompt
+    assert "other.py" not in prompt
+
 
 
 # ---------------------------------------------------------------------------

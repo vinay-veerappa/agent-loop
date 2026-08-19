@@ -160,6 +160,56 @@ Underscore-prefixed keys (`"_comment"`) are treated as comments.
 pip install git+https://github.com/vinay-veerappa/agent-loop.git
 ```
 
+## Running the loop safely
+
+The loop is deterministic and reproducible, but several sharp edges show up
+only when you actually drive a ticket through. Read this section before the
+quick-start examples.
+
+1. **The loop measures HEAD, not your working tree.** Uncommitted tests are
+   invisible to the baseline gate. Write the test first, commit it, then run
+   the loop (CF-2).
+
+2. **`--max-rounds` is 0 by default and resolves from config.** This works for
+   `patch` and `replay`, but `plan` mode currently receives the raw CLI default
+   unless you either (a) set `loop.max_rounds` in `agent_loop.config.json`, or
+   (b) pass `--max-rounds 4` explicitly. If `plan` returns
+   `MAX_ROUNDS_EXHAUSTED` in under two seconds, this is why (CF-26).
+
+3. **`--help` and console encoding.** On Windows the console defaults to
+   cp1252. The code now reconfigures stdout to UTF-8 before argparse prints, so
+   `python -m agent_loop --help` should work out of the box. If you still see
+   a `UnicodeEncodeError`, set `PYTHONIOENCODING=utf-8` (CF-27).
+
+4. **Plan mode needs grounding.** A purely behavioral defect description with no
+   files or symbols named will cause the planner to invent a file tree. Name the
+   real files and symbols in `--defect`, or use `--mode plan --feature` for new
+   work where layout context is injected automatically. Rejected plans are still
+   written to `logs/agent_loop/PLAN/plan_rejected.json` so you can hand-fix the
+   anchors (CF-28).
+
+5. **Region `kind` matters.** The planner now knows about `"kind": "line"` for
+   single-line anchors and `"kind": "decl"` (default) for brace-delimited
+   bodies. A bare statement like `DateTime dupNow = stateModel.UtcNow();` needs
+   `"kind": "line"`; without it the extractor expands to the end of the
+   enclosing block (CF-29).
+
+6. **`--path-isolated` test mode hides the code under test, not the harness.**
+   The generated tests still see an exemplar test file so they match the repo's
+   scaffolding (`Program`/`Main`/`Run` for C#, fixtures/helpers for Python). Set
+   `Profile.test_style_exemplar` to pin the exact file to imitate. Generated
+   tests are now compiled before the baseline run when `build_cmd` is set, so
+   compile failures surface as errors instead of a warning about the runner
+   (CF-30).
+
+7. **Validate a ticket without spending a model call:**
+
+   ```bash
+   agent-loop --profile my-project --tickets tickets.json --list
+   ```
+
+   Read the line ranges it prints; a one-line region is a warning, not a success.
+
 ## Quick start
 
 1. **Create a profile** for your codebase:

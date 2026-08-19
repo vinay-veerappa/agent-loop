@@ -5,6 +5,8 @@ contradict the config that uses them.
 A catalogue nobody checks is a comment that rots. These guards are cheap and
 they fail loudly the moment config and catalogue disagree.
 """
+import os
+
 import pytest
 
 from agent_loop import config
@@ -142,6 +144,7 @@ def test_a_pinned_mode_model_actually_reaches_the_mode(tmp_path):
 
     cfg = tmp_path / "agent_loop.config.json"
     cfg.write_text(json.dumps({"modes": {"docs": {"model": "glm-5.2:cloud"}}}), encoding="utf-8")
+    old_cwd = os.getcwd()
     try:
         with mpatch("agent_loop.docs_mode.run_docs", side_effect=fake_run_docs):
             cli.main([
@@ -149,6 +152,7 @@ def test_a_pinned_mode_model_actually_reaches_the_mode(tmp_path):
                 "--profile", "agent-loop-self", "--profile-module", "profiles.self",
             ])
     finally:
+        os.chdir(old_cwd)
         config.reset()
         _models.reload_default_registry(config.DEFAULTS)
 

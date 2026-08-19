@@ -1020,7 +1020,7 @@ without grounding the *test writer* is what resolves it.
 ### CF-29 — the plan prompt omits the `kind` field, so the planner cannot obey the extractor's own advice
 
 **Measured on `nt8-riskguard` 2026-08-19, `--mode plan --max-rounds 4`, second attempt — this time
-with the defect text naming every real file and symbol** (the CF-28 workaround). The plan came back
+with the defect text naming every real file and symbol** (the CF-28 workaround; see CF-28 below). The plan came back
 `MAX_ROUNDS_EXHAUSTED` again after 4 rounds, ~190s and ~19k output tokens.
 
 This time the regions were **right**. Running the extractor by hand on the rejected ticket gives one

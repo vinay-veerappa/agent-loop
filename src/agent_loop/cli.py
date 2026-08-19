@@ -330,6 +330,13 @@ def _plan(args, profile, implementer, reviewers, arbiter) -> int:
         print("--mode plan needs --defect (a defect to fix) or --feature (something new to build)")
         return 2
 
+    # CF-26: plan mode's own default is 4, but the CLI default is 0
+    # (meaning "use the configured value"). Pass the resolved value through so
+    # the documented invocation works without --max-rounds. We also fall back to
+    # 4 when neither the CLI nor the config file set a value, matching the
+    # module's documented default.
+    cfg = config.get().loop
+    max_rounds = args.max_rounds or cfg.max_rounds or 4
     result = run_plan(
         Path("."),
         args.feature or args.defect,
@@ -337,7 +344,7 @@ def _plan(args, profile, implementer, reviewers, arbiter) -> int:
         implementer,
         reviewers,
         arbiter_model=arbiter,
-        max_rounds=args.max_rounds,
+        max_rounds=max_rounds,
         fast_plan=args.fast_plan,
         feature=bool(args.feature),
     )
@@ -708,6 +715,14 @@ def main(argv=None) -> int:
     except (AttributeError, ValueError):  # pragma: no cover - exotic stdout
         pass
 
+    # CF-27: Windows consoles default to cp1252, and argparse's help strings
+    # contain Unicode arrows. Reconfigure before argparse can print; if the
+    # console does not support it, 'replace' keeps the help readable.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):  # pragma: no cover - exotic stdout
+        pass
+
     ap = argparse.ArgumentParser(prog="python -m agent_loop")
     ap.add_argument("--version", action="store_true",
                     help="print package version and resolved package path, then exit")
@@ -735,9 +750,6 @@ def main(argv=None) -> int:
         help="path to a JSON config overriding agent_loop/config.py defaults "
              "(default: $AGENT_LOOP_CONFIG, then ./agent_loop.config.json)",
     )
-    # 0 = "use the configured value". A literal here would be a second
-    # definition of the same limit, silently shadowing config.py.
-    ap.add_argument("--max-rounds", type=int, default=0)
     ap.add_argument("--apply", action="store_true", help="promote an approved patch into the live tree")
     ap.add_argument(
         "--allow-unapproved",
@@ -754,6 +766,12 @@ def main(argv=None) -> int:
     # ---- modes -----------------------------------------------------------
     ap.add_argument("--mode", choices=("patch", "review", "plan", "test", "developer", "brainstorm", "docs", "report", "replay", "run-plan"), default="patch")
     ap.add_argument("--defect", default="", help="plan/test mode: the defect description")
+    ap.add_argument(
+        "--max-rounds", type=int, default=0,
+        help="max patch/review/plan/replay rounds (0 = use the configured value; default is 4). "
+             "Note: plan mode currently needs an explicit value because the CLI default overrides "
+             "the module default.",
+    )
     ap.add_argument(
         "--feature", default="",
         help="plan mode: describe a NEW FEATURE instead of a defect. The plan is "
@@ -779,7 +797,7 @@ def main(argv=None) -> int:
     )
     ap.add_argument(
         "--pipeline", action="store_true",
-        help="run-plan mode: chain plan → run-plan --tdd --apply in one invocation",
+        help="run-plan mode: chain plan -> run-plan --tdd --apply in one invocation",
     )
     ap.add_argument(
         "--epic", default="",
@@ -882,6 +900,12 @@ def main(argv=None) -> int:
 
     # Import the profile module if specified (registers profiles at import time)
     if args.profile_module:
+        # Ensure the repo root is on sys.path so a module like "profiles.self"
+        # can be imported when the current working directory is not the repo root
+        # (e.g., during tests or when invoked from another directory).
+        repo_root = str(Path(".").resolve())
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
         importlib.import_module(args.profile_module)
 
     if args.prune:

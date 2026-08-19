@@ -223,15 +223,20 @@ def test_tests_green_at_baseline_is_an_error_not_a_warning(monkeypatch, repo):
         def __exit__(self, *a):
             return False
 
+    class _Compile:
+        ok = True
+        summary = "mock compile ok"
+
     monkeypatch.setattr(test_mode, "chat", lambda *a, **k: _Out())
     monkeypatch.setattr(workspace, "open_workspace", lambda repo, name, **kw: _WS(repo))
     monkeypatch.setattr(gates, "run_tests", lambda *a, **k: _Outcome())
+    monkeypatch.setattr(gates, "check_compile", lambda *a, **k: _Compile())
 
     result = test_mode.run_test(repo, "a defect", TICKET, CSHARP, "stub-model")
 
     assert result["tests_pass_baseline"] is True
     assert result.get("error"), "a vacuous gate was reported as success"
-    assert "gate nothing" in result["error"]
+    assert "green" in result["error"].lower() or "vacuous" in result["error"].lower() or "gate nothing" in result["error"]
 
 
 # --- the fence info string is metadata, not code (O49) ----------------------

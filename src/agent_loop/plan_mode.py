@@ -37,7 +37,7 @@ OUTPUT FORMAT - obey exactly:
   "defect": "what is wrong",
   "spec": "what the fix should do",
   "regions": [
-    {{"id": "REGION_ID", "file": "path/to/file.py", "anchor": "unique anchor string in the file"}}
+    {{"id": "REGION_ID", "file": "path/to/file.py", "anchor": "unique anchor string in the file", "kind": "decl"}}
   ],
   "expect_green": ["test_name_that_should_pass_after_fix"]
 }}
@@ -45,6 +45,16 @@ OUTPUT FORMAT - obey exactly:
 <<<NOTES>>>
 - why these regions, why these tests
 <<<END NOTES>>>
+
+Region `kind` tells the extractor how to interpret the anchor:
+  - "decl" (default): a declaration with a brace-delimited body. Use this for
+    classes, structs, methods, functions, namespaces, etc.
+  - "line": a single line or bare statement with NO brace body. Use this when
+    the anchor is a one-line assignment, field declaration, or similar. Without
+    this the extractor will expand to the end of the enclosing block.
+  - "re": the anchor is a literal regex, not a plain string.
+
+Only add "kind" when the default is wrong; omitting it is the same as "decl".
 """
 
 
@@ -90,6 +100,12 @@ OUTPUT FORMAT - obey exactly, one block per part, in build order:
 <<<NOTES>>>
 - why this decomposition, and why this order
 <<<END NOTES>>>
+
+Region `kind` is the same as for defect plans:
+  - "decl" (default): a declaration with a brace-delimited body.
+  - "line": a single line or bare statement with NO brace body.
+  - "re": the anchor is a regex.
+Only add "kind" when the default is wrong; omitting it is the same as "decl".
 
 The FEATURE_ACCEPTANCE block is optional but recommended: it names
 integration-level tests that verify the WHOLE feature works after all
@@ -293,6 +309,7 @@ def run_plan(
                 regs = regions.extract(repo, ticket.get("regions", []), profile)
                 print(f"           regions: {len(regs)} resolved OK")
             except regions.RegionError as exc:
+                print(f"           plan rejected: region extraction failed: {exc}")
                 history += [
                     {"role": "assistant", "content": raw},
                     {"role": "user", "content": f"Region extraction failed: {exc}. Fix the anchors and re-emit."},

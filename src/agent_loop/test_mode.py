@@ -65,6 +65,12 @@ Write them in the LANGUAGE AND TEST STYLE named in the request, and match the
 conventions of the existing test sources you are shown. Do not import a testing
 framework the project does not use.
 
+The existing test source you are shown is the project's HARNESS STYLE — how
+a test file is structured in this repo. It is NOT the code under test. Reuse
+its conventions, helper names, assertion patterns, and class structure. Do NOT
+invent a new `Program` class, `Main` method, or runner if the exemplar already
+provides them.
+
 OUTPUT FORMAT - obey exactly:
 <<<TESTS>>>
 ```<language>
@@ -181,15 +187,29 @@ def run_test(
 
     # Existing tests, so the generated file matches the project's real harness
     # rather than a framework the model assumes.
-    for pattern in (profile.test_sources or ())[:1]:
-        existing = sorted(repo.glob(pattern))
-        if existing:
-            sample = existing[0].read_text(encoding="utf-8", errors="replace")
-            prompt += (
-                f"## An EXISTING test source, {existing[0].name} -- match its style, "
-                f"its assertion helper, and its naming\n"
-                f"```{profile.language}\n{sample[:6000]}\n```\n\n"
-            )
+    # CF-30: path-isolated mode still needs the HARNESS style. The exemplar is
+    # the test harness, not the implementation, so showing it does not violate
+    # independence. A profile can pin a specific file; otherwise take the first
+    # match from test_sources.
+    exemplar_path = None
+    if profile.test_style_exemplar:
+        exemplar_path = repo / profile.test_style_exemplar
+        if not exemplar_path.is_file():
+            exemplar_path = None
+    if exemplar_path is None:
+        for pattern in (profile.test_sources or ())[:1]:
+            existing = sorted(repo.glob(pattern))
+            if existing:
+                exemplar_path = existing[0]
+                break
+    if exemplar_path is not None:
+        sample = exemplar_path.read_text(encoding="utf-8", errors="replace")
+        role = "implementation code" if not path_isolated else "harness style exemplar (NOT the code under test)"
+        prompt += (
+            f"## An EXISTING test source, {exemplar_path.name} -- match its style, "
+            f"its assertion helper, and its naming. This is the {role}.\n"
+            f"```{profile.language}\n{sample[:6000]}\n```\n\n"
+        )
 
     # `expect_green` entries are matched against the FAILURE LINES the runner
     # prints, so on a harness whose failures read `[FAIL] <message>` these are
@@ -254,6 +274,23 @@ def run_test(
     # without touching the live tree at all -- which is what workspace.py is for.
     if profile.test_cmd:
         try:
+            # CF-30: compile the generated tests before we trust them. A file
+            # that does not compile is not evidence, but the old path printed
+            # "tests written to: ..." and exited 0 with only a WARNING about the
+            # runner. Run a compile-only gate first when the profile supplies
+            # a build command; this surfaces CS/ syntax errors in the generated
+            # file immediately and in the model's own terms.
+            if profile.build_cmd:
+                compile_outcome = gates.check_compile(profile.build_cmd, repo, files=[str(test_path)])
+                if not compile_outcome.ok:
+                    result["error"] = (
+                        f"the generated test file does not compile: {compile_outcome.summary}"
+                    )
+                    print(f"  [test-first] REFUSED: {result['error']}")
+                    # Keep the test file on disk so the operator can inspect it,
+                    # but report failure so callers do not treat this as success.
+                    return result
+
             # A3: pass `base` through so the baseline worktree is created at
             # the plan branch HEAD (which includes prior parts' code), not at
             # the live repo's HEAD. Without this, a test for part 2 runs
@@ -265,10 +302,15 @@ def run_test(
                 dest.write_text(test_code, encoding="utf-8")
                 outcome = gates.run_tests(profile.test_cmd, ws.root)
             if not outcome.ran:
+                # CF-30: if the runner produced nothing parseable, preserve the
+                # raw output so the operator (and tests) can see the actual
+                # compile/runtime errors rather than a generic runner-blaming
+                # message.
                 result["error"] = (
                     "cannot verify the generated tests: the runner produced no "
                     "parseable result summary at baseline"
                 )
+                result["baseline_raw"] = outcome.raw
                 print(f"  [test-first] WARNING: {result['error']}")
             else:
                 failing = [f for f in outcome.failures if any(
