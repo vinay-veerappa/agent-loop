@@ -1172,3 +1172,83 @@ from the TEST HARNESS.** Suggested, in value order:
    complaint as `CF-22`'s *"baseline test run produced no parseable result summary"*, which also read
    as the consumer's fault.
 
+
+### CF-31 — `--list` correctly warns that the model will GUESS a symbol, and then the run lets it guess: six rounds burned on a property path
+
+**Measured on `nt8-riskguard` 2026-08-19**, patch mode on ticket `P0171`, immediately after `CF-30`.
+Same ticket, same three regions, six acceptance tests red at baseline. The run is the good case in
+every other respect — test-first gate satisfied, baseline `3341 passed, 6 failed`, `6 expected
+failure(s)`, static and compile gates working — and it still ends `ARBITER_NEVER_RAN` with
+`applied=False`.
+
+**Validation said exactly what would go wrong.** `--list`, before a single model call:
+
+```
+WARN 'DuplicateEntryWindowMs' named in spec but not found in <region file>
+     -- model will guess; add its declaration to a read-only region
+```
+
+It guessed. The spec asked for a suppression stamp of *"that account's `UtcNow()` plus
+`DuplicateEntryWindowMs` milliseconds"*. The value lives at `_config.Overtrading.DuplicateEntryWindowMs`
+and is read in plain sight **100 lines below the edited region, in the same file** — but that read is
+outside every region the implementer was shown, so the model could see the *name* and not the *path*.
+
+What it wrote instead of `_config.Overtrading.DuplicateEntryWindowMs`:
+
+```csharp
+int ResolveDuplicateEntryWindowMs()          // + ReadMs + FindAnyDuplicateWindowMs + CoerceToMilliseconds
+{
+    ...
+    foreach (PropertyInfo prop in type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic
+                                                     | BindingFlags.Instance))
+        if (prop.Name.IndexOf("Duplicate", StringComparison.OrdinalIgnoreCase) >= 0
+            && prop.Name.IndexOf("Window",    StringComparison.OrdinalIgnoreCase) >= 0)
+            ...
+}
+```
+
+**90 lines of reflection**, four nested local functions, fuzzy name matching on `"Duplicate"` +
+`"Window"`, and a `CoerceToMilliseconds` handling `TimeSpan`, `int`, `double` and `string` — a
+config-discovery layer, invented, in a file whose config object is a plain typed POCO.
+
+**And that is why the run stalled.** The scan looks for the property on `RiskConfig` and does not
+recurse into `RiskConfig.Overtrading`, where it lives. It returned `0`, the arming guard
+`if (dupWindowMs > 0)` never passed, and **the suppression was never armed on any path**. Rounds 5
+and 6 both compiled and both reported the identical `4 acceptance test(s) still failing; 3343 passed,
+4 failed, 2 expected failure(s) now green` — the two that went green are precisely the two that do
+not need the suppression. Four rounds before that were spent on compile errors in the reflection.
+
+The loop had already computed the diagnosis and printed it. Nothing consumed it — the same shape as
+`CF-18`, one stage earlier.
+
+**Suggested fixes, cheapest first.**
+
+1. ⚠️ **Make the `--list` warning binding by default.** A ticket whose spec names a symbol that
+   appears in no region is not ready to run; refusing costs nothing and the wording is already
+   right. `--allow-unresolved-symbols` for the deliberate case.
+2. **Better: resolve it instead of refusing.** The loop can already find the symbol — that is how it
+   knows to warn. Attach the declaration site, or the single line that reads it, as read-only
+   context. One line of `_config.Overtrading.DuplicateEntryWindowMs` would have replaced 90 lines of
+   reflection.
+3. **Have the static gate reject reflection in an implementation patch** unless the ticket asks for
+   it. `[static] ok - 3 block(s) well-formed` passed all six rounds; well-formed is a much weaker
+   claim than the label suggests, and `System.Reflection` appearing in a patch for a typed-field read
+   is a strong smell that the model is guessing at a shape it cannot see.
+4. **Report which acceptance tests are still red, not just how many.** Six rounds said
+   `4 acceptance test(s) still failing` and never once named them. The four share one cause and the
+   two that pass share the complement — that is visible at a glance from the names and invisible
+   from the count, and the implementer is handed the same undifferentiated number every round.
+
+**What the run got right, since this reads as a bad outcome and mostly is not.** The two-mechanism
+structure was correct and matched the spec, the placement of the evaluated-order record was correct,
+the model fields were right and correctly marked runtime-only. Hand-arbitrating meant deleting the
+reflection, substituting one property path, and re-expressing the region-2 change as three added
+lines rather than the loop's full re-indent. Suite went `3352 / 0`, and 15 mutants against the
+result all died. **The reasoning was sound; one unresolved symbol wasted six rounds.**
+
+⚠️ **Unrelated but from the same patch: the implementer rewrote comments it was not asked to touch.**
+Three `⚠️` markers became `WARNING:` and an unrelated comment was reflowed. In this repo mutation
+batteries anchor on exact source strings, several of them comments, so a gratuitous comment edit can
+silently turn a battery into `[SKIP]` — which scores as a **survivor**, not a pass. None of these
+three matched an anchor, checked. Worth a static rule: an implementation patch that changes only
+comment text outside the described change is noise at best.
