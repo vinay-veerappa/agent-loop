@@ -1268,3 +1268,53 @@ batteries anchor on exact source strings, several of them comments, so a gratuit
 silently turn a battery into `[SKIP]` — which scores as a **survivor**, not a pass. None of these
 three matched an anchor, checked. Worth a static rule: an implementation patch that changes only
 comment text outside the described change is noise at best.
+
+### CF-32 — an unresolved-symbol guess produced a patch that passed EVERY gate green; only hand-verification against the real source caught it
+
+**Measured on `nt8-riskguard` 2026-08-21**, patch mode, ticket `P2-132` (report a sizing rule's
+`currentValue` from the account's max position). Same family as `CF-31` and it reproduced `CF-31`'s
+two behaviours exactly — the model GUESSED an unresolved symbol, and it gratuitously rewrote a `⚠️`
+comment to `WARNING:` in unrelated code (a second independent instance of the comment-edit noise
+`CF-31` already flags). **But the new and more dangerous part is the opposite of `CF-31`'s outcome.**
+
+In `CF-31` the guess stalled LOUDLY: the invented code returned `0`, the arming guard never passed,
+and the acceptance tests **stayed red** for six rounds — the failure was visible. Here the guess
+shipped a **GREEN** candidate: `[static] ok`, `[compile] ok`, `[test] ok — 3513 passed, 0 failed, all
+2 acceptance test(s) green`, `[lock-scope] ok`, every round. The spec said derive the value from
+`state.Positions` (the cached collection the `MAX_SIZE_BREACH` enforcer iterates); with
+`--allow-unresolved-symbols` passed, the model instead read the LIVE `account.Positions` — a
+different source the enforcer does not use — with a plausible comment ("the cached state can lag").
+It was **functionally wrong** (the report would diverge from the enforcer, which is the whole defect)
+and **no gate could tell**, because the two acceptance tests set the snapshot field directly and
+never exercised the population path. Only reading the enforcer by hand (it iterates
+`stateModel.Positions`, not `account.Positions`) caught it.
+
+**Why this matters beyond `CF-31`.** `CF-31`'s fixes assume the guess fails in a way a gate catches —
+it recommends `--allow-unresolved-symbols` "for the deliberate case", implying the deliberate case is
+safe. It is not always: when the guessed symbol decides a **data source** and the acceptance tests do
+not discriminate between sources, the escape hatch converts a safe REFUSE into a **silent, green,
+wrong** patch. The run's `NOT_CONVERGING` verdict (panel churned 1→5→2 non-overlapping blocking
+findings, never auto-applied) is what forced a human read — but that was luck, not a safeguard: had
+the panel converged, the wrong-source patch would have auto-applied, green.
+
+**Suggested fixes, cheapest first.**
+
+1. **When `--allow-unresolved-symbols` is used, name the guessed symbols in the run output AND in the
+   final report**, so the reviewer knows exactly which facts the model invented. The `--list` warning
+   is pre-run and easy to forget by the time a green patch appears; the guess should be surfaced
+   AGAIN on the candidate.
+2. **Warn when an editable region carries no acceptance-test coverage.** The population region
+   (`GetAccountSnapshots`) was edited by the patch but hit by no acceptance test — so the gate that
+   was supposed to hold it (test-first) was structurally blind to it. A region the tests never enter
+   is a region the loop cannot verify, and it should say so.
+3. **Do not describe the deliberate opt-out as safe.** `CF-31`'s framing ("refusing costs nothing;
+   `--allow-unresolved-symbols` for the deliberate case") is right that refusing is cheap, but the
+   opt-out should carry the warning that a guessed symbol the tests do not discriminate ships
+   unverified.
+
+**What the loop got right.** The implementation logic was otherwise correct and minimal, the
+test-first/compile/lock-scope gates all functioned, and `NOT_CONVERGING` correctly withheld
+auto-apply so a human saw the patch. Hand-arbitration kept the correct hunk (the evaluator change),
+substituted the right source (`state.Positions`), and dropped the comment-rewrite hunk; suite `3513
+/ 0`. The reasoning was sound; one unresolved symbol on a data-source decision made a green patch
+wrong.
