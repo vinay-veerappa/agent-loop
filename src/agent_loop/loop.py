@@ -376,7 +376,20 @@ def build_implement_prompt(
                 r.text,
                 "```",
             ]
-    parts += ["", "Return one block per region id above, in the same order. No other output."]
+    parts += [
+        "",
+        "FIDELITY RULE — obey exactly:",
+        "- Lines you are NOT changing must come back byte-for-byte identical,",
+        "  including non-ASCII characters (emojis, box-drawing, arrows), comment",
+        "  syntax (// vs ///), indentation, and trailing whitespace.",
+        "- Do not rewrite, reflow, or 'normalise' comments you were not asked to",
+        "  change. Do not strip or replace non-ASCII glyphs in existing code.",
+        "- If you only need to change 3 lines, the other N lines in the block",
+        "  must be reproduced verbatim. A block is replaced whole, so every",
+        "  line you alter unnecessarily degrades the file.",
+        "",
+        "Return one block per region id above, in the same order. No other output.",
+    ]
     return "\n".join(p for p in parts if p)
 
 
@@ -863,6 +876,7 @@ def run_ticket(
     keep_worktree: bool = False,
     arbiter_model: str = "",
     base_ref: str = "HEAD",   # git ref to base the worktree on (for plan runner)
+    allow_unresolved_symbols: bool = False,
 ) -> Dict[str, Any]:
     # 0 means "ask config", so these limits have exactly one literal definition
     # (config.py) rather than one per signature that happens to agree with it.
@@ -1098,6 +1112,59 @@ def run_ticket(
                 print(f"  [test-first] SKIPPED - ticket declares no expect_green; "
                       f"only the no-regression gate applies")
 
+        # CF-32: surface guessed symbols before spending model calls. The
+        # --list scan is pre-run and easy to forget by the time a green
+        # patch appears. Run the same scan here so the guessed symbols are
+        # recorded in result.json and printed in the final report. When
+        # --allow-unresolved-symbols is NOT set, refuse (same as --list).
+        #
+        # The scan is conditional: it only runs when the spec/context
+        # contains code-like capitalized tokens (the same _looks_like_code
+        # check _scan_unresolved_symbols uses internally). Most tickets
+        # have no such tokens, so the scan — and the deepcopy it needs to
+        # avoid mutating the ticket — is skipped entirely.
+        #
+        # Skip on --resume-raw: the ticket may already have readonly regions
+        # from a prior --list run, and re-scanning would duplicate them.
+        from .cli import _scan_unresolved_symbols, _has_unresolved_candidates
+        guessed_symbols: list = []
+        if not resume_raw and _has_unresolved_candidates(ticket):
+            import copy as _copy
+            _ticket_for_scan = _copy.deepcopy(ticket)
+            guessed_symbols = _scan_unresolved_symbols(
+                _ticket_for_scan, profile, allow_unresolved_symbols, verbose=True,
+                repo_root=ws.root,
+            )
+            # The scan may have attached readonly regions to the ticket.
+            # Re-extract regs from the scanned ticket so the readonly context
+            # reaches the implementer prompt and the gates.
+            if _ticket_for_scan.get("regions") != ticket.get("regions"):
+                ticket = _ticket_for_scan
+        if guessed_symbols:
+            refused = [s for s in guessed_symbols if s["status"] == "refused"]
+            if refused and not allow_unresolved_symbols:
+                result["guessed_symbols"] = guessed_symbols
+                result["final_verdict"] = "TICKET_REJECTED"
+                result["detail"] = (
+                    f"{len(refused)} symbol(s) named in spec but not found in any "
+                    f"region file: {[s['symbol'] for s in refused]}. The model will "
+                    f"guess. Pass --allow-unresolved-symbols to override, but note "
+                    f"that a guessed symbol the acceptance tests do not discriminate "
+                    f"ships unverified."
+                )
+                append_ledger(repo, terminal_ledger_record(tid, result))
+                _persist_result()
+                return result
+            result["guessed_symbols"] = guessed_symbols
+            print(f"  [unresolved] {len(guessed_symbols)} guessed symbol(s): "
+                  f"{[s['symbol'] for s in guessed_symbols]}")
+            if allow_unresolved_symbols:
+                print("  [unresolved] WARNING: --allow-unresolved-symbols is set. "
+                      "A guessed symbol the tests do not discriminate ships UNVERIFIED. "
+                      "Review the patch carefully before applying.")
+
+        # Re-extract regs after the scan (the scan may have attached readonly
+        # context regions to the ticket).
         regs = regions.extract(ws.root, ticket["regions"], profile)
         for r in regs:
             print(f"    region {r.id:<24} {r.file} lines {r.lines_1based}")
@@ -1261,6 +1328,20 @@ def run_ticket(
             gate_results: List[gates.GateResult] = [
                 gates.check_static(regs, blocks, lambda ln: regions.strip_code(ln, profile), profile)
             ]
+            # CF-25: blocking gate — fails when the model rewrites comment text
+            # it was not asked to change. Uses difflib for proper line alignment
+            # so line-count changes (reflow, insertion) are handled correctly.
+            # Runs after the static gate so shape errors are caught first.
+            cd = gates.check_comment_drift(
+                regs, blocks, lambda ln: regions.strip_code(ln, profile), profile,
+                ticket=ticket,
+            )
+            if cd.detail:
+                (art / f"r{rnd}_comment_drift.txt").write_text(cd.detail, encoding="utf-8")
+                print(f"          [comment-drift] {cd.summary}")
+            if not cd.ok:
+                # Blocking: treat as a failed gate, same as static/compile/test.
+                gate_results.append(cd)
             touched: List[str] = []
             if gate_results[-1].ok:
                 touched = _apply_regions(ws, regs, blocks)
@@ -1403,9 +1484,16 @@ def run_ticket(
                 result["rounds"].append(
                     RoundRecord(rnd, failed.name, False, failed.summary, failed.detail[:4000]).__dict__
                 )
+                # CF-25: append comment-drift feedback to the failed gate's
+                # feedback so the implementer sees it in the next round.
+                # When the comment-drift gate IS the failed gate, cd.feedback
+                # is already in failed.feedback — the append is idempotent.
+                _fb = failed.feedback or failed.summary
+                if cd.feedback and cd is not failed:
+                    _fb = _fb + "\n" + cd.feedback
                 history += [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": failed.feedback or failed.summary},
+                    {"role": "user", "content": _fb},
                 ]
                 continue
 
@@ -1728,8 +1816,13 @@ def run_ticket(
         result["cost_usd"] = round(result["cost_usd"], 4)
 
         # ---- arbitration
-        if blocks and not gates.check_static(regs, blocks, lambda ln: regions.strip_code(ln, profile), profile).ok:
-            blocks = {}
+        # CF-25: also check comment drift at arbitration — a candidate with
+        # comment-only changes must not be promoted even if the panel approved.
+        if blocks:
+            _static_ok = gates.check_static(regs, blocks, lambda ln: regions.strip_code(ln, profile), profile).ok
+            _cd = gates.check_comment_drift(regs, blocks, lambda ln: regions.strip_code(ln, profile), profile, ticket=ticket)
+            if not _static_ok or not _cd.ok:
+                blocks = {}
 
         # WHICH candidate gets exported, and whether it may be applied.
         #
@@ -1841,6 +1934,17 @@ def run_ticket(
         print(f"  tool: {describe} ({sha})")
     elif sha != "unknown":
         print(f"  tool: sha={sha}")
+
+    # CF-32: surface guessed symbols in the final report so the reviewer
+    # knows exactly which facts the model invented. The --list warning is
+    # pre-run and easy to forget by the time a green patch appears.
+    guessed = result.get("guessed_symbols")
+    if guessed:
+        print(f"  [unresolved] {len(guessed)} guessed symbol(s) shipped with this candidate:")
+        for s in guessed:
+            print(f"    - {s['symbol']} ({s['status']}, in {s['file']})")
+        print("  Review these: a guessed symbol the acceptance tests do not "
+              "discriminate ships UNVERIFIED.")
 
     (art / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     append_ledger(repo, terminal_ledger_record(tid, result))

@@ -22,6 +22,15 @@ class RegionError(LookupError):
     """Anchor missing, ambiguous, or in a file this locator cannot parse."""
 
 
+class FileNotFoundRegionError(RegionError):
+    """The region's file does not exist in the repo.
+
+    Distinct from a missing-anchor error because the remedy is different:
+    a missing file means the planner invented a path and retrying won't help
+    (CF-28), while a missing anchor in a real file may resolve on retry.
+    """
+
+
 class NoBlockError(RegionError):
     """The anchored declaration has no brace-delimited body to expand to.
 
@@ -682,7 +691,7 @@ def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[R
                 f"to an anchor by picking a unique line from that range."
             )
         if not path.exists():
-            raise RegionError(f"{spec['id']}: file does not exist: {spec['file']}")
+            raise FileNotFoundRegionError(f"{spec['id']}: file does not exist: {spec['file']}")
         language_for(path, profile)
         lines, _, _ = read_source(path)
         guard_unsupported_syntax(path, "\n".join(lines), profile)

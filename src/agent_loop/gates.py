@@ -127,6 +127,141 @@ def check_static(regions, blocks: Dict[str, str], strip_code_fn, profile: Profil
 
 
 # --------------------------------------------------------------------------
+# CF-25: comment-only-hunk detector.  A hunk whose only change is inside a
+# comment is noise the ticket did not ask for and no other gate can see.
+# The static gate checks block shape; this checks block *content* against
+# the original region text, using difflib to align lines properly even when
+# line counts differ (comment reflow, insertion, deletion), and strip_code
+# to separate code from comment.  When every changed line has an identical
+# code-stripped form, the only thing that changed is comment text.
+#
+# This is a BLOCKING gate (ok=False when drift is detected) unless the
+# ticket's spec asks for documentation/comment changes — CF-25's finding
+# said "a gate that fails a hunk whose only change is inside a comment,
+# unless the ticket asks for documentation."
+# --------------------------------------------------------------------------
+def check_comment_drift(
+    regs, blocks: Dict[str, str], strip_code_fn, profile: Profile,
+    ticket: Dict[str, Any] = None,
+) -> GateResult:
+    """Fail when a region's replacement differs only in comment text.
+
+    Uses difflib.SequenceMatcher to align orig vs new lines, so line-count
+    changes (comment reflow, insertion, deletion) are handled correctly —
+    no false positives from shifted diffs.  When every *changed* line is
+    code-identical but raw-different (the code-stripped form matches), the
+    only thing that changed is the comment, which is the CF-25 signature.
+
+    Blocking (ok=False) unless the ticket asks for documentation changes.
+    """
+    import difflib
+
+    # CF-25: a ticket that asks for documentation/comment changes is
+    # exempt — the model is SUPPOSED to rewrite comments there.
+    # Require INTENT phrases, not incidental word matches — "delete the
+    # comment on line 5" should NOT grant blanket permission to rewrite
+    # all comments (arbiter #3).
+    doc_ticket = False
+    if ticket:
+        import re as _re
+        spec_text = ticket.get("spec", "") + " " + ticket.get("context", "")
+        spec_lower = spec_text.lower()
+        # Match intent phrases, not bare words. "update documentation",
+        # "rewrite comments", "add docstrings", "fix the readme", etc.
+        # Allow optional words between the verb and the noun ("update the
+        # documentation", "rewrite all comments").
+        doc_patterns = [
+            r"\b(?:update|improve|write|add)\s+(?:\w+\s+)?document(?:ation)?\b",
+            r"\b(?:update|rewrite|improve)\s+(?:\w+\s+)?comment(?:s)?\b",
+            r"\badd\s+(?:\w+\s+)?docstring(?:s)?\b",
+            r"\bfix\s+the\s+readme\b",
+            r"\bjavadoc\s+(?:for|on|update)\b",
+            r"\bxml\s+doc\s+(?:for|on|update)\b",
+            r"\binline\s+doc(?:umentation)?\s+(?:for|on|update)\b",
+        ]
+        doc_ticket = any(_re.search(p, spec_lower) for p in doc_patterns)
+
+    drifted: List[str] = []
+    for r in regs:
+        if r.op == "create" or r.op == "readonly":
+            continue
+        body = blocks.get(r.id)
+        if body is None:
+            continue
+        orig_lines = r.text.splitlines()
+        new_lines = body.splitlines()
+
+        # Use difflib to get real alignment. This handles line-count changes
+        # (reflow, insertion, deletion) correctly — no false positives from
+        # shifted diffs, which was the problem with the overlap approach.
+        matcher = difflib.SequenceMatcher(a=orig_lines, b=new_lines, autojunk=False)
+        comment_only_changes = 0
+        real_changes = 0
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            # Classify each paired line (overlap of the replace range)
+            orig_range = list(range(i1, i2))
+            new_range = list(range(j1, j2))
+            for oi, ni in zip(orig_range, new_range):
+                a, b = orig_lines[oi], new_lines[ni]
+                if strip_code_fn(a) == strip_code_fn(b):
+                    comment_only_changes += 1
+                else:
+                    real_changes += 1
+            # Handle unpaired lines on the longer side (replace with unequal
+            # counts, or pure insertions/deletions). A pure-comment
+            # insertion/deletion is comment drift; a real-code line is a
+            # real change. Without this, a replace opcode with i2-i1=1 and
+            # j2-j1=2 would leave the extra new line unclassified (arbiter #1).
+            if len(orig_range) < len(new_range):
+                for ni in new_range[len(orig_range):]:
+                    if not strip_code_fn(new_lines[ni]).strip():
+                        comment_only_changes += 1
+                    else:
+                        real_changes += 1
+            elif len(orig_range) > len(new_range):
+                for oi in orig_range[len(new_range):]:
+                    if not strip_code_fn(orig_lines[oi]).strip():
+                        comment_only_changes += 1
+                    else:
+                        real_changes += 1
+
+        # Only flag when there are comment-only changes AND no real code
+        # changes. A mixed block (some code, some comment rewrites) does
+        # not fire — the real code change is the signal, and blocking on
+        # the comment would be a false positive.
+        if comment_only_changes > 0 and real_changes == 0:
+            drifted.append(f"{r.id}: {comment_only_changes} comment-only line change(s) "
+                            f"(code identical, comment text differs)")
+
+    if not drifted:
+        return GateResult("comment-drift", True, "no comment-only changes")
+
+    detail = "\n".join(drifted)
+    if doc_ticket:
+        # Advisory for documentation tickets — the model is supposed to
+        # rewrite comments here.
+        return GateResult(
+            "comment-drift", True,
+            f"{len(drifted)} region(s) with comment-only changes (doc ticket — allowed)",
+            detail,
+        )
+    # Blocking: CF-25 said "a gate that FAILS a hunk whose only change is
+    # inside a comment." The model must reproduce untouched lines verbatim.
+    return GateResult(
+        "comment-drift", False,
+        f"{len(drifted)} region(s) with comment-only changes",
+        detail,
+        feedback="CF-25: the model rewrote comment text it was not asked to change. "
+        "Lines that differ only in comments are noise. Reproduce untouched lines "
+        "byte-for-byte, including non-ASCII glyphs and comment syntax. "
+        "Re-emit ALL blocks with the comment lines exactly as they were given to you.\n"
+        + detail,
+    )
+
+
+# --------------------------------------------------------------------------
 # Gate 1.5 - lint (optional, between static and compile)
 # --------------------------------------------------------------------------
 def check_lint(

@@ -197,6 +197,11 @@ def _list(tickets, profile, allow_unresolved_symbols: bool = False) -> int:
     property-discovery layer rather than read the field it could not see. Pass
     allow_unresolved_symbols=True to opt into the old warn-and-continue
     behaviour for deliberate cases.
+
+    CF-32: the guessed symbols are also collected and returned so the caller
+    can surface them in the run output. When --allow-unresolved-symbols is
+    used, the operator needs to know exactly which facts the model invented
+    when they read a green patch.
     """
     from . import gates
 
@@ -242,103 +247,144 @@ def _list(tickets, profile, allow_unresolved_symbols: bool = False) -> int:
                 print(f"      WARN cannot validate expect_green: {exc}",
                       file=sys.stderr)
 
-        # O66: warn when a capitalized identifier in spec/context is not
-        # declared inside any region of the same file. Regions are not only the
-        # editing window, they are the model's entire view of the file. A type
-        # named in spec whose declaration falls outside every region is
-        # invisible to the implementer, and an invisible type gets a plausible
-        # guess -- four rounds of invented member names, measured.
-        #
-        # CF-1: the heuristic treated any capitalised token as a symbol, so a
-        # well-written ticket that uses ALL-CAPS for emphasis (THE, DO, SCOPE)
-        # produced ~20 warnings with zero real identifiers. Only warn for
-        # tokens that look like code: contains _, has a camelCase/PascalCase
-        # interior transition, is followed by ( or . in the spec text, or
-        # appears inside backticks. A single-word ALL-CAPS token is prose.
-        #
-        # CF-13: the set of symbols is a property of the TICKET, not of a
-        # region. The old loop ran per-region and re-scanned the whole spec
-        # each time, so 7 symbols x 7 regions = 49 warnings. Deduplicate:
-        # scan the spec once, then check each (symbol, file) pair once.
-        import re as _re
-        # CF-19: this scans `spec` + `context`. A comment here used to claim
-        # the scan had been narrowed to "the spec field, not the defect
-        # narrative", under a second variable assigned the IDENTICAL
-        # expression -- a narrowing that was described and never written.
-        # Narrowing it is still arguable, but it needs evidence that the
-        # context field is where the false positives come from, and nobody
-        # has measured that. Until then the comment matches the code.
-        spec_only = t.get("spec", "") + " " + t.get("context", "")
-        caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_only))
-        # Skip common English words that look like identifiers.
-        caps -= {"The", "This", "That", "These", "Those", "When", "Where",
-                 "Which", "What", "Each", "Every", "All", "None", "True",
-                 "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
-        # CF-1: filter to code-like tokens only.
-        backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_only))
-        call_tokens = set(_re.findall(
-            r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]', spec_only))      # Foo.Bar (no space)
-        # CF-1 residual: Foo(x) not Foo (x) -- require no whitespace
-        # before the opening paren so "SCOPE (the test...)" is prose,
-        # not a call. Real code rarely has space before ( in a call.
-        # CF-20: the closing paren is in the class deliberately. Requiring
-        # content inside the parens dropped every ZERO-ARG call, so a spec
-        # that named `Flatten()` or `CanTrade()` -- the exact shape of a
-        # predicate or a command, which is what these tickets are usually
-        # about -- stopped being read as code by the rule meant to find code.
-        call_tokens |= set(_re.findall(
-            r'\b([A-Z][a-zA-Z0-9_]+)\(\s*[\w"\')]', spec_only))  # Foo(x), Foo("x"), Foo()
-        caps = {c for c in caps if _looks_like_code(c, spec_only)
-                or c in backtick_tokens or c in call_tokens}
-        # CF-13: skip symbols belonging to files the ticket CREATES.
-        create_files = {r["file"] for r in t["regions"] if r.get("op") == "create"}
-        # CF-13: track which (symbol, file) pairs we've already warned about
-        # so the warning fires once per pair, not once per region.
-        warned_pairs: set = set()
-        if caps:
-            for spec_entry in t["regions"]:
-                file_path = spec_entry.get("file", "")
-                if not file_path or file_path in create_files:
-                    continue
-                pair_key = (frozenset(caps), file_path)
-                if pair_key in warned_pairs:
-                    continue
-                warned_pairs.add(pair_key)
-                # Try to resolve the region and check if the identifiers appear in it.
-                try:
-                    r = regions.extract(Path("."), [spec_entry], profile)[0]
-                    region_text = r.text
-                except regions.RegionError:
-                    continue  # already reported above
-                # Read the full file to check if the identifier is declared outside the region.
-                full_path = Path(".") / file_path
-                if not full_path.exists():
-                    continue
-                try:
-                    file_text = full_path.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    continue
-                for cap in sorted(caps):
-                    # Is the identifier mentioned in the region text?
-                    if cap in region_text:
-                        continue
-                    # Is it mentioned anywhere in the file?
-                    if cap not in file_text:
-                        print(f"      REFUSE '{cap}' named in spec but not found in {file_path} "
-                              f"-- model will guess unless you add its declaration to a "
-                              f"read-only region; pass --allow-unresolved-symbols to override",
-                              file=sys.stderr)
-                        if not allow_unresolved_symbols:
-                            bad += 1
-                        continue
-                    # CF-31: the symbol exists in the file but outside every region. The
-                    # implementer cannot see it and will guess. Auto-attach the declaration
-                    # site as a read-only region so the run can proceed without manual edits.
-                    print(f"      AUTO  '{cap}' declared outside every region in {file_path}; "
-                          f"attaching read-only context")
-                    _attach_readonly_context(t, file_path, cap, profile)
+        guessed = _scan_unresolved_symbols(t, profile, allow_unresolved_symbols, verbose=True)
+        if guessed and not allow_unresolved_symbols:
+            # Only "refused" symbols (not found in the file at all) are a hard
+            # refusal. "guessed" symbols were auto-attached as readonly context
+            # and the run can proceed.
+            bad += len([s for s in guessed if s["status"] == "refused"])
 
     return 1 if bad else 0
+
+
+def _has_unresolved_candidates(ticket: dict) -> bool:
+    """CF-32: quick check whether the ticket's spec/context contains any
+    code-like capitalized tokens that _scan_unresolved_symbols would check.
+
+    This is the gate for the scan itself — most tickets have no such tokens,
+    so the scan (and the deepcopy it needs) is skipped entirely, avoiding
+    per-run latency on the common path.
+    """
+    import re as _re
+    spec_only = ticket.get("spec", "") + " " + ticket.get("context", "")
+    caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_only))
+    caps -= {"The", "This", "That", "These", "Those", "When", "Where",
+             "Which", "What", "Each", "Every", "All", "None", "True",
+             "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
+    backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_only))
+    call_tokens = set(_re.findall(
+        r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]', spec_only))
+    call_tokens |= set(_re.findall(
+        r'\b([A-Z][a-zA-Z0-9_]+)\(\s*[\w"\')]', spec_only))
+    caps = {c for c in caps if _looks_like_code(c, spec_only)
+            or c in backtick_tokens or c in call_tokens}
+    return bool(caps)
+
+
+def _scan_unresolved_symbols(
+    ticket: dict, profile: profiles.Profile, allow_unresolved: bool, verbose: bool = True,
+    repo_root: Path = None,
+) -> list:
+    """CF-32: scan a ticket's spec for symbols not visible in any region.
+
+    Returns a list of dicts: ``[{"symbol": str, "file": str, "status": "refused"
+    | "guessed"}]``.  ``status="refused"`` means the symbol is not in the file
+    at all (the model will invent it); ``status="guessed"`` means it exists in
+    the file but outside every editable region (auto-attached as readonly, but
+    still a guess if the readonly attachment is not enough context).
+
+    When ``verbose`` is true, prints the same REFUSE/AUTO lines as the old
+    inline scan, so ``--list`` output is unchanged.
+
+    ``repo_root`` is the directory to resolve files against. When omitted,
+    defaults to ``Path(".")`` (the CWD, which is correct for ``--list``). When
+    called from ``run_ticket`` inside a worktree, pass ``ws.root`` so files
+    present only in the worktree are found.
+    """
+    import re as _re
+
+    root = repo_root or Path(".")
+
+    spec_only = ticket.get("spec", "") + " " + ticket.get("context", "")
+    caps = set(_re.findall(r"\b[A-Z][a-zA-Z0-9_]+\b", spec_only))
+    caps -= {"The", "This", "That", "These", "Those", "When", "Where",
+             "Which", "What", "Each", "Every", "All", "None", "True",
+             "False", "None", "AND", "OR", "NOT", "ID", "OK", "FAIL"}
+    backtick_tokens = set(_re.findall(r"`([A-Z][a-zA-Z0-9_]+)`", spec_only))
+    call_tokens = set(_re.findall(
+        r'\b([A-Z][a-zA-Z0-9_]+)\.[a-zA-Z_]', spec_only))
+    call_tokens |= set(_re.findall(
+        r'\b([A-Z][a-zA-Z0-9_]+)\(\s*[\w"\')]', spec_only))
+    caps = {c for c in caps if _looks_like_code(c, spec_only)
+            or c in backtick_tokens or c in call_tokens}
+
+    create_files = {r["file"] for r in ticket["regions"] if r.get("op") == "create"}
+    # CF-32 (arbiter #4): pre-compute region texts once per file to avoid
+    # O(regions² × symbols) extractions in the inner loop. The old code
+    # called regions.extract for every (symbol, other_region) pair.
+    region_texts_by_file: Dict[str, List[str]] = {}
+    for spec_entry in ticket["regions"]:
+        fp = spec_entry.get("file", "")
+        if not fp or fp in create_files:
+            continue
+        try:
+            r = regions.extract(root, [spec_entry], profile)[0]
+            region_texts_by_file.setdefault(fp, []).append(r.text)
+        except (regions.RegionError, IndexError):
+            region_texts_by_file.setdefault(fp, [])  # mark as "seen but failed"
+
+    warned: set = set()
+    guessed: list = []
+    if caps:
+        # Cache file_text reads to avoid re-reading the same file per region
+        file_text_cache: Dict[str, str] = {}
+        for file_path, region_texts in region_texts_by_file.items():
+            # CF-32 (arbiter #6): if ALL regions for this file failed
+            # extraction, region_texts is []. Every cap in the file would
+            # be classified as "guessed" and auto-attached as readonly
+            # context — a false positive. Skip files with no resolved regions.
+            if not region_texts:
+                continue
+            full_path = root / file_path
+            if not full_path.exists():
+                continue
+            if file_path not in file_text_cache:
+                try:
+                    file_text_cache[file_path] = full_path.read_text(
+                        encoding="utf-8", errors="replace")
+                except OSError:
+                    file_text_cache[file_path] = ""
+            file_text = file_text_cache[file_path]
+            if not file_text:
+                continue
+            # All region texts for this file, joined for "in any region" check
+            all_region_text = "\n".join(region_texts)
+            for cap in sorted(caps):
+                if cap in all_region_text:
+                    continue  # visible in at least one region
+                if cap not in file_text:
+                    wkey = (cap, file_path, "refused")
+                    if wkey not in warned:
+                        warned.add(wkey)
+                        if verbose:
+                            print(f"      REFUSE '{cap}' named in spec but not found in {file_path} "
+                                  f"-- model will guess unless you add its declaration to a "
+                                  f"read-only region; pass --allow-unresolved-symbols to override",
+                                  file=sys.stderr)
+                    if not any(g["symbol"] == cap and g["file"] == file_path for g in guessed):
+                        guessed.append({"symbol": cap, "file": file_path, "status": "refused"})
+                    continue
+                # Symbol is in the file but not in ANY region's text.
+                wkey = (cap, file_path, "guessed")
+                if wkey not in warned:
+                    warned.add(wkey)
+                    if verbose:
+                        print(f"      AUTO  '{cap}' declared outside every region in {file_path}; "
+                              f"attaching read-only context")
+                    _attach_readonly_context(ticket, file_path, cap, profile)
+                if not any(g["symbol"] == cap and g["file"] == file_path for g in guessed):
+                    guessed.append({"symbol": cap, "file": file_path, "status": "guessed"})
+    return guessed
 
 
 def _review(args, profile) -> int:
@@ -841,7 +887,10 @@ def main(argv=None) -> int:
         "--allow-unresolved-symbols",
         action="store_true",
         help="CF-31: run even if the spec names symbols not visible in any region "
-             "(default is to refuse, because the model will guess and burn rounds)",
+             "(default is to refuse, because the model will guess and burn rounds). "
+             "CF-32: when set, guessed symbols are surfaced in the run output and "
+             "final report so the reviewer knows which facts the model invented; "
+             "a guessed symbol the acceptance tests do not discriminate ships unverified.",
     )
     ap.add_argument("--resume-raw", default="", help="reuse an rN_impl_raw.txt as round 1")
     ap.add_argument("--orchestrator-note", default="", help="authoritative directive; outranks reviewers")
@@ -1165,6 +1214,7 @@ def main(argv=None) -> int:
                     panel_deadline=args.panel_deadline,
                     keep_worktree=args.keep_worktree,
                     arbiter_model=arbiter,
+                    allow_unresolved_symbols=args.allow_unresolved_symbols,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - a driver must report, not crash

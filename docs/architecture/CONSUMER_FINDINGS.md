@@ -863,6 +863,26 @@ intended hunks by hand.
 **Not a blocker for the loop's usefulness.** The logic in that same patch was correct and the run
 was still worth its cost — this is about the diff carrying passengers.
 
+### Implementation (CF-25 fix)
+
+- **Prompt fidelity rule** added to `build_implement_prompt` (`loop.py`): tells the model
+  to reproduce untouched lines byte-for-byte, including non-ASCII glyphs and comment syntax.
+- **`check_comment_drift` gate** (`gates.py`): a **BLOCKING** gate (ok=False) that uses
+  `difflib.SequenceMatcher` to align original vs replacement lines, then compares
+  code-stripped forms. When every changed line is code-identical but raw-different, the
+  only thing that changed is the comment. Handles line-count changes (reflow, insertion,
+  deletion) correctly via difflib opcodes — no false positives from shifted diffs.
+- **Doc-ticket exemption**: a ticket whose spec asks for documentation changes
+  ("update documentation", "rewrite comments") is exempt — the model is supposed to
+  rewrite comments there. Uses intent-phrase matching, not bare word matching, so
+  "delete the comment on line 5" does NOT exempt the ticket.
+- Gate also runs at **arbitration** — a candidate with comment drift is never promoted
+  even if the panel approved.
+- Acceptance tests in `tests/acceptance/test_cf25_comment_only_hunks.py` (13 tests):
+  blocks comment-only rewrites, blocks box-drawing reflow, blocks comment insertion,
+  allows doc tickets, blocks incidental "comment" mentions, clean on code changes,
+  clean on mixed blocks, clean on identical blocks, clean on create regions.
+
 ### CF-26 — `--mode plan` runs ZERO rounds on the documented invocation, and calls it MAX_ROUNDS_EXHAUSTED
 
 **Measured on `nt8-riskguard` 2026-08-19, first attempt to use plan mode this session.** The exact
@@ -1016,6 +1036,25 @@ wrong**, yet both are discarded together into a file named `plan_rejected.json`.
 in the `--defect` text. That reintroduces exactly the implementation coupling that
 `--path-isolated` exists to avoid, so the two features are in tension — grounding the *planner*
 without grounding the *test writer* is what resolves it.
+
+### Implementation (CF-28 fix)
+
+- **Layout grounding** (`plan_mode.py`): the defect path now gets `build_layout_context`
+  (the real file tree listing), same as the feature path already had. The planner sees
+  real paths before it proposes regions, stopping confabulation of non-existent directories.
+- **`plan_partial.json`** (`plan_mode.py`): when regions fail extraction but the spec is
+  sound, the ticket is saved to `plan_partial.json` with ALL region errors and an
+  actionable note: "fix the anchors and re-run." The sound engineering is no longer
+  thrown away into `plan_rejected.json`. Each region is extracted individually so all
+  errors are collected, not just the first.
+- **Fail fast on non-existent files**: uses `FileNotFoundRegionError` (a structured
+  exception subclass in `regions.py`), not a substring match on the error message. A
+  file that does not exist will not appear on round 2; the loop breaks after round 1
+  with `PLAN_REJECTED_FILE_NOT_FOUND`. Bad anchors in real files still retry.
+- Acceptance tests in `tests/acceptance/test_cf28_plan_mode_grounding.py` (6 tests):
+  layout context in defect path, fail fast on non-existent file, retry on bad anchor
+  in real file, plan_partial.json saved with spec and errors, all region errors
+  collected, actionable note present.
 
 ### CF-29 — the plan prompt omits the `kind` field, so the planner cannot obey the extractor's own advice
 
@@ -1318,3 +1357,41 @@ auto-apply so a human saw the patch. Hand-arbitration kept the correct hunk (the
 substituted the right source (`state.Positions`), and dropped the comment-rewrite hunk; suite `3513
 / 0`. The reasoning was sound; one unresolved symbol on a data-source decision made a green patch
 wrong.
+
+### Implementation (CF-32 fix)
+
+- **`_scan_unresolved_symbols`** (`cli.py`): extracted from `_list` into a reusable
+  function that returns guessed symbols as data: ``[{symbol, file, status}]``.
+- **`_has_unresolved_candidates`** (`cli.py`): quick check whether the spec contains
+  code-like tokens. Gates the scan itself — most tickets have no such tokens, so the
+  scan and the deepcopy it needs are skipped entirely, avoiding per-run latency.
+- **Scan skipped on `--resume-raw`** to avoid duplicate readonly regions from a prior
+  `--list` run.
+- **Guessed symbols surfaced in `run_ticket`** (`loop.py`): stored in
+  `result["guessed_symbols"]`, printed in the final report with an explicit
+  "ships UNVERIFIED" warning when `--allow-unresolved-symbols` is set. The refusal
+  path (when `--allow-unresolved-symbols` is NOT set) also records the guessed symbols
+  and writes the ledger for audit.
+- **O(regions²) inner loop replaced** with a pre-computed region-text cache: each
+  region is extracted once, and all region texts for a file are joined for the
+  "in any region" check. Files where all regions failed extraction are skipped.
+- **Fake coverage warning removed**: the basename string match against test source text
+  was not coverage analysis and would produce false positives/negatives. The
+  guessed-symbol surfacing is the real fix; the operator reviews the patch knowing
+  exactly which facts the model invented.
+- **Help text** (`cli.py`): `--allow-unresolved-symbols` warns that a guessed symbol
+  the tests do not discriminate ships unverified.
+- Acceptance tests in `tests/acceptance/test_cf32_unresolved_symbols_surface.py`
+  (6 tests): scan returns refused symbols, scan returns empty for clean ticket,
+  has_candidates true/false, help text warns about unverified ships.
+
+### Review verification
+
+The fixes were reviewed by the agent loop's own review mode (`--mode review`) across
+3 rounds with a two-reviewer panel (`glm-5.2:cloud`, `deepseek-v4-flash:cloud`) and
+arbiter (`minimax-m3:cloud`). Round 1 found 6 upheld findings (difflib unequal-count
+bug, doc-keyword over-matching, resume-raw duplication, O(n²) extraction, string
+coupling for fail-fast, assertion-free test). Round 2 found 1 upheld finding
+(doc exemption too permissive). Round 3 found **0 findings** — clean review.
+
+Suite: **807 passed, 36 skipped**. Selftest: **13/13 passed**.

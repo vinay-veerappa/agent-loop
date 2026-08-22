@@ -192,6 +192,16 @@ def run_plan(
     if code_context:
         prompt += code_context + "\n"
 
+    # CF-28: the defect path used to get ONLY symbol-based context, which is
+    # empty for a behavioural description naming no files. The planner then
+    # invented a file tree (src/ that did not exist) and spent 4 rounds
+    # failing to anchor to it. Ground the planner in the real tree the same
+    # way the feature path does -- the layout is cheap context that stops
+    # confabulation.
+    layout = build_layout_context(repo, profile)
+    if layout:
+        prompt += layout + "\n"
+
     # A feature names nothing that exists yet, so the symbol search above finds
     # nothing by construction -- and the consequence is not a thinner prompt but a
     # wrong one. On the first live run, asked for a `--json` flag, plan mode
@@ -305,16 +315,68 @@ def run_plan(
             regs = []
             print(f"           plan: {len(tickets)} part(s), regions check OK")
         else:
-            try:
-                regs = regions.extract(repo, ticket.get("regions", []), profile)
-                print(f"           regions: {len(regs)} resolved OK")
-            except regions.RegionError as exc:
-                print(f"           plan rejected: region extraction failed: {exc}")
+            # CF-28: try each region individually so we can collect ALL
+            # region errors, not just the first. When regions fail but the
+            # spec is sound, save the spec to plan_partial.json with the
+            # errors so the operator can fix the anchors and re-run —
+            # "a ticket whose prose is sound and whose anchors are wrong
+            # is one search away from usable" (CF-28 finding).
+            region_errors: List[str] = []
+            file_not_found_errors: List[str] = []
+            resolved_regs: List = []
+            for spec_entry in ticket.get("regions", []):
+                try:
+                    extracted = regions.extract(repo, [spec_entry], profile)
+                    if not extracted:
+                        continue
+                    r = extracted[0]
+                    resolved_regs.append(r)
+                except regions.FileNotFoundRegionError as exc:
+                    file_not_found_errors.append(str(exc))
+                    region_errors.append(str(exc))
+                except regions.RegionError as exc:
+                    region_errors.append(str(exc))
+
+            if region_errors:
+                # Save the partial plan: the spec is sound, the anchors are
+                # wrong. CF-28 said this is "one search away from usable" —
+                # don't throw it away into plan_rejected.json where the sound
+                # engineering dies with the bad coordinates.
+                partial = {
+                    "tickets": [ticket],
+                    "region_errors": region_errors,
+                    "note": ("Regions failed to resolve but the spec may be "
+                             "sound. Fix the anchors listed in region_errors "
+                             "and re-run with --tickets this_file.json"),
+                }
+                (art / "plan_partial.json").write_text(
+                    json.dumps(partial, indent=2), encoding="utf-8",
+                )
+                print(f"           plan rejected: {len(region_errors)} region error(s): "
+                      f"{'; '.join(region_errors[:3])}")
+                print(f"           PARTIAL PLAN -> {art / 'plan_partial.json'} "
+                      f"(spec preserved, fix the anchors and re-run)")
+
+                # CF-28: fail fast on a non-existent file. Uses the
+                # structured FileNotFoundRegionError type, not a substring
+                # match on the error message (arbiter #5).
+                file_not_found = len(file_not_found_errors) > 0
+                if file_not_found:
+                    result["error"] = "; ".join(region_errors)
+                    final = "PLAN_REJECTED_FILE_NOT_FOUND"
+                    last_parsed = ticket  # preserve for plan_rejected.json too
+                    print(f"           fail fast: a non-existent file will not appear on retry. "
+                          f"See the 'Where code lives' section in the prompt for real paths.")
+                    break
                 history += [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": f"Region extraction failed: {exc}. Fix the anchors and re-emit."},
+                    {"role": "user", "content": f"Region extraction failed: {'; '.join(region_errors)}. "
+                     "Fix the anchors and re-emit. The file tree was provided in the prompt — "
+                     "use real paths from the 'Where code lives' section."},
                 ]
                 continue
+            regs = resolved_regs
+            print(f"           regions: {len(regs)} resolved OK")
 
         # If fast_plan: skip panel+arbiter, just accept
         if fast_plan:
