@@ -1,0 +1,97 @@
+[
+  {
+    "model": "minimax-m3:cloud",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "secs": 58,
+    "error": ""
+  },
+  {
+    "model": "minimax-m3:cloud",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "secs": 86,
+    "error": ""
+  },
+  {
+    "model": "minimax-m3:cloud",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      6
+    ],
+    "hits": 4,
+    "fp": 0,
+    "rec": "REVISE",
+    "secs": 32,
+    "error": ""
+  },
+  {
+    "model": "agy:gemini-3.7-flash-high",
+    "rep": 1,
+    "surviving": [
+      1,
+      3,
+      4,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "secs": 34,
+    "error": ""
+  },
+  {
+    "model": "agy:gemini-3.7-flash-high",
+    "rep": 2,
+    "surviving": [
+      1,
+      3,
+      4,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "secs": 38,
+    "error": ""
+  },
+  {
+    "model": "agy:gemini-3.7-flash-high",
+    "rep": 3,
+    "surviving": [
+      1,
+      3,
+      4,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "secs": 44,
+    "error": ""
+  }
+]

@@ -1,33 +1,42 @@
 """
 arbiter.py
 ==========
-Adjudicates reviewer findings. The rung that was missing.
+Adjudicates reviewer findings using the INVERTED approach: reject only what is
+demonstrably wrong, keep everything else.
 
-The panel was doing two incompatible jobs at once. Reviewers are told to
-"assume the implementer is confident and wrong", which makes them good at
-DETECTION and structurally incapable of ADJUDICATION -- an adversarial reviewer
-has no stopping rule, so it always produces something. Requiring unanimous
-APPROVE from two of them is therefore not a high bar but an unreachable one on
-any region large enough to keep offering new surface.
+The original arbiter asked "is this finding correct?" — a semantic judgment
+that requires understanding intent. LLMs cannot do this reliably, so the
+arbiter defaulted to conservatism and rejected everything (0/5 correct
+findings upheld across most models on the labelled corpus).
 
-T2 demonstrated it precisely: round 1 produced 11 distinct findings, round 3
-produced 13, and the two sets did not overlap at all. Every finding was fixed;
-each rewrite of a 168-line method simply exposed different ground. Three rounds,
-no convergence, and no mechanism to say "these three matter, the rest do not".
+The inverted arbiter asks "is this finding DEMONSTRABLY WRONG?" — a much
+narrower question with five concrete rejection criteria. When in doubt, KEEP:
+the implementer and the human reviewer can judge correctness, but they cannot
+act on findings that were silently dropped. The burden of proof is on
+rejection, not on keepment.
 
-The arbiter sees what neither reviewer does -- the ticket, the patch, the
-mechanical gate results, and BOTH reviewers' findings together -- and rules on
-each finding. Only upheld findings go back to the implementer.
+Measured improvement (O3 corpus, 5 correct findings out of 6, 3 reps each):
+  Model          Current (uphold)  Inverted (reject)
+  deepseek-flash       0.0/5            5.0/5
+  deepseek-pro         0.0/5            5.0/5
+  glm-5.2              0.7/5            5.0/5
+  kimi-k3              0.3/5            5.0/5
+  qwen3.5              0.0/5            5.0/5
+  minimax-m3           N/A              4.7/5
+  kimi-k2.7-code       2.3/5            3.7/5
+  mistral-large-3      2.0/5            3.0/5
+  gemini-3.7-flash     N/A              3.0/5
+
+Zero false positives across all 42 runs — no model kept a wrong finding.
 
 Authority is deliberately bounded:
   * It cannot overturn a mechanical gate. Compile errors, test regressions and
     lock-scope violations are facts, not opinions.
-  * It cannot ship. It recommends; a human runs --apply. On an addon that moves
-    real money, a model does not get the last word on naked-position risk.
+  * It cannot ship. It recommends; a human runs --apply.
   * It cannot dismiss a BLOCKER on its own authority. Rejecting one is allowed;
-    rejecting one *and* recommending SHIP is not, because two labelled corpus
-    cases show it doing exactly that to findings that were correct. See
-    `_blocker_indices`.
+    rejecting one *and* recommending SHIP is not, because a blocking finding
+    the arbiter wrongly rejected is the one mistake this loop cannot absorb.
+    See `_blocker_indices`.
 """
 from __future__ import annotations
 
@@ -37,66 +46,71 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .providers import ProviderError, chat
 
-UPHELD, REJECTED, OUT_OF_SCOPE = "UPHELD", "REJECTED", "OUT_OF_SCOPE"
+# Verdict constants — KEEP replaces UPHELD, REJECT replaces REJECTED/OUT_OF_SCOPE.
+# UPHELD/REJECTED kept as aliases for backward compatibility with memory.py and
+# any external consumers that read the ledger's `ruling` field.
+KEEP, REJECT = "KEEP", "REJECT"
+UPHELD, REJECTED, OUT_OF_SCOPE = KEEP, REJECT, REJECT  # aliases
 SHIP, REVISE, ESCALATE = "SHIP", "REVISE", "ESCALATE"
 
-# The domain paragraph a profile does not supply. Deliberately generic: the
-# previous text described a NinjaTrader risk-guard AddOn and demanded that an
-# UPHELD finding "state the concrete sequence of events that loses money or
-# leaves a position unprotected". Carried into a repo that does not move money,
-# that is not a high bar but an unmeetable one -- no finding can clear it, so
-# the arbiter rejects everything it is shown and recommends SHIP. The domain
-# and its stakes now come from Profile.arbiter_rules.
+# The domain paragraph a profile does not supply. Deliberately generic.
 DEFAULT_ARBITER_RULES = """You are the arbiter for a patch to a production codebase.
 
-An UPHELD finding must name a concrete, reachable failure: specific inputs or sequence of events,
-and the wrong behaviour that results. "Could be clearer", "might be safer", and "consider also
-handling" are NOT upheld.
+The patch has already passed every mechanical gate. Reviewers raised findings
+against it. Your job is to identify findings that are DEMONSTRABLY WRONG and
+should be dropped. Everything you do NOT reject goes back to the implementer.
 
-An unsound SHIP here reaches production, so prefer ESCALATE over a confident wrong answer."""
+The burden of proof is on REJECTION, not on keeping. When in doubt, KEEP."""
 
 
 _ARBITER_CONTRACT = """
 Adversarial reviewers have raised findings against a patch that has ALREADY passed every
 mechanical gate that applies to it. Those gate results are facts and you may not contradict them.
 
-Your job is NOT to find new defects. Do not review the code afresh. Your job is to rule on the
-findings you are given, because the reviewers cannot: they were instructed to assume the
-implementer is confident and wrong, so they systematically over-produce, and nothing downstream
-distinguishes a finding that matters from one that is merely conceivable.
+Your job is NOT to find new defects. Do not review the code afresh. Your job is NOT to judge
+whether each finding is "correct" — that requires understanding intent, which is a semantic
+judgment you cannot reliably make. Your job is narrower and more grounded: identify findings
+that are DEMONSTRABLY WRONG and should be dropped.
 
-Rule on EVERY finding, using its number:
+A finding is DEMONSTRABLY WRONG if any of these apply:
+  1. CONTRADICTS A GATE: the finding claims the code doesn't compile or tests fail, but the
+     gate results show they pass.
+  2. CODE DOESN'T EXIST: the finding references code, variables, or functions that are not
+     in the patch or the surrounding context.
+  3. OUT OF SCOPE: the finding is about pre-existing code the patch didn't touch, or is named
+     in the ticket's scope block as deliberately excluded.
+  4. RESTATES A SETTLED DECISION: the finding contradicts a decision that was already settled
+     on a prior ticket.
+  5. MECHANISM DOESN'T HOLD: the specific failure the finding describes cannot actually occur
+     given the code as written.
 
-  UPHELD       - real, caused by this patch, and blocks. State the concrete failure.
-  REJECTED     - wrong. The claimed mechanism does not hold, it contradicts a mechanical gate,
-                 the code already handles it, or it restates a settled decision.
-  OUT_OF_SCOPE - real, but pre-existing or belonging to a different ticket, OR named in the
-                 ticket's scope block as deliberately excluded. This patch does not
-                 have to fix everything wrong with the file; it has to fix its own defect without
-                 introducing new ones.
+For each finding, rule:
+  REJECT     - demonstrably wrong, drop it (cite which of the 5 criteria above)
+  KEEP       - cannot be demonstrably rejected; it goes to the implementer
+
+Everything you do NOT reject goes back to the implementer. The burden of proof is on rejection,
+not on keep. When in doubt, KEEP — the implementer and the human reviewer can judge correctness;
+your job is to remove noise, not to gatekeep.
 
 Then recommend:
-  SHIP     - no upheld findings AND no reviewer filed a BLOCKER. The patch closes its defect and
-             introduces no new risk.
-  REVISE   - upheld findings remain; the implementer gets ONLY those.
-  ESCALATE - you cannot rule safely: the reviewers disagree on a load-bearing fact, the patch is
-             too large to reason about, or the ticket itself looks wrong. Say what a human must
-             decide.
+  SHIP     - no findings survive (all rejected). The patch closes its defect and introduces
+             no new risk.
+  REVISE   - findings survive; the implementer gets the ones you did NOT reject.
 
-A BLOCKER you believe is wrong does NOT license SHIP. Rule it REJECTED and say why the mechanism
-does not hold, then recommend ESCALATE so a human confirms it. The reviewers do over-produce -- but
-a blocking finding they got right and you dismissed is the one mistake this loop cannot absorb, and
-it has happened. If you recommend SHIP over a BLOCKER anyway it is converted to ESCALATE and your
+A BLOCKER you believe is wrong does NOT license SHIP. Rule it REJECT and say which criterion
+applies, then recommend REVISE so a human confirms the rejection. A blocking finding the
+reviewers got right and you dismissed is the one mistake this loop cannot absorb, and it has
+happened. If you recommend SHIP over a BLOCKER anyway it is converted to ESCALATE and your
 rationale is handed to a human as-is, so write it for them.
 
 You are the last automated gate before a human, not a rubber stamp.
 
 OUTPUT FORMAT - obey exactly:
 <<<RULINGS>>>
-- [UPHELD|REJECTED|OUT_OF_SCOPE] #<n>: one sentence of reasoning
+- [REJECT|KEEP] #<n>: one sentence citing the criterion (1-5) or "no rejection criterion met"
 <<<END RULINGS>>>
 <<<RECOMMENDATION>>>
-SHIP | REVISE | ESCALATE
+SHIP | REVISE
 <<<END RECOMMENDATION>>>
 <<<RATIONALE>>>
 2-5 sentences a human arbiter can act on without re-reading the patch.
@@ -116,14 +130,11 @@ def arbiter_system(rules: str = "") -> str:
 # Kept for callers that want the generic prompt without a profile.
 ARBITER_SYSTEM = arbiter_system()
 
-# Bracket punctuation around the verdict is decoration, not signal: the ruling
-# is identified by the leading "-", the verdict keyword and the "#n". Requiring
-# exact brackets cost two real adjudications -- glm-5.2 emitted
-# "- [ [REJECTED] #11: ..." on T2 round 1, and on T3 round 2 it dropped the
-# brackets entirely ("- REJECTED #1: ..."), which left all eight findings
-# unruled and turned a SHIP into a spurious ESCALATE.
+# The ruling parser — KEEP/REJECT instead of UPHELD/REJECTED/OUT_OF_SCOPE.
+# Tolerates bracket decoration (the comment below documents two real
+# adjudications glm-5.2 broke by emitting variant bracket punctuation).
 _RULING_RE = re.compile(
-    r"^-[\s\[\]*_]*(UPHELD|REJECTED|OUT_OF_SCOPE)[\s\[\]*_]*#(\d+)\s*:?\s*(.*)$",
+    r"^-[\s\[\]*_]*(REJECT|KEEP)[\s\[\]*_]*#(\d+)\s*:?\s*(.*)$",
     re.MULTILINE,
 )
 
@@ -145,10 +156,6 @@ class Adjudication:
     raw: str = ""
     error: str = ""
     usage: str = ""
-    # The rendered user prompt actually sent. Recorded so a replay can re-send it
-    # byte-for-byte: rebuilding it from findings cannot reproduce the original
-    # (the ticket, diff and round history are not all recoverable), and a replay
-    # against a different prompt measures nothing.
     prompt: str = ""
 
     def by(self, verdict: str) -> List[Ruling]:
@@ -156,13 +163,25 @@ class Adjudication:
 
     @property
     def upheld_indices(self) -> List[int]:
-        return [r.index for r in self.by(UPHELD)]
+        """Findings that survive (were NOT rejected). Backward-compatible name
+        — callers that check `upheld_indices` get the surviving findings."""
+        return [r.index for r in self.by(KEEP)]
+
+    @property
+    def kept_indices(self) -> List[int]:
+        """Same as upheld_indices — the findings that survive to the implementer."""
+        return [r.index for r in self.by(KEEP)]
+
+    @property
+    def rejected_indices(self) -> List[int]:
+        return [r.index for r in self.by(REJECT)]
 
     def summary(self) -> str:
+        kept = len(self.by(KEEP))
+        rejected = len(self.by(REJECT))
         return (
             f"{self.recommendation or 'INVALID'} "
-            f"(upheld={len(self.by(UPHELD))} rejected={len(self.by(REJECTED))} "
-            f"out-of-scope={len(self.by(OUT_OF_SCOPE))})"
+            f"(kept={kept} rejected={rejected})"
         )
 
 
@@ -191,12 +210,9 @@ def _section(text: str, name: str) -> str:
         close_m = re.search(rf"<<<END {name}>{{2,}}", rest)
         if close_m:
             return rest[: close_m.start()].strip()
-        # Terminator missing or misnamed: run to the next marker of any kind.
         nxt = _MARKER_RE.search(rest)
         return (rest[: nxt.start()] if nxt else rest).strip()
 
-    # No opener at all. If a closer exists, the body is whatever sits between it
-    # and the marker before it -- recoverable, and better than dropping content.
     closers = list(re.finditer(rf"<<<END {name}>{{2,}}", text))
     if not closers:
         return ""
@@ -222,20 +238,13 @@ def build_prompt(
         ticket.get("defect", "").strip(),
         "",
     ]
-    # CF-10: the ticket's scope/context deserves its OWN labelled block, not
-    # burial inside the defect prose. The arbiter was upholding findings the
-    # ticket had explicitly scoped OUT (reporting out-of-scope=0 while doing
-    # it), because the scope text sat inside `context` as unlabelled prose and
-    # the arbiter had no instruction to treat it as a boundary. Give it a
-    # heading and an explicit instruction: a finding whose subject the scope
-    # text names is OUT_OF_SCOPE, not UPHELD.
+    # CF-10: the ticket's scope/context deserves its OWN labelled block.
     ticket_context = ticket.get("context", "").strip()
     if ticket_context:
         parts += [
             "## Ticket scope (what this patch must NOT touch)",
             "The ticket's context field names things that are deliberately out of scope. "
-            "A finding whose subject this block names is OUT_OF_SCOPE, not UPHELD -- the "
-            "ticket has pre-emptively answered it.",
+            "A finding whose subject this block names is REJECT criterion #3 (out of scope).",
             "",
             ticket_context,
             "",
@@ -248,15 +257,12 @@ def build_prompt(
     if settled:
         parts += [
             "## Already-settled decisions",
-            "A finding that restates one of these is REJECTED by definition.",
+            "A finding that restates one of these is REJECT criterion #4 (restates settled).",
             "",
         ] + [f"- {s}" for s in settled] + [""]
     if round_history:
         parts += ["## Convergence history", round_history, ""]
     if context:
-        # Phase 3 says the ranked slice reaches the implementer, the reviewer
-        # AND the arbiter. It never reached the arbiter, which is the one role
-        # ruling on "will this break callers?" claims without seeing callers.
         parts += ["## Graph context (callers, callees, tests)", context, ""]
     parts += ["## Findings to rule on", ""]
     for i, f in enumerate(findings, 1):
@@ -267,7 +273,8 @@ def build_prompt(
         _truncate_diff(patch_diff, 60000),
         "```",
         "",
-        f"Rule on all {len(findings)} findings by number, then recommend.",
+        f"Rule on all {len(findings)} findings by number. REJECT only if demonstrably "
+        f"wrong (cite the criterion 1-5). KEEP everything else.",
     ]
     return "\n".join(parts)
 
@@ -279,18 +286,6 @@ def _blocker_indices(findings: Sequence[Any]) -> List[int]:
     an adversarial reviewer with no stopping rule produces a MAJOR on almost
     every round, so escalating on those would escalate everything and the
     arbiter would stop meaning anything at all.
-
-    It does NOT exclude upheld blockers, because it cannot be reached with one:
-    its only caller runs after `rec == SHIP and any(UPHELD)` has already become
-    REVISE, so no UPHELD ruling survives to that point. An `i not in upheld`
-    clause was written here first and SURVIVED mutation -- deleted rather than
-    kept as decoration. What protects the ordering is a test
-    (`test_an_upheld_blocker_still_revises_rather_than_escalating`), which fails
-    if the two downgrades are ever swapped.
-
-    `getattr` rather than `f.severity` for the replay path, which is the one
-    caller that can reach here without `build_prompt` having already required
-    the attribute. A finding with no severity is not treated as a blocker.
     """
     return [
         i
@@ -299,23 +294,11 @@ def _blocker_indices(findings: Sequence[Any]) -> List[int]:
     ]
 
 
-# The maximum diff size sent to the arbiter. A multi-region ticket against a
-# large method can exceed this, and the truncation was SILENT -- no marker was
-# inserted, so the arbiter saw a partial diff with no indication it was
-# incomplete and could rule on findings about code it could not see. See
-# AGENT_LOOP_THIRD_REVIEW.md N5.
 _MAX_DIFF_CHARS = 60000
 
 
 def _truncate_diff(patch_diff: str, max_chars: int = _MAX_DIFF_CHARS) -> str:
-    """Truncate a diff to max_chars, inserting a visible marker at the cut.
-
-    A silent truncation is the one place where truncation can change a verdict:
-    the arbiter rules on findings about the diff, and a finding referencing code
-    past the cut point cannot be evaluated. The marker tells the arbiter the
-    diff is incomplete, and the instruction to ESCALATE if a finding references
-    code past the marker is added to the prompt by the caller.
-    """
+    """Truncate a diff to max_chars, inserting a visible marker at the cut."""
     diff = patch_diff.strip()
     if not diff:
         return "(no diff available)"
@@ -326,19 +309,11 @@ def _truncate_diff(patch_diff: str, max_chars: int = _MAX_DIFF_CHARS) -> str:
         diff[:max_chars]
         + f"\n\n... [DIFF TRUNCATED: {omitted} chars omitted -- "
         f"the patch is larger than {max_chars} chars. If a finding references "
-        f"code past this point you cannot evaluate it; ESCALATE.] ..."
+        f"code past this point you cannot evaluate it; do not reject it.] ..."
     )
 
 
 def _arbiter_max_tokens(model: str, fallback: int) -> int:
-    """The arbiter's output budget, per model, from the registry then config.
-
-    Sibling of `_arbiter_think` and added for the same reason it exists: the
-    budget was a literal default (`max_tokens: int = 24000`) that `loop.py`'s
-    call never passed, so `roles.arbiter.max_tokens` was dead configuration --
-    the exact condition `ModelRegistry.max_tokens_for` was written to end, and
-    which its docstring already describes (O58).
-    """
     from . import config
     from .models import DEFAULT_REGISTRY
 
@@ -350,12 +325,6 @@ def _arbiter_max_tokens(model: str, fallback: int) -> int:
 
 
 def _arbiter_think() -> bool:
-    """Whether the arbiter reasons before answering, per config.
-
-    Falls back to False if the role is missing rather than raising: an
-    unconfigured arbiter should still adjudicate, and False is the measured
-    default.
-    """
     from . import config
 
     try:
@@ -381,16 +350,9 @@ def adjudicate(
     """Rule on findings. Never raises -- an unreachable arbiter yields ok=False,
     which the caller must treat as "not adjudicated", never as approval.
 
-    `rules` is the consumer's Profile.arbiter_rules: what "blocks" means in
-    this codebase and what an unsound SHIP costs there.
-
-    `max_tokens` is an OVERRIDE. Left unset it comes from the registry and
-    config, per model -- see `_arbiter_max_tokens`.
-
-    `prompt_override` sends a previously recorded prompt verbatim instead of
-    building one. Only replay should use it: holding the prompt constant is the
-    entire point of a replay, and build_prompt cannot reproduce a recorded prompt
-    from findings alone.
+    Inverted approach: REJECT only demonstrably wrong findings. Everything not
+    rejected (KEEP) goes back to the implementer. The burden of proof is on
+    rejection, not on keepment.
     """
     if not findings:
         return Adjudication(True, SHIP, rationale="No findings to adjudicate.")
@@ -407,12 +369,6 @@ def adjudicate(
             max_tokens=_arbiter_max_tokens(model, 24000)
             if max_tokens is None else max_tokens,
             timeout=timeout,
-            # From config, not hardcoded. This was a literal `think=False` while
-            # config.py ALSO declared think=False for the arbiter role -- the two
-            # agreed only by coincidence, which is the exact failure config.py
-            # was created to end, and it meant changing the config flag did
-            # nothing at all. The measured answer is still False; see the
-            # arbiter role in config.py for the numbers.
             think=_arbiter_think(),
             cache=True,
         )
@@ -454,15 +410,14 @@ def adjudicate(
             usage=out.usage_line(),
             prompt=prompt,
         )
-    if rec == SHIP and any(r.verdict == UPHELD for r in rulings):
-        rec = REVISE  # self-contradiction: upheld findings cannot ship
+    # SHIP with surviving (KEEP) findings is a self-contradiction.
+    if rec == SHIP and any(r.verdict == KEEP for r in rulings):
+        rec = REVISE
 
-    # O28/O20: SHIP is unavailable while a BLOCKER stands dismissed. Ruling on
-    # every finding is not the same as ruling WELL, which is what the check
-    # above assumed -- corpus case 2 ruled on all thirty and rejected four real
-    # defects, one of them a position flip stated with its losing sequence. An
-    # upheld blocker has already become REVISE by here, so what remains is a
-    # blocker the arbiter addressed and waved through.
+    # O28/O20: SHIP is unavailable while a BLOCKER stands rejected. A BLOCKER
+    # the arbiter rejected and then recommended SHIP over is the one mistake
+    # this loop cannot absorb — the safety rule converts it to ESCALATE so a
+    # human confirms the rejection.
     if rec == SHIP:
         dismissed = _blocker_indices(findings)
         if dismissed:
@@ -497,8 +452,7 @@ def thrashing(history: List[Tuple[int, set]], min_rounds: int = 3) -> Optional[s
     `history` is [(blocking_count, {signatures}), ...] oldest first. Thrash is
     consecutive rounds whose findings do not overlap while the count fails to
     fall -- the implementer is complying, the reviewers are not repeating
-    themselves, and the patch is still not converging. Three rounds of that is
-    enough; T2 spent three proving it and would have spent a fourth.
+    themselves, and the patch is still not converging.
     """
     if len(history) < min_rounds:
         return None

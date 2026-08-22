@@ -369,7 +369,7 @@ def load_rejected_findings(repo: Path) -> List[Dict[str, str]]:
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
-            if entry.get("ruling") == "REJECTED":
+            if entry.get("ruling") in ("REJECTED", "REJECT", "OUT_OF_SCOPE"):
                 rejected.append(entry)
         except json.JSONDecodeError:
             continue
@@ -393,7 +393,7 @@ def load_upheld_findings(repo: Path) -> List[Dict[str, str]]:
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
-            if entry.get("ruling") == "UPHELD":
+            if entry.get("ruling") in ("UPHELD", "KEEP"):
                 upheld.append(entry)
         except json.JSONDecodeError:
             continue
@@ -442,8 +442,8 @@ def build_learning_context(repo: Path) -> str:
 
     upheld_texts = distinct(upheld)
     if upheld_texts:
-        parts.append("\n### Known real defects (arbiter UPHELD these - keep flagging if you see them):")
-        parts += [f"- UPHELD: {t}" for t in upheld_texts]
+        parts.append("\n### Known real defects (arbiter KEPT these - keep flagging if you see them):")
+        parts += [f"- KEPT: {t}" for t in upheld_texts]
 
     if len(parts) == 1:
         return ""

@@ -224,7 +224,7 @@ def _print_reviewer_marginal_value(feedback: List[Dict[str, Any]]) -> None:
             finding = e.get("finding", "")
             ruling = e.get("ruling", "")
             all_findings_by_reviewer[reviewer].append(finding)
-            if ruling == "UPHELD":
+            if ruling in ("UPHELD", "KEEP"):
                 upheld_by_reviewer[reviewer].append(finding)
 
         # For each reviewer, count upheld findings the other didn't raise
@@ -282,7 +282,7 @@ def _print_arbiter_calibration(
     # Count upheld findings per ticket
     upheld_per_ticket: Dict[str, int] = defaultdict(int)
     for e in feedback:
-        if e.get("ruling") == "UPHELD":
+        if e.get("ruling") in ("UPHELD", "KEEP"):
             upheld_per_ticket[e.get("ticket", "?")] += 1
 
     # Get rounds per ticket from ledger

@@ -60,7 +60,7 @@ def test_a_rejected_blocker_makes_ship_unavailable():
     """Case 2 in miniature: every finding ruled, the blocker dismissed, SHIP."""
     adj = _adjudicate(
         [_F("BLOCKER", "signed exit qty flips a follower sitting opposite"), _F("MINOR")],
-        [(1, "REJECTED"), (2, "REJECTED")],
+        [(1, "REJECT"), (2, "REJECT")],
         "SHIP",
     )
     assert adj.ok
@@ -73,7 +73,7 @@ def test_a_rejected_blocker_makes_ship_unavailable():
 def test_the_escalation_names_the_blocker_a_human_must_judge():
     adj = _adjudicate(
         [_F("MINOR"), _F("BLOCKER", "naked position between submit and accept")],
-        [(1, "REJECTED"), (2, "REJECTED")],
+        [(1, "REJECT"), (2, "REJECT")],
         "SHIP",
     )
     assert "#2" in adj.rationale or "[2]" in adj.rationale, (
@@ -86,7 +86,7 @@ def test_the_arbiters_own_rationale_survives_the_downgrade():
     """The reason it thought the blocker did not hold is the thing worth reading."""
     adj = _adjudicate(
         [_F("BLOCKER", "off-tick stop price")],
-        [(1, "REJECTED")],
+        [(1, "REJECT")],
         "SHIP",
         rationale="The clamp two lines above already rounds to the tick.",
     )
@@ -94,10 +94,11 @@ def test_the_arbiters_own_rationale_survives_the_downgrade():
 
 
 def test_an_out_of_scope_blocker_also_blocks_ship():
-    """OUT_OF_SCOPE is the other way to dismiss one, and it is the softer word."""
+    """In the inverted arbiter, OUT_OF_SCOPE is REJECT (criterion #3). A BLOCKER
+    rejected for any reason still blocks SHIP."""
     adj = _adjudicate(
         [_F("BLOCKER", "pre-existing naked window")],
-        [(1, "OUT_OF_SCOPE")],
+        [(1, "REJECT")],
         "SHIP",
     )
     assert adj.recommendation == arbiter.ESCALATE
@@ -108,18 +109,18 @@ def test_major_and_minor_findings_do_not_block_ship():
     since an adversarial reviewer with no stopping rule always produces one."""
     adj = _adjudicate(
         [_F("MAJOR"), _F("MINOR")],
-        [(1, "REJECTED"), (2, "OUT_OF_SCOPE")],
+        [(1, "REJECT"), (2, "REJECT")],
         "SHIP",
     )
     assert adj.recommendation == arbiter.SHIP
 
 
 def test_an_upheld_blocker_still_revises_rather_than_escalating():
-    """Pre-existing behaviour: upheld findings go back to the implementer. That
-    is a working loop, not a human decision, and must not become an ESCALATE."""
+    """In the inverted arbiter, KEEP replaces UPHELD. A KEPT blocker forces
+    REVISE (not ESCALATE) — that is a working loop, not a human decision."""
     adj = _adjudicate(
         [_F("BLOCKER"), _F("MINOR")],
-        [(1, "UPHELD"), (2, "REJECTED")],
+        [(1, "KEEP"), (2, "REJECT")],
         "SHIP",
     )
     assert adj.recommendation == arbiter.REVISE
@@ -129,7 +130,7 @@ def test_a_rejected_blocker_does_not_disturb_an_honest_revise():
     """The downgrade applies to SHIP only; REVISE already routes back."""
     adj = _adjudicate(
         [_F("BLOCKER"), _F("MAJOR")],
-        [(1, "REJECTED"), (2, "UPHELD")],
+        [(1, "REJECT"), (2, "KEEP")],
         "REVISE",
     )
     assert adj.recommendation == arbiter.REVISE
@@ -139,7 +140,7 @@ def test_a_rejected_blocker_does_not_disturb_an_honest_revise():
 def test_unruled_findings_still_escalate_first():
     """The older downgrade must keep its own rationale: 'did not rule on' is a
     different failure from 'ruled and was wrong', and they want different reads."""
-    adj = _adjudicate([_F("MINOR"), _F("MINOR")], [(1, "REJECTED")], "SHIP")
+    adj = _adjudicate([_F("MINOR"), _F("MINOR")], [(1, "REJECT")], "SHIP")
     assert adj.recommendation == arbiter.ESCALATE
     assert "did not rule" in adj.rationale
 

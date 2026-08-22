@@ -1,0 +1,109 @@
+[
+  {
+    "approach": "CURRENT",
+    "model": "mistral-large-3:675b-cloud",
+    "surviving": [
+      1,
+      2,
+      3
+    ],
+    "hits": 2,
+    "fp": 0,
+    "missed": [
+      4,
+      5,
+      6
+    ],
+    "rec": "REVISE",
+    "secs": 13
+  },
+  {
+    "approach": "CURRENT",
+    "model": "glm-5.2:cloud",
+    "surviving": [
+      3
+    ],
+    "hits": 0,
+    "fp": 0,
+    "missed": [
+      1,
+      2,
+      4,
+      5,
+      6
+    ],
+    "rec": "REVISE",
+    "secs": 5
+  },
+  {
+    "approach": "INVERTED",
+    "model": "mistral-large-3:675b-cloud",
+    "surviving": [
+      1,
+      2,
+      3,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "missed": [
+      4,
+      5
+    ],
+    "rec": "REVISE",
+    "secs": 5
+  },
+  {
+    "approach": "INVERTED",
+    "model": "glm-5.2:cloud",
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "missed": [],
+    "rec": "REVISE",
+    "secs": 3
+  },
+  {
+    "approach": "FULL_CONTEXT",
+    "model": "mistral-large-3:675b-cloud",
+    "surviving": [
+      3
+    ],
+    "hits": 0,
+    "fp": 0,
+    "missed": [
+      1,
+      2,
+      4,
+      5,
+      6
+    ],
+    "rec": "REVISE",
+    "secs": 8
+  },
+  {
+    "approach": "FULL_CONTEXT",
+    "model": "glm-5.2:cloud",
+    "surviving": [
+      1,
+      2,
+      3
+    ],
+    "hits": 2,
+    "fp": 0,
+    "missed": [
+      4,
+      5,
+      6
+    ],
+    "rec": "REVISE",
+    "secs": 7
+  }
+]

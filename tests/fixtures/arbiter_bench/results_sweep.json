@@ -1,0 +1,817 @@
+[
+  {
+    "model": "glm-5.2:cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [
+      3,
+      5
+    ],
+    "hits": 1,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2,
+      4,
+      6
+    ],
+    "secs": 6,
+    "error": ""
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [
+      3,
+      5
+    ],
+    "hits": 1,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2,
+      4,
+      6
+    ],
+    "secs": 6,
+    "error": ""
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [
+      3
+    ],
+    "hits": 0,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2,
+      4,
+      5,
+      6
+    ],
+    "secs": 7,
+    "error": ""
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "glm-5.2:cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3
+    ],
+    "hits": 2,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4,
+      5,
+      6
+    ],
+    "secs": 13,
+    "error": ""
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3
+    ],
+    "hits": 2,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4,
+      5,
+      6
+    ],
+    "secs": 12,
+    "error": ""
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3
+    ],
+    "hits": 2,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4,
+      5,
+      6
+    ],
+    "secs": 11,
+    "error": ""
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      2,
+      3,
+      4,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      5
+    ],
+    "secs": 8,
+    "error": ""
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      2,
+      3,
+      4,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      5
+    ],
+    "secs": 8,
+    "error": ""
+  },
+  {
+    "model": "mistral-large-3:675b-cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4,
+      5
+    ],
+    "secs": 6,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [
+      3
+    ],
+    "hits": 0,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2,
+      4,
+      5,
+      6
+    ],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 1,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 1,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-flash:cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 1,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 4,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 4,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 4,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 1,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "deepseek-v4-pro:cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "kimi-k2.7-code:cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [
+      2,
+      3,
+      5,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      4
+    ],
+    "secs": 6,
+    "error": ""
+  },
+  {
+    "model": "kimi-k2.7-code:cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [
+      3,
+      5
+    ],
+    "hits": 1,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2,
+      4,
+      6
+    ],
+    "secs": 5,
+    "error": ""
+  },
+  {
+    "model": "kimi-k2.7-code:cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2
+    ],
+    "secs": 6,
+    "error": ""
+  },
+  {
+    "model": "kimi-k2.7-code:cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      5,
+      6
+    ],
+    "hits": 4,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4
+    ],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "kimi-k2.7-code:cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      6
+    ],
+    "hits": 3,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4,
+      5
+    ],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "kimi-k2.7-code:cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      5,
+      6
+    ],
+    "hits": 4,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      4
+    ],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [
+      5
+    ],
+    "hits": 1,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      6
+    ],
+    "secs": 18,
+    "error": ""
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 11,
+    "error": ""
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 10,
+    "error": ""
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 2,
+    "error": ""
+  },
+  {
+    "model": "kimi-k3:cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 3,
+    "error": ""
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "approach": "CURRENT",
+    "rep": 1,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 11,
+    "error": ""
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "approach": "CURRENT",
+    "rep": 2,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 9,
+    "error": ""
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "approach": "CURRENT",
+    "rep": 3,
+    "surviving": [],
+    "hits": 0,
+    "fp": 0,
+    "rec": "ESCALATE",
+    "rejected": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "secs": 8,
+    "error": ""
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "approach": "INVERTED",
+    "rep": 1,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 5,
+    "error": ""
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "approach": "INVERTED",
+    "rep": 2,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 7,
+    "error": ""
+  },
+  {
+    "model": "qwen3.5:cloud",
+    "approach": "INVERTED",
+    "rep": 3,
+    "surviving": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "hits": 5,
+    "fp": 0,
+    "rec": "REVISE",
+    "rejected": [],
+    "secs": 6,
+    "error": ""
+  }
+]

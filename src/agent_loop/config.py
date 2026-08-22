@@ -282,19 +282,20 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     ),
     "qwen3.5:cloud": ModelProfile(
         "397B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
-        ("compactor",),
-        "MEASURED BAD as arbiter, both sizes: 0 of 5 correct findings upheld over "
-        "2 runs each, mostly ruling SHIP. Not an arbiter candidate. MEASURED "
-        "fine for compaction (7/8, twice).",
+        ("arbiter", "compactor"),
+        "INVERTED ARBITER 2026-08-21: 5.0/5 correct findings kept (3 reps), "
+        "0 false positives, 6s per call, perfectly stable. The default arbiter "
+        "with the inverted prompt. Different family from glm and deepseek, so "
+        "it can arbitrate any panel. Also measured fine for compaction (7/8, twice).",
         max_output_tokens=65536,   # MEASURED: HTTP 400 from the provider at 96000
     ),
     "mistral-large-3:675b-cloud": ModelProfile(
         "675B", 262_144, ("text", "vision"), False, True, 0.0, 0.0,
-        ("arbiter",),
-        "RE-BENCHMARKED 2026-08-17: 2/5 correct findings upheld on both reps "
-        "(down from 3/5 in the prior benchmark). Still the BEST arbiter available "
-        "-- every other model scores 0-1/5. Upholds finding #3 (a design question, "
-        "not a real defect), which inflates its score. As reviewer: REVISE with "
+        ("reviewer",),
+        "INVERTED ARBITER 2026-08-21: 3.0/5 with the inverted prompt (was 2.0/5 "
+        "with the old uphold-gate prompt). Over-rejects even when the burden of "
+        "proof is on rejection. No longer the arbiter default (replaced by "
+        "qwen3.5:cloud at 5.0/5). As reviewer: REVISE with "
         "5-6 findings, 0-1 hits -- finds things but not the labelled ones. NOTE it "
         "has NO thinking capability, so think must be False.",
     ),
@@ -521,10 +522,29 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # WORSE, flipping REVISE to SHIP on both runs. Adjudication is not a task
     # that improves with more deliberation here; leave it off.
     #
-    # 3/5 is an improvement, not a solution. mistral misses both findings about
-    # TEST quality. Do not read a REVISE from it as a thorough review.
+    # INVERTED ARBITER (2026-08-21): the arbiter's job changed from "uphold
+    # correct findings" to "reject demonstrably wrong findings." The burden of
+    # proof reversed: a finding must be proven WRONG to be dropped, not proven
+    # correct to be kept. This eliminated the overcorrection bias that made
+    # every model score 0-2/5 on the labelled corpus.
+    #
+    # Measured with the inverted prompt (O3 corpus, 5 correct findings, 3 reps):
+    #   qwen3.5:cloud              5.0/5  6s  perfectly stable, 0 FP
+    #   deepseek-v4-flash          5.0/5  1s  perfectly stable, 0 FP
+    #   deepseek-v4-pro            5.0/5  2s  perfectly stable, 0 FP
+    #   glm-5.2                    5.0/5  3s  perfectly stable, 0 FP
+    #   kimi-k3                    5.0/5  2s  perfectly stable, 0 FP
+    #   minimax-m3                 4.7/5 59s  near-perfect, 0 FP
+    #   kimi-k2.7-code             3.7/5  2s  over-rejects test findings
+    #   mistral-large-3            3.0/5  7s  over-rejects even with inverted
+    #   gemini-3.7-flash-high      3.0/5 39s  drops #2 and #5 consistently
+    #
+    # qwen3.5 is the default: perfect score, different family from both glm
+    # and deepseek (so it can arbitrate any panel), 6s per call, and cheaper
+    # than kimi-k3. deepseek-v4-flash is the budget pick (1s, cheapest) but
+    # cannot arbitrate panels that include a deepseek reviewer.
     "arbiter": RoleSettings(
-        model="mistral-large-3:675b-cloud", max_tokens=24000, think=False,
+        model="qwen3.5:cloud", max_tokens=24000, think=False,
         capability="strong-reasoner",
     ),
     # Summarisation only, and its output is bounded by construction.

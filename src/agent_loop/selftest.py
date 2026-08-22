@@ -183,27 +183,28 @@ _FIXTURES = [
     ),
     # T2 r1: stray bracket. T3 r2: no brackets at all -- eight valid rulings
     # parsed as unruled and turned a SHIP into a spurious ESCALATE.
+    # Inverted arbiter uses KEEP/REJECT instead of UPHELD/REJECTED/OUT_OF_SCOPE.
     (
         "ruling bracket variants (T2, T3)",
         lambda: [
             (m.group(1), int(m.group(2)))
             for m in arbiter._RULING_RE.finditer(
-                "- [REJECTED] #1: normal\n"
-                "- [ [REJECTED] #2: stray bracket\n"
-                "- REJECTED #3: no brackets\n"
-                "- **[UPHELD]** #4: emphasised\n"
-                "- [OUT_OF_SCOPE] #5 no colon"
+                "- [REJECT] #1: normal\n"
+                "- [ [REJECT] #2: stray bracket\n"
+                "- REJECT #3: no brackets\n"
+                "- **[KEEP]** #4: emphasised\n"
+                "- [KEEP] #5 no colon"
             )
         ],
-        [("REJECTED", 1), ("REJECTED", 2), ("REJECTED", 3), ("UPHELD", 4), ("OUT_OF_SCOPE", 5)],
+        [("REJECT", 1), ("REJECT", 2), ("REJECT", 3), ("KEEP", 4), ("KEEP", 5)],
     ),
     # Well-formed input must still parse identically -- a tolerant parser that
     # broke the happy path would be worse than the strict one.
     (
         "well-formed arbiter body still parses",
         lambda: (
-            len(list(arbiter._RULING_RE.finditer(arbiter._section(_arbiter_body(3, "UPHELD", "REVISE"), "RULINGS")))),
-            arbiter._section(_arbiter_body(3, "UPHELD", "REVISE"), "RATIONALE"),
+            len(list(arbiter._RULING_RE.finditer(arbiter._section(_arbiter_body(3, "KEEP", "REVISE"), "RULINGS")))),
+            arbiter._section(_arbiter_body(3, "KEEP", "REVISE"), "RATIONALE"),
         ),
         (3, "canned"),
     ),
@@ -312,26 +313,26 @@ def main() -> int:
             "dissent + arbiter rejects every finding -> ARBITER_SHIP (human signs off)",
             t3_states, R,
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_MINOR_BODY,
-             ARB: _arbiter_body(1, "REJECTED", "SHIP")},
+             ARB: _arbiter_body(1, "REJECT", "SHIP")},
             "ARBITER_SHIP", arbiter_model=ARB,
         ),
         scenario(
             "arbiter rejects a BLOCKER and ships anyway -> ESCALATED, not ARBITER_SHIP",
             t3_states, R,
             {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY,
-             ARB: _arbiter_body(1, "REJECTED", "SHIP")},
+             ARB: _arbiter_body(1, "REJECT", "SHIP")},
             "ESCALATED", arbiter_model=ARB,
         ),
         scenario(
-            "dissent + arbiter upholds -> keeps revising, never auto-ships",
+            "dissent + arbiter keeps -> keeps revising, never auto-ships",
             t3_states, R,
-            {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "UPHELD", "REVISE")},
+            {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "KEEP", "REVISE")},
             "MAX_ROUNDS_EXHAUSTED", arbiter_model=ARB,
         ),
         scenario(
             "arbiter says ESCALATE -> stops immediately, no further spend",
             t3_states, R,
-            {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "UPHELD", "ESCALATE")},
+            {"rev-a": APPROVE_BODY, "rev-b": REVISE_BODY, ARB: _arbiter_body(1, "KEEP", "ESCALATE")},
             "ESCALATED", arbiter_model=ARB,
         ),
     ]

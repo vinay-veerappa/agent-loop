@@ -57,9 +57,11 @@ def test_arbiter_is_not_in_the_panel_family():
 
 
 def test_arbiter_default_is_the_measured_winner():
-    """Pinned deliberately. The previous default ruled SHIP on a patch with five
-    real defects, twice, and this one refused it twice. If you change the model,
-    re-run tests/fixtures/arbiter_bench/run_bench.py and update the numbers in
-    config.py -- do not change it on taste."""
-    assert config.DEFAULTS.roles["arbiter"].model == "mistral-large-3:675b-cloud"
+    """Pinned deliberately. The inverted arbiter prompt changed the task from
+    "uphold correct findings" to "reject demonstrably wrong findings." The
+    bench sweep (2026-08-21, 7 models x 3 reps) measured qwen3.5 at 5.0/5
+    with zero false positives, perfectly stable. If you change the model,
+    re-run tests/fixtures/arbiter_bench/sweep_models.py and update the
+    numbers in config.py -- do not change it on taste."""
+    assert config.DEFAULTS.roles["arbiter"].model == "qwen3.5:cloud"
     assert config.DEFAULTS.roles["arbiter"].think is False

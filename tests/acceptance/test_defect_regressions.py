@@ -274,11 +274,12 @@ def test_arbiter_prompt_is_not_hardcoded_to_ninjatrader():
     generic = arbiter.arbiter_system()
     assert "NinjaTrader" not in generic
     assert "loses money" not in generic
-    assert "UPHELD" in generic and "ESCALATE" in generic
+    assert "KEEP" in generic or "REJECT" in generic
+    assert "SHIP" in generic
 
     custom = arbiter.arbiter_system("Domain: a CSV parser. Blocking means silent data loss.")
     assert "silent data loss" in custom
-    assert "UPHELD" in custom
+    assert "KEEP" in custom or "REJECT" in custom
 
 
 def test_arbiter_prompt_carries_graph_context():

@@ -394,8 +394,9 @@ def test_cf10_arbiter_prompt_includes_ticket_scope_block():
     # The scope block must be present with its heading
     assert "Ticket scope" in prompt
     assert "deliberately not in this one" in prompt
-    # The instruction must tell the arbiter to use OUT_OF_SCOPE
-    assert "OUT_OF_SCOPE" in prompt
+    # The instruction must tell the arbiter to REJECT out-of-scope findings
+    assert "REJECT" in prompt
+    assert "out of scope" in prompt.lower() or "criterion #3" in prompt
     # The scope block heading and instruction must be present
     assert "Ticket scope" in prompt
     assert "this block names" in prompt
