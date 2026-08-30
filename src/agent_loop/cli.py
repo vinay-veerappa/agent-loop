@@ -387,8 +387,15 @@ def _scan_unresolved_symbols(
     return guessed
 
 
-def _review(args, profile) -> int:
-    """Adversarial review of already-written code. Reports; never edits."""
+def _review(args, profile, reviewers, arbiter) -> int:
+    """Adversarial review of already-written code. Reports; never edits.
+
+    CF-33: `reviewers`/`arbiter` are the RESOLVED panel main() computed (raw
+    --reviewers, else the registry's reviewer role). _review used to re-parse
+    the raw `--reviewers` string, so an omitted flag meant an EMPTY panel —
+    review_panel returned a vacuously-valid result (empty verdict, zero
+    findings) and the run "succeeded" without a single model call.
+    """
     from . import gates, review_mode
 
     if not args.review_base:
@@ -429,8 +436,8 @@ def _review(args, profile) -> int:
             head=args.review_head,
             paths=args.review_paths,
             profile=profile,
-            reviewers=[m.strip() for m in args.reviewers.split(",") if m.strip()],
-            arbiter_model=args.arbiter,
+            reviewers=reviewers,
+            arbiter_model=args.arbiter or arbiter,
             intent=intent,
             title=args.review_title,
             gate_summary=gate_summary,
@@ -1111,7 +1118,7 @@ def main(argv=None) -> int:
             )
 
     if args.mode == "review":
-        return _review(args, profile)
+        return _review(args, profile, reviewers, arbiter)
 
     if args.mode == "plan":
         return _plan(args, profile, implementer, reviewers, arbiter)

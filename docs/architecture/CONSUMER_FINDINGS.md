@@ -1395,3 +1395,69 @@ coupling for fail-fast, assertion-free test). Round 2 found 1 upheld finding
 (doc exemption too permissive). Round 3 found **0 findings** — clean review.
 
 Suite: **807 passed, 36 skipped**. Selftest: **13/13 passed**.
+
+---
+
+### CF-33 (new, HIGH) — `--mode review` with `--reviewers` omitted ran a ZERO-member panel and called it a valid review
+
+**Observed**, reviewing `v2.3.0-surface-v3..HEAD` (10 files, 27,808 chars of diff) in the
+tradingview-mcp consumer:
+
+```
+  reviewing 10 file(s), 27,808 chars of diff
+
+  findings (0) -> (no reviewer output)
+  prompt sent -> logs\agent_loop\review-.../review_prompt.txt
+  artifacts -> logs\agent_loop\review-...
+  REVIEW MODE IS ADVISORY. It changes nothing; read the findings and decide.
+```
+
+Runtime: **0.2 seconds**. `result.json`: `panel_verdict: ""`, `panel_valid: true`,
+`findings_total: 0`, `arbiter: "(not run)"`. Re-running WITH `--reviewers` named explicitly
+produced 19 findings and a REVISE-from-both panel in ~25 seconds. The first invocation
+never reached a model.
+
+**Root cause, one line**: `main()` resolves a default panel from the registry
+(`reviewers_str = args.reviewers or ",".join(...registry.get_all("reviewer")...)`), validates
+its family policy, and then hands it to nobody — `_review(args, profile)` does not take the
+resolved panel (every other mode does) and re-parses the RAW `--reviewers` string.
+Empty flag -> `[]` -> `review_panel([])` -> `valid = all(v.counted for v in votes) and
+len(votes) == len(reviewers)` -> `all([]) is True` and `0 == 0` -> **vacuously valid**.
+
+**What it cost**: an operator can believe their change was adversarially reviewed when zero
+opinions were collected. In this session the "clean" first run was read as a pass before the
+0.2s runtime raised the question; a second reviewer-free run tomorrow would pass the same way.
+The failure is indistinguishable from a clean review in the artifacts — empty verdict, zero
+findings, `panel_valid: true`.
+
+**Why it happened**: review mode is the only mode that re-parses the raw flag. `_plan`,
+`_developer`, and `_run_plan` all take `reviewers`/`arbiter` parameters and receive what
+`main()` resolved. `_review` predates the registry-default resolution (the family-policy
+warning block above it was added later and warns about the panel the review will never see —
+the one-member warning even knows to print `(none)` for the empty case the review then
+silently accepts).
+
+**Fixes applied** (all three layers, so the root cause and the structural hazard close):
+
+1. `cli._review(args, profile, reviewers, arbiter)` — review mode now receives the RESOLVED
+   panel and arbiter, same as every other mode. `--reviewers` still overrides (the override
+   is applied in `main()` before the hand-off, where the family checks run).
+2. `review_mode.run_review` raises `ReviewError` on an empty reviewer list — protects
+   programmatic callers, not just the CLI path. Fires before diff collection.
+3. `loop.review_panel` raises `ValueError` on an empty reviewer list — the structural
+   half. A panel of zero opinions is not a review, and the validity rule can no longer be
+   vacuously true for it. One- and two-member panels remain legal (the CLI warns about the
+   one-member case; it does not refuse).
+4. `result.json` records `"reviewers": [...]` — the actual panel is auditable from the
+   artifacts instead of being reverse-engineered from vote rows (or invisible, as before).
+
+**Accepted tests** in `tests/acceptance/test_cf33_empty_reviewer_panel.py` (5): the registry
+pre-condition (multi-member panel), the `run_review` guard, the `review_panel` structural
+guard, `result.json` panel recording, and a guard-does-not-overcorrect check (1- and 2-member
+panels still valid).
+
+**Note for reviewers of this fix**: the 0.2s no-op review is the failure mode to hold onto —
+not a wrong verdict, but the ABSENCE of one wearing a verdict's clothes. The lesson generalizes:
+every `all()`-over-a-collection-validity rule needs an `if not collection: refuse` sibling.
+
+**Suite: 812 passed, 36 skipped** (was 807; +5 from CF-33). **Selftest: 13/13 passed.**

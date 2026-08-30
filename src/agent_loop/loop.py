@@ -570,6 +570,16 @@ def review_panel(
     configuration: raising it from 24000 to 48000 to fix O57 changed nothing,
     and minimax-m3 died at the same `eval_count=24000` on the next run (O58).
     """
+    if not reviewers:
+        # CF-33: the validity rule `all(votes.counted) and len(votes)==len(reviewers)`
+        # is vacuously TRUE for an empty reviewer list — zero opinions would
+        # count as a valid, APPROVE-able panel. This is the deeper half of the
+        # CF-33 root cause: even if a caller resolves no panel, the structure
+        # must refuse rather than succeed at zero reviews.
+        raise ValueError(
+            "review_panel called with an empty reviewer list — a panel of "
+            "zero opinions is not a review"
+        )
     cfg_role = _role_settings("reviewer")
     think_flag = think if think is not None else (cfg_role.think if cfg_role else False)
 

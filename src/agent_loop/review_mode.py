@@ -162,6 +162,17 @@ def run_review(
     orchestrator_note: str = "",
     panel_deadline: int = 1800,
 ) -> Dict[str, Any]:
+    if not reviewers:
+        # CF-33: an empty panel must be a LOUD failure, never a vacuously-valid
+        # review (empty verdict, zero findings, 0.2s "success" with no model
+        # call). Programmatic callers hit this guard directly; CLI callers can
+        # no longer produce it because main() resolves the panel from the
+        # registry when --reviewers is omitted.
+        raise ReviewError(
+            "review requested with an EMPTY reviewer list — pass --reviewers "
+            "(comma-separated, two models from different families) so the "
+            "panel is more than zero opinions"
+        )
     t0 = time.time()
     diff = collect_diff(repo, base, head, paths)
     if not diff.strip():
@@ -228,6 +239,9 @@ def run_review(
         "mode": "review",
         "range": f"{base}..{head}",
         "files": files,
+        # CF-33: record the actual panel so a zero-member review is detectable
+        # in the artifacts without reverse-engineering it from the votes.
+        "reviewers": list(reviewers),
         "panel_verdict": panel.verdict,
         "panel_valid": panel.valid,
         "findings_total": len(flat),
