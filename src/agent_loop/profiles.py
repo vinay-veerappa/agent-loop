@@ -12,7 +12,7 @@ fallback.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 
 _OUTPUT_CONTRACT = """
@@ -43,6 +43,11 @@ APPROVE | REVISE | REJECT
 (write "- NONE" if APPROVE)
 <<<END REQUIRED>>>
 """
+
+
+# CF-41: languages where `'` delimits a single character, never a string.
+# In Rust a bare `'` is also a lifetime (`&'static str`) or a loop label.
+CHAR_QUOTE_LANGUAGES = frozenset({"rust", "csharp", "go", "java", "c", "cpp"})
 
 
 @dataclass
@@ -127,6 +132,15 @@ class Profile:
     # it prevents the model from reinventing Program/Main/Run plumbing.
     test_style_exemplar: str = ""
     settled: Tuple[str, ...] = ()
+    # CF-41: whether `'` opens a one-character literal (`'x'`, `'\n'`) rather
+    # than a string. None derives it from `language`; set it only for a
+    # language CHAR_QUOTE_LANGUAGES does not list.
+    single_quote_is_char: Optional[bool] = None
+
+    def char_quote(self) -> bool:
+        if self.single_quote_is_char is not None:
+            return self.single_quote_is_char
+        return self.language in CHAR_QUOTE_LANGUAGES
 
     @property
     def implementer_system(self) -> str:

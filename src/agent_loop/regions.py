@@ -116,17 +116,10 @@ def _mask_block_comments(
                 continue
 
             if chars[i] in ('"', "'"):
-                quote = chars[i]
-                i += 1
-                while i < n:
-                    if chars[i] == "\\":
-                        i += 2
-                        continue
-                    if chars[i] == quote:
-                        i += 1
-                        break
-                    i += 1
-                continue
+                end = literal_end(line, i, profile.char_quote())
+                if end is not None:
+                    i = end
+                    continue
 
             if line[i: i + len(open_tok)] == open_tok:
                 in_block = True
@@ -184,26 +177,54 @@ def language_for(path: Path, profile: Profile) -> str:
     return profile.language
 
 
+def literal_end(line, i: int, char_quote: bool) -> Optional[int]:
+    """Index just past the string/char literal opening at `line[i]`, or None
+    when the quote there opens no literal.
+
+    CF-41: every reader here treated `'` as opening a literal that runs to the
+    next `'`. In Python and JS that is a string; in Rust, C#, Go, Java and C it
+    is a CHARACTER literal, one char or one escape, and in Rust a bare `'` is
+    also a lifetime or a loop label. `fn f(r: &R) -> &'static str {` therefore
+    swallowed its own `{`, and the static gate refused a valid block as
+    unbalanced for four rounds. With `char_quote`, `'` is a literal only in the
+    shape `'x'` or `'\\...'`; anything else is ordinary code.
+    """
+    n = len(line)
+    quote = line[i]
+    if quote == "'" and char_quote:
+        if i + 1 < n and line[i + 1] == "\\":
+            j = i + 2 + 1  # the escaped char itself, then scan to the close
+            while j < n and line[j] != "'":
+                j += 1
+            return min(j + 1, n)
+        if i + 2 < n and line[i + 2] == "'":
+            return i + 3
+        return None
+    j = i + 1
+    while j < n:
+        if line[j] == "\\":
+            j += 2
+            continue
+        if line[j] == quote:
+            return j + 1
+        j += 1
+    return n
+
+
 def strip_code(line: str, profile: Profile) -> str:
     """Blank out line comments and string/char literal bodies for brace counting."""
     out, i, n = [], 0, len(line)
     line_comment = profile.line_comment
+    char_quote = profile.char_quote()
     while i < n:
         c = line[i]
         if c == line_comment[0] and line[i:i + len(line_comment)] == line_comment:
             break
         if c in ('"', "'"):
-            quote = c
-            i += 1
-            while i < n:
-                if line[i] == "\\":
-                    i += 2
-                    continue
-                if line[i] == quote:
-                    i += 1
-                    break
-                i += 1
-            continue
+            end = literal_end(line, i, char_quote)
+            if end is not None:
+                i = end
+                continue
         out.append(c)
         i += 1
     return "".join(out)
@@ -576,16 +597,8 @@ def strip_code_default(line: str) -> str:
         if c == "/" and i + 1 < n and line[i + 1] == "/":
             break
         if c in ('"', "'"):
-            quote = c
-            i += 1
-            while i < n:
-                if line[i] == "\\":
-                    i += 2
-                    continue
-                if line[i] == quote:
-                    i += 1
-                    break
-                i += 1
+            # No profile, so no language: keep the historical string reading.
+            i = literal_end(line, i, char_quote=False)
             continue
         out.append(c)
         i += 1

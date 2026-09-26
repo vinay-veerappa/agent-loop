@@ -1647,3 +1647,44 @@ with `chat` stubbed at the probe's import site):
 Two mutants, both killed: skipping the refusal (2 red), and `is_retired` always false
 (3 red). Suite: 840 passed, 40 skipped. Selftest: 13/13 (it calls `run_ticket`
 directly, so it does not pass through the probe).
+
+### CF-41 (new, HIGH, FIXED) — a Rust lifetime read as an unterminated char literal
+
+Measured in tvDownloadOHLC 2026-09-26, T6 of `tickets_spine_p2`. The implementer wrote a
+valid `impl RiskBudget` containing `fn reason_str(r: &DoneReason) -> &'static str {`. The
+static gate refused it as unbalanced braces (50 open vs 51 close). All four rounds failed
+the same way on a different body each time, and the ticket ended `ARBITER_NEVER_RAN`, so
+no reviewer ever saw the code. The block was balanced; the gate was not.
+
+Every quote reader in `regions.py` (`strip_code`, `strip_code_default` and
+`_mask_block_comments`) treated `'` as opening a literal that runs to the NEXT `'`. With
+no second quote on the line, it swallowed the rest, the `{` included.
+
+- In Python and JS `'` does delimit a string.
+- In Rust, C#, Go, Java and C it delimits one character, in a fixed shape.
+- In Rust it is also a lifetime or a loop label.
+
+The same reader sets region BOUNDARIES (`find_region`, `extract_named_block`) and masks
+block comments. So a Rust region with a lifetime in it could end in the wrong place, and a
+`/*` after a lifetime went unseen. This was not only the gate's defect.
+
+**Fix.** All three readers now call one helper, `regions.literal_end`.
+- `Profile.char_quote()` decides the rule. It is derived from `language` through
+  `CHAR_QUOTE_LANGUAGES` (rust, csharp, go, java, c, cpp), and `single_quote_is_char`
+  overrides it.
+- For those languages, `'` opens a literal only in the shape `'x'` or `'\...'`; anything
+  else is code.
+- With no profile, the string reading is kept.
+
+Test: `tests/acceptance/test_cf41_rust_lifetimes_are_not_char_literals.py` (15 tests):
+- lifetimes and labels leave the brace counted;
+- the negative controls: `'{'`, `'\''`, `'\u{7B}'` and `b'{'` are still blanked, C# reads
+  as before, and a Python `'...'` string is still a string;
+- the override wins over the language;
+- the measured block passes the static gate, and a truly unbalanced one is still refused;
+- a region ends where its block ends;
+- a lifetime does not hide a block comment.
+
+5 of the 15 are red on the old code, including the region-boundary test. Mutants: the
+char rule disabled (5 red) and the one-char shape disabled (4 red); both killed. Suite:
+855 passed, 40 skipped. Selftest: 13/13.
