@@ -178,7 +178,7 @@ def run_plan(
     result: Dict[str, Any] = {"ticket": tid, "rounds": [], "plan": None, "verdict": ""}
 
     # Phase 5: inject auto-extracted settled decisions
-    effective_settled = inject_settled(profile.settled, repo)
+    effective_settled = inject_settled(profile.settled, repo, tid, profile.name)
 
     heading = "Feature to plan" if feature else "Defect to analyze"
     prompt = f"# {heading}\n\n{defect_description}\n\n"

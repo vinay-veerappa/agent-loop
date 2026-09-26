@@ -97,7 +97,7 @@ def test_phase5_inject_combines(tmp_path):
     repo = tmp_path
     save_settled(repo, "T1", ["Auto-extracted decision"])
 
-    combined = inject_settled(PROFILE.settled, repo)
+    combined = inject_settled(PROFILE.settled, repo, "T1")
     assert "Hand-curated decision 1" in combined
     assert "Auto-extracted decision" in combined
     assert combined[0] == "Hand-curated decision 1"  # hand-curated first
@@ -106,7 +106,7 @@ def test_phase5_inject_combines(tmp_path):
 def test_phase5_inject_no_auto(tmp_path):
     """inject_settled returns just profile-settled when no auto decisions."""
     repo = tmp_path
-    combined = inject_settled(("Only one",), repo)
+    combined = inject_settled(("Only one",), repo, "T1")
     assert combined == ["Only one"]
 
 

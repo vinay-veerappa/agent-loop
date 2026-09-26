@@ -99,8 +99,12 @@ def save_settled(
     repo: Path,
     ticket_id: str,
     decisions: List[str],
+    profile: Optional[str] = None,
 ) -> int:
     """Append settled decisions to the JSONL store.
+
+    Each entry records the ticket and the profile that settled it, because a
+    settlement only binds the ticket that reached it (CF-42).
 
     Line-buffered append, matching save_feedback's pattern. The previous
     implementation read the entire file, appended new entries, and wrote the
@@ -152,6 +156,8 @@ def save_settled(
                     "key": key,
                     "decision": decision,
                 }
+                if profile is not None:
+                    entry["profile"] = profile
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                 existing_keys.add(key)
                 saved += 1
@@ -230,10 +236,20 @@ def validate_settled(
     return safe, dropped
 
 
-def load_settled(repo: Path) -> List[str]:
-    """Load all settled decisions from the JSONL store.
+def load_settled(
+    repo: Path,
+    ticket_id: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> List[str]:
+    """Load settled decisions from the JSONL store, most recent first.
 
-    Returns a list of decision strings, most recent first.
+    With ``ticket_id`` only that ticket's settlements are returned, and with
+    ``profile`` only those recorded under that profile (an entry written before
+    profiles were recorded matches on the ticket alone). Without ``ticket_id``
+    the whole store is returned -- for audit, never for a prompt: CF-42 was the
+    whole store injected into every ticket, so a copier ticket's settlements
+    arbitrated a Rust exit-policy ticket, and "restates a settled decision" is
+    a REJECT criterion.
     """
     path = _settled_path(repo)
     if not path.exists():
@@ -245,6 +261,11 @@ def load_settled(repo: Path) -> List[str]:
     for line in lines:
         try:
             entry = json.loads(line)
+            if ticket_id is not None:
+                if entry.get("ticket") != ticket_id:
+                    continue
+                if profile is not None and entry.get("profile", profile) != profile:
+                    continue
             key = entry.get("key", "")
             if key in seen_keys:
                 continue
@@ -258,8 +279,16 @@ def load_settled(repo: Path) -> List[str]:
     return decisions
 
 
-def inject_settled(profile_settled: Sequence[str], repo: Path) -> List[str]:
+def inject_settled(
+    profile_settled: Sequence[str],
+    repo: Path,
+    ticket_id: str,
+    profile: Optional[str] = None,
+) -> List[str]:
     """Combine hand-curated settled decisions with auto-extracted ones.
+
+    Auto-extracted decisions are only those settled by THIS ticket under this
+    profile (CF-42); the profile's own ``settled`` applies to every ticket.
 
     Hand-curated decisions (from the profile) take precedence; auto-extracted
     ones are advisory and appended after.
@@ -268,7 +297,7 @@ def inject_settled(profile_settled: Sequence[str], repo: Path) -> List[str]:
     auto-extracted decisions are included. Older decisions stay on disk
     for auditability but are not injected into the prompt.
     """
-    auto = load_settled(repo)
+    auto = load_settled(repo, ticket_id=ticket_id, profile=profile)
     if not auto:
         return list(profile_settled)
 

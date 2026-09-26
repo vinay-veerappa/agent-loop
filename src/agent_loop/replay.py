@@ -179,7 +179,7 @@ def run_replay(
                 # one variable, so a divergence here does not add noise, it makes
                 # every flip it reports meaningless (the O2 defect, again).
                 rules=profile.arbiter_rules,
-                settled=inject_settled(profile.settled, repo),
+                settled=inject_settled(profile.settled, repo, ticket_id, profile.name),
                 round_history=_history_note(convergence),
                 prompt_override=arb_override,
             )

@@ -1020,7 +1020,7 @@ def run_ticket(
     # Phase 5: inject auto-extracted settled decisions from prior runs.
     # Hand-curated decisions in profile.settled take precedence; auto-extracted
     # ones are appended after.
-    effective_settled = inject_settled(profile.settled, repo)
+    effective_settled = inject_settled(profile.settled, repo, tid, profile.name)
     if len(effective_settled) > len(profile.settled):
         extra = len(effective_settled) - len(profile.settled)
         print(f"  [memory] {len(effective_settled)} settled decisions ({extra} from prior runs)")
@@ -1718,7 +1718,7 @@ def run_ticket(
                             for d in dropped_settled:
                                 print(f"             - {d[:120]}")
                         # Phase 5: persist arbiter-nominated settled decisions
-                        saved = save_settled(repo, tid, safe_settled)
+                        saved = save_settled(repo, tid, safe_settled, profile=profile.name)
                         if saved:
                             print(f"           [memory] saved {saved} settled decision(s) to store")
 
