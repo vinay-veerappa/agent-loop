@@ -62,6 +62,10 @@ def test_arbiter_default_is_the_measured_winner():
     bench sweep (2026-08-21, 7 models x 3 reps) measured qwen3.5 at 5.0/5
     with zero false positives, perfectly stable. If you change the model,
     re-run tests/fixtures/arbiter_bench/sweep_models.py and update the
-    numbers in config.py -- do not change it on taste."""
-    assert config.DEFAULTS.roles["arbiter"].model == "qwen3.5:cloud"
+    numbers in config.py -- do not change it on taste.
+
+    CF-40 (2026-09-26): qwen3.5 was retired by Ollama (HTTP 410). The sweep was
+    re-run on the live candidates: kimi-k3 5.0/5, 0 FP, 6 of 6 reps (shipped
+    and inverted prompts); minimax-m3 1.3/5 on the shipped path."""
+    assert config.DEFAULTS.roles["arbiter"].model == "kimi-k3:cloud"
     assert config.DEFAULTS.roles["arbiter"].think is False

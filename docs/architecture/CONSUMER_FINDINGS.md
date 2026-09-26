@@ -1586,3 +1586,41 @@ negative control that without the override every member inherits the role). Suit
 passed, 40 skipped. Selftest: 13/13.
 
 Still UNMEASURED: deepseek-v4.1-flash with thinking off on a real review.
+
+Measured since (CF-40's run, P1 T4): with thinking off, deepseek-v4.1-flash returned a
+parseable REVISE with 14 findings. So the panel had two voters on a real review.
+
+### CF-40 (new, HIGH, FIXED) — the default arbiter was retired, and CF-37's guard could not see it
+
+Measured in tvDownloadOHLC on 2026-09-26 (P1 T4). Round 1 passed every gate, the panel
+split REVISE/APPROVE, and the arbiter call failed on its first attempt:
+`HTTP 410 {"error":"qwen3.5:397b was retired at 2026-09-25"}`. The run ended
+`ARBITER_DEADLOCK` and applied nothing. Ollama retired it on the same day as
+deepseek-v4-flash (CF-37).
+
+`test_cf37_no_retired_model_is_configured.py` already checked every role, the arbiter
+included, and stayed green. It tests for the word `RETIRED` in a catalogue note, and
+nobody had written that word into qwen3.5's note. **Retirement is only as visible as the
+note that records it.** When CF-37 fixed one retired model, it fixed that instance; the
+class, a member that answers 410, is still found at call time, on a real run.
+
+A live probe of every configured member (implementer, both reviewers, arbiter,
+compactor) found qwen3.5 the only dead one. The arbiter bench was re-run on the live
+candidates (`results_sweep_2026-09-26.json`):
+
+| model | shipped prompt | inverted prompt | false positives |
+|---|---|---|---|
+| kimi-k3 | 5.0/5 (3 reps, 4-5s) | 5.0/5 (3 reps, 3-5s) | 0 |
+| minimax-m3 | 1.3/5 | 4.3/5 | 0 |
+
+Fix: the arbiter is `kimi-k3:cloud`. Its catalogue entry now lists `arbiter` as suited,
+and qwen3.5's note is marked `RETIRED`. The CF-37 negative control is parametrised over
+both retired models. The pinned-winner test and the example config are updated. kimi-k3
+shares a family with the kimi-k2.7-code implementer; the only rule enforced is
+arbiter != reviewer family.
+
+Suite: 832 passed, 40 skipped.
+
+Still open (and now the cause of two findings): a startup probe that refuses a member
+answering 410, so retirement is found before a run spends a round rather than when it
+dies inside one.

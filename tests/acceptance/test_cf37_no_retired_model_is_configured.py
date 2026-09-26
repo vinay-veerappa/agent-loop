@@ -26,9 +26,12 @@ def test_no_configured_member_is_retired(role, model):
     assert "RETIRED" not in p.note, f"{role} member {model!r} is retired: {p.note}"
 
 
-def test_the_retired_model_is_still_catalogued_as_retired():
+@pytest.mark.parametrize("model", ["deepseek-v4-flash:0731-cloud", "qwen3.5:cloud"])
+def test_the_retired_model_is_still_catalogued_as_retired(model):
     # Negative control: the check above passes vacuously if the marker is lost.
-    p = config.model_profile("deepseek-v4-flash:0731-cloud")
+    # qwen3.5 (CF-40) was the default ARBITER when it died, and this test was
+    # green throughout: retirement is only as visible as the note that records it.
+    p = config.model_profile(model)
     assert p is not None and "RETIRED" in p.note
 
 

@@ -31,7 +31,7 @@
       "think": true
     },
     "arbiter": {
-      "model": "qwen3.5:cloud",
+      "model": "kimi-k3:cloud",
       "max_tokens": 24000,
       "think": false
     },

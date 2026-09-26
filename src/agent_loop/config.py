@@ -256,10 +256,16 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     ),
     "kimi-k3:cloud": ModelProfile(
         "2.81T", 1_048_576, ("text", "vision"), True, True, 0.0, 0.0,
-        (),
-        "Largest available and a 1M context. UNMEASURED here: it failed with "
-        "HTTP errors on 3 attempts during the arbiter benchmark, so treat "
-        "availability as a risk before relying on it.",
+        ("arbiter",),
+        "Largest available and a 1M context. It failed with HTTP errors on 3 "
+        "attempts during the first arbiter benchmark, then MEASURED 5.0/5, 2s, "
+        "0 false positives, stable across 3 reps on the INVERTED arbiter prompt "
+        "(2026-08-21), and RE-MEASURED 2026-09-26: 5.0/5, 0 FP in 6 of 6 reps, "
+        "3 of them through the shipped arb.adjudicate path, 3-5s "
+        "(tests/fixtures/arbiter_bench/results_sweep_2026-09-26.json; minimax-m3 "
+        "was 1.3/5 on the shipped path in the same run). The default arbiter since 2026-09-26, when qwen3.5 was "
+        "retired (CF-40). Same family as the kimi-k2.7-code implementer; the "
+        "enforced rule is only arbiter != reviewer family.",
     ),
     "glm-5.2:cloud": ModelProfile(
         "756B", 1_000_000, ("text",), True, True, 0.0, 0.0,
@@ -324,7 +330,9 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         "INVERTED ARBITER 2026-08-21: 5.0/5 correct findings kept (3 reps), "
         "0 false positives, 6s per call, perfectly stable. The default arbiter "
         "with the inverted prompt. Different family from glm and deepseek, so "
-        "it can arbitrate any panel. Also measured fine for compaction (7/8, twice).",
+        "it can arbitrate any panel. Also measured fine for compaction (7/8, twice). "
+        "RETIRED by Ollama 2026-09-25 (HTTP 410 Gone: 'qwen3.5:397b was retired'), "
+        "found only when an arbiter call failed on a real run (CF-40). Do not configure it.",
         max_output_tokens=65536,   # MEASURED: HTTP 400 from the provider at 96000
     ),
     "mistral-large-3:675b-cloud": ModelProfile(
@@ -590,12 +598,16 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     #   mistral-large-3            3.0/5  7s  over-rejects even with inverted
     #   gemini-3.7-flash-high      3.0/5 39s  drops #2 and #5 consistently
     #
-    # qwen3.5 is the default: perfect score, different family from both glm
+    # CHANGED 2026-09-26 (CF-40): qwen3.5 was retired by Ollama (HTTP 410), so
+    # kimi-k3 -- the other 5.0/5 model from a family outside the panel -- is the
+    # default now. The paragraph below is the original rationale for qwen3.5.
+    #
+    # qwen3.5 was the default: perfect score, different family from both glm
     # and deepseek (so it can arbitrate any panel), 6s per call, and cheaper
     # than kimi-k3. deepseek-v4-flash is the budget pick (1s, cheapest) but
     # cannot arbitrate panels that include a deepseek reviewer.
     "arbiter": RoleSettings(
-        model="qwen3.5:cloud", max_tokens=24000, think=False,
+        model="kimi-k3:cloud", max_tokens=24000, think=False,
         capability="strong-reasoner",
     ),
     # Summarisation only, and its output is bounded by construction.
