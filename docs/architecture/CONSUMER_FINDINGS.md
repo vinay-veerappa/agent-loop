@@ -1688,3 +1688,39 @@ Test: `tests/acceptance/test_cf41_rust_lifetimes_are_not_char_literals.py` (15 t
 5 of the 15 are red on the old code, including the region-boundary test. Mutants: the
 char rule disabled (5 red) and the one-char shape disabled (4 red); both killed. Suite:
 855 passed, 40 skipped. Selftest: 13/13.
+
+### CF-42 (new, HIGH, FIXED) — every ticket inherited every other ticket's settled decisions
+
+**Measured** in tvDownloadOHLC on 2026-09-26. Ticket T7 (a Rust exit-policy state machine,
+profile `rust-spine`, whose `settled` is empty) was reviewed and arbitrated under five
+"already-settled decisions" about C# alias mapping and `PerTickerMatrix`. An unrelated
+copier ticket, CM2, had persisted them months earlier.
+
+`load_settled` read the whole `settled_decisions.jsonl`. `inject_settled` passed the most
+recent 20 into every review and arbiter prompt in the repo, whatever the ticket. "Restates
+a settled decision" is REJECT criterion #4. So a foreign settlement that happened to match
+a real finding would have silenced it, and the ruling would cite a decision nobody made
+for that code. On T7 none matched, which is luck, not design.
+
+Ticket ids do not separate tickets either. They are unique per tickets FILE, and this repo
+has reused `T7`.
+
+**Fix.**
+- `save_settled` records the profile.
+- `load_settled(repo, ticket_id, profile)` returns only that ticket's settlements under that
+  profile. An entry from before profiles were recorded matches on the ticket alone.
+- `inject_settled` now requires the ticket, and the loop, plan mode and replay pass it with
+  the profile. With no ticket, `load_settled` still returns the whole store, but only for
+  audit.
+
+Test: `tests/acceptance/test_cf42_settled_decisions_are_scoped_to_their_ticket.py` (6 tests):
+- a foreign ticket's settlement is not injected;
+- the same ticket still gets its own, as the negative control;
+- a colliding id under another profile is not injected;
+- a legacy entry matches on its ticket only;
+- profile-curated decisions are always kept;
+- the unscoped read is still the whole store.
+
+6 of 6 are red on the old code. Mutants: the ticket filter off, the profile filter off,
+legacy entries excluded, and `inject_settled` unscoped. All four were killed. Suite: 861
+passed, 40 skipped. Selftest: 13/13.
