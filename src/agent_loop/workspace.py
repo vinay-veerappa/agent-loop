@@ -410,10 +410,21 @@ def open_workspace(
         if gitmodules.exists():
             try:
                 _git(Path(root), "submodule", "update", "--init", "--recursive", timeout=120)
-            except WorkspaceError:
+            except (WorkspaceError, subprocess.TimeoutExpired):
                 # Network fetch may fail in offline environments; the run is
                 # not invalid, but some tests may fail for this reason alone.
-                print("  [worktree] WARNING: submodule update failed; submodule-dependent tests may be dark")
+                #
+                # CF-34: a failed update is NOT a no-op. It aborts partway and
+                # leaves every submodule it had cloned but not yet checked out
+                # at its remote's HEAD rather than the gitlink, so `status`
+                # lists each as modified and capture_baseline refuses the
+                # "dirty" worktree -- every ticket in the repo, behind a
+                # warning that described a recoverable state. deinit returns
+                # the tree to exactly what `worktree add` produced, which IS
+                # the state the warning describes.
+                _git(Path(root), "submodule", "deinit", "--all", "--force", check=False, timeout=120)
+                print("  [worktree] WARNING: submodule update failed; submodules deinitialised, "
+                      "submodule-dependent tests may be dark")
         ws = Workspace(repo=repo, root=root, base_commit=commit, ticket=ticket)
         try:
             yield ws

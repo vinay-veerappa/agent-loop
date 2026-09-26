@@ -26,9 +26,9 @@
       "think": true
     },
     "reviewer": {
-      "model": "glm-5.2:cloud",
-      "max_tokens": 48000,
-      "think": false
+      "model": "glm-5.3-flash:cloud",
+      "max_tokens": 64000,
+      "think": true
     },
     "arbiter": {
       "model": "qwen3.5:cloud",

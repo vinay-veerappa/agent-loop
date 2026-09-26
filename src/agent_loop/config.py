@@ -278,7 +278,26 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         "result and says little about summarisation, so it does not disqualify "
         "it here, but it is not evidence in its favour either. "
         "The :0731-cloud tag is the July 31 snapshot -- the bare :cloud tag "
-        "drifts and the two are not the same model at different times.",
+        "drifts and the two are not the same model at different times. "
+        "RETIRED by Ollama 2026-09-25 (HTTP 410 Gone), and the bare :cloud tag "
+        "now resolves to the same retired model (CF-37). Do not configure it.",
+    ),
+    "deepseek-v4.1-flash:cloud": ModelProfile(
+        "unreported", 1_048_576, ("text",), True, True, 0.0, 0.0,
+        ("reviewer",),
+        "Successor to deepseek-v4-flash (retired 2026-09-25). MEASURED 2026-09-26 "
+        "on a strict-JSON probe: clean content with think off AND on (53 chars of "
+        "reasoning). UNMEASURED on the reviewer bench; seated as the second "
+        "reviewer because it is the deepseek line's current flash model.",
+    ),
+    "glm-5.3-flash:cloud": ModelProfile(
+        "unreported", 1_000_000, ("text",), True, True, 0.0, 0.0,
+        ("reviewer",),
+        "Successor to glm-5.2 as primary reviewer. MEASURED 2026-09-26: with "
+        "think=False it LEAKS its reasoning into `content` (349 tokens of prose "
+        "before any answer, on a prompt demanding bare JSON), so it must run "
+        "think=True, where content is clean and reasoning is short (92 chars). "
+        "UNMEASURED on the reviewer bench.",
     ),
     "qwen3.5:cloud": ModelProfile(
         "397B", 262_144, ("text", "vision"), True, True, 0.0, 0.0,
@@ -499,9 +518,16 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # not need it, and 48000 sits far under minimax's 524288 context and glm's,
     # so it cannot fail the other way (the O42/qwen3.5 direction, where a budget
     # above the model's ceiling is refused at the API).
+    #
+    # THE PANEL CHANGED 2026-09-26 (CF-37): deepseek-v4-flash:0731 was retired by
+    # Ollama on 2026-09-25 and every panel since ran with one voter. Now
+    # glm-5.3-flash + deepseek-v4.1-flash -- still two families. think=True
+    # because glm-5.3-flash leaks reasoning into content with it off (measured,
+    # see its catalog entry). 64000, not 48000: 48000 with thinking on is the
+    # configuration that failed (test_thinking_roles_have_budgets_that_cover_reasoning).
     "reviewer": RoleSettings(
-        model="glm-5.2:cloud", max_tokens=48000, think=False, capability="fast",
-        extra_members=("deepseek-v4-flash:0731-cloud",),
+        model="glm-5.3-flash:cloud", max_tokens=64000, think=True, capability="fast",
+        extra_members=("deepseek-v4.1-flash:cloud",),
     ),
     # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
     # glm-5.2 raised six findings on the O3 patch, five of them verified correct

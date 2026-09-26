@@ -1461,3 +1461,104 @@ not a wrong verdict, but the ABSENCE of one wearing a verdict's clothes. The les
 every `all()`-over-a-collection-validity rule needs an `if not collection: refuse` sibling.
 
 **Suite: 812 passed, 36 skipped** (was 807; +5 from CF-33). **Selftest: 13/13 passed.**
+
+---
+
+### CF-34 (new, HIGH, FIXED) — a failed submodule update left the worktree dirty, so EVERY ticket was refused before a model call
+
+**Observed** 2026-09-26, tvDownloadOHLC, first ticket on a new Rust profile:
+
+```
+  [worktree] WARNING: submodule update failed; submodule-dependent tests may be dark
+  REFUSED: the test suite does not produce a parseable result summary at baseline. ...
+```
+
+The console line is cut at 200 chars; `result.json` carries the real cause: *"refusing to
+capture a test baseline from a dirty worktree"*. `third_party/PineTS` pins a commit its
+remote no longer serves, so `submodule update --init --recursive` aborts partway. Every
+submodule already cloned but not yet checked out is left at its remote's HEAD, not the
+gitlink, and `git status --porcelain` lists each as ` M`. The warning described a
+recoverable state (submodules absent); the tree was not in that state, and the dirty-tree
+guard refused it. Every ticket in the repo, on every profile, failed the same way.
+
+**Fix** (`workspace.open_workspace`): on failure, `git submodule deinit --all --force`,
+which returns the tree to exactly what `worktree add` produced. The same `except` now also
+catches `subprocess.TimeoutExpired`: the 120s cap used to escape as an uncaught exception.
+
+**Accepted test**: `tests/acceptance/test_cf34_failed_submodule_update_leaves_clean_tree.py`.
+Red without the fix (`['zbad', 'zlater'] == []`), green with it. Two traps met while
+writing it: a submodule pinned AT its remote's HEAD looks clean after the failure (a real
+pin is always behind), and a `git add -A` after `update-index --cacheinfo` silently
+re-stages the checked-out HEAD over the forged gitlink, so the update never fails.
+
+**Suite: 813 passed, 36 skipped. Selftest: 13/13.**
+
+### CF-35 (new, MEDIUM, OPEN) — Rust lifetimes are read as char literals, so a region's braces are miscounted
+
+`regions.strip_code` treats `'` as a char-literal quote and scans for a closing quote
+to the end of the line. `fn key(&self) -> &'static str {` therefore swallows its own `{`,
+the brace count goes negative inside an `impl` block, and the region ends early. Worked
+around in the consumer by writing lifetime-free signatures (`-> &str`, `Vec<u8>` instead
+of a borrowed slice). Fix: for `language == "rust"`, treat `'ident` not followed by a
+closing `'` as a lifetime, not a literal.
+
+### CF-36 (new, MEDIUM, OPEN) — no cargo parser, and the unresolved-symbol check is per file
+
+1. `parse_tests` knows only the NT8 runner and pytest, and `_DIAG` knows only MSBuild's
+   `error CS1234`. On cargo output a test run reads as "did not run", and a Rust compile
+   error reaches the model as the raw 4000-char tail. The consumer ships
+   `scripts/agent_loop_config/cargo_test_adapter.py` to translate. The consumer also found
+   that cargo needs `--no-fail-fast`: without it the first red test binary silently skips
+   every later one, and the RESULTS count shrinks with no failure line to show it.
+2. The pre-flight symbol check requires every symbol named in the spec to resolve in
+   EVERY region file. It REFUSES `Some`, `Ok` and `Err` (the prelude), and it refuses a
+   constant because it is not declared in an unrelated file. A multi-file ticket cannot
+   pass it, so `--allow-unresolved-symbols` becomes mandatory, and that turns the check off
+   for the symbols it could genuinely catch.
+
+
+### CF-37 (new, HIGH, FIXED) — the default second reviewer was retired, and a quorum of one ships as APPROVE_PARTIAL
+
+Measured in tvDownloadOHLC on 2026-09-26. Ollama retired `deepseek-v4-flash:0731-cloud`
+on 2026-09-25 and now returns `HTTP 410 Gone`. That model is the package default
+`reviewer.extra_members` (`config.py`). The bare `deepseek-v4-flash:cloud` tag now
+resolves to the same retired model, so the drift-avoiding pin and its fallback died
+together. Every panel since then has one voter.
+
+The loop handles this as it should: the member is dropped as UNREACHABLE, the run ends
+`APPROVE_PARTIAL`, and it awaits human sign-off. But the finding is printed once, mid-log.
+Nothing tells the operator that the panel will be one model on *every* run until the
+config changes. Consumer workaround: override `roles.reviewer.extra_members` with
+`deepseek-v4-pro:cloud`, which is a different family from glm; its BAD profile mark is
+as arbiter.
+
+Fixed 2026-09-26: the reviewer panel is now `glm-5.3-flash:cloud` +
+`deepseek-v4.1-flash:cloud`, still two families. The role runs with **think=True at
+64000**, because `glm-5.3-flash` with think off leaked 349 tokens of reasoning into
+`content` on a bare-JSON probe; with think on, its content is clean. The retired model
+keeps its catalogue entry, marked `RETIRED`. `test_cf37_no_retired_model_is_configured.py`
+fails if any role member, extras included, is retired, and it has a negative control
+against a lost marker. It was red before the fix.
+
+Still open: a startup probe that refuses a member answering 410. Retirement is still
+discovered by the catalogue being edited, not by the loop asking. Both new models are
+UNMEASURED on the reviewer bench.
+
+### CF-38 (new, HIGH, FIXED) — the static gate brace-checked READONLY blocks
+
+Measured in tvDownloadOHLC on 2026-09-26 (ticket T2 of `tickets_spine_p1`). The symbol scan
+auto-attached a one-line read-only context region:
+`if b.minute >= IB_START_MIN && b.minute < IB_END_MIN {`. The implementer echoed it back
+verbatim, and `check_static` counted 1 open brace and 0 closes. That failed rounds 1 and 2
+and would have failed every later round. The model could not clear it, and the only
+console output was `[static] FAIL - 1 problem(s)`, with the detail not logged.
+`apply_blocks` already skips readonly blocks (CF-31), so the gate was holding a region the
+patch never writes to a shape that region never had.
+
+Fix: `check_static` skips `op == "readonly"`. Test:
+`tests/acceptance/test_cf38_static_gate_skips_readonly_context.py`. It was red before the
+fix: 2 failed, and the negative control (an editable block is still checked) passed. The
+suite is at 816 passed, 36 skipped, and selftest at 13/13.
+
+Still open: the static problem detail is not printed to the console or written to the run
+directory. It had to be reproduced by hand.

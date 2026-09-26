@@ -78,6 +78,11 @@ def check_static(regions, blocks: Dict[str, str], strip_code_fn, profile: Profil
     problems: List[str] = []
     for r in regions:
         rid = r.id
+        # CF-38: a readonly region is never written (apply_blocks skips it,
+        # CF-31), so its echo has no shape to check. A one-line context region
+        # like `if x {` is unbalanced BY CONSTRUCTION and failed every round.
+        if getattr(r, "op", None) == "readonly":
+            continue
         if rid not in blocks:
             problems.append(f"{rid}: missing from model output")
             continue
