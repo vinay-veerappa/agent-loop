@@ -1621,6 +1621,29 @@ arbiter != reviewer family.
 
 Suite: 832 passed, 40 skipped.
 
-Still open (and now the cause of two findings): a startup probe that refuses a member
-answering 410, so retirement is found before a run spends a round rather than when it
-dies inside one.
+**The class, closed (same day, `3f8a783`):** `probe.py`. Before any round, `cli.main()`
+sends one 16-token call to every distinct model the run will call: implementer, every
+reviewer, arbiter and compactor. **HTTP 410 refuses the run** (exit 2) and names each
+model with its role. Any other failure only **warns**: the loop already degrades
+correctly when a member cannot vote, so blocking on a flaky endpoint would make the probe
+itself the outage. Retirement is read from the status code, never from the provider's
+prose. `--list` and report mode make no probe calls, and `--no-probe` or
+`AGENT_LOOP_NO_PROBE=1` skips it. `tests/conftest.py` sets that env var for the whole
+suite, because more than a dozen tests drive `main()` and none may reach a real provider.
+The budget and timeout are `provider.probe_max_tokens` and `provider.probe_timeout_secs`
+in config.py (the budget-literal gate refused them inline).
+
+Live, against Ollama: the configured set plus qwen3.5 was refused in 0.8s, naming
+`qwen3.5:cloud (arbiter)`; the current set passed in 0.9s.
+
+Test: `tests/acceptance/test_cf40_startup_probe.py` (8 tests, driving the real `main()`
+with `chat` stubbed at the probe's import site):
+- a retired arbiter, and a retired EXTRA reviewer, each refuse the run with no ticket run;
+- the negative control: an unreachable model warns and the run proceeds;
+- each distinct model is probed exactly once;
+- all three opt-outs spend no call;
+- a 404 whose prose says "retired" is not read as retirement.
+
+Two mutants, both killed: skipping the refusal (2 red), and `is_retired` always false
+(3 red). Suite: 840 passed, 40 skipped. Selftest: 13/13 (it calls `run_ticket`
+directly, so it does not pass through the probe).
