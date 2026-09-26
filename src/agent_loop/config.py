@@ -171,6 +171,14 @@ class ProviderSettings:
     num_ctx: int
     max_retries: int
     default_max_tokens: int
+    # CF-40 startup probe (probe.py): one "reply OK" call per configured model.
+    # 16 tokens is enough for "OK" with thinking off; the probe only needs the
+    # status code, and a 410 arrives before any token is generated.
+    probe_max_tokens: int = 16
+    # One attempt, so this is the whole wait for a model that never answers --
+    # and a non-answer only WARNS, so it bounds how long a flaky endpoint can
+    # delay the run, not whether the run happens.
+    probe_timeout_secs: int = 90
 
 
 @dataclass(frozen=True)

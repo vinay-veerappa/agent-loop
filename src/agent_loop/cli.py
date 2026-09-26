@@ -21,7 +21,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import config, models, profiles, regions, workspace
+from . import config, models, probe, profiles, regions, workspace
 from .loop import DEVELOPER_PROMOTABLE, PROMOTABLE, run_ticket
 from .models import DEFAULT_REGISTRY
 
@@ -904,6 +904,11 @@ def main(argv=None) -> int:
     ap.add_argument("--panel-deadline", type=int, default=0, help="wall-clock seconds for the whole panel (0 = configured value)")
     ap.add_argument("--keep-worktree", action="store_true", help="leave the worktree for post-mortem")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument(
+        "--no-probe", action="store_true",
+        help="skip the startup probe that refuses a run naming a RETIRED model (CF-40); "
+             "also AGENT_LOOP_NO_PROBE=1",
+    )
     ap.add_argument("--prune", action="store_true", help="remove worktrees left by crashed runs")
 
     # ---- modes -----------------------------------------------------------
@@ -1116,6 +1121,21 @@ def main(argv=None) -> int:
                 f"({families.pop()}), so this is one viewpoint twice. Two models "
                 "from one family miss the same things."
             )
+
+    # CF-40: a retired model used to be found when its call failed INSIDE a run,
+    # after a round had been spent. Probe every model the run will call first.
+    # --list spends no model call by contract, and report mode calls none.
+    if not (args.no_probe or args.list or args.mode == "report" or probe.disabled()):
+        try:
+            compactor = registry.get("compactor").name
+        except (KeyError, LookupError):
+            compactor = ""
+        rc = probe.check({
+            "implementer": [implementer], "reviewer": reviewers,
+            "arbiter": [arbiter], "compactor": [compactor],
+        })
+        if rc:
+            return rc
 
     if args.mode == "review":
         return _review(args, profile, reviewers, arbiter)
