@@ -159,7 +159,7 @@ def registry_from_config(cfg: "config.Config") -> ModelRegistry:
             reg.register(
                 ModelConfig(
                     member, role, rs.capability, rs.cost_per_1m_out,
-                    think=rs.think, max_tokens=rs.max_tokens,
+                    think=rs.think_for(member), max_tokens=rs.max_tokens,
                     cost_per_1m_in=rs.cost_per_1m_in,
                 )
             )

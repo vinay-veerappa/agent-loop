@@ -92,6 +92,22 @@ class RoleSettings:
     cost_per_1m_out: float = 0.0
     cost_per_1m_in: float = 0.0
     extra_members: Tuple[str, ...] = ()
+    # CF-39: members that run with thinking OFF whatever `think` says. `think`
+    # is per ROLE, but a panel mixes families that need opposite settings:
+    # glm-5.3-flash leaks its reasoning into the answer with thinking off, and
+    # deepseek-v4.1-flash with thinking on spent all 64000 tokens reasoning and
+    # returned nothing on a real review (P1 T3, 2026-09-26). A config FILE naming
+    # a non-member here is refused by `merge` -- a typo would otherwise do
+    # nothing, silently. In code, a stray name simply matches no member.
+    no_think_members: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extra_members", tuple(self.extra_members))
+        object.__setattr__(self, "no_think_members", tuple(self.no_think_members))
+
+    def think_for(self, model: str) -> bool:
+        """Whether `model` runs with thinking on in this role."""
+        return self.think and model not in self.no_think_members
 
     @property
     def all_members(self) -> Tuple[str, ...]:
@@ -287,8 +303,11 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         ("reviewer",),
         "Successor to deepseek-v4-flash (retired 2026-09-25). MEASURED 2026-09-26 "
         "on a strict-JSON probe: clean content with think off AND on (53 chars of "
-        "reasoning). UNMEASURED on the reviewer bench; seated as the second "
-        "reviewer because it is the deepseek line's current flash model.",
+        "reasoning). But on its first REAL review (P1 T3, 2026-09-26) think=True "
+        "degenerated: 227,501 chars of reasoning, eval_count=64000, empty content. "
+        "So it reviews with thinking OFF (CF-39). UNMEASURED on the reviewer bench; "
+        "seated as the second reviewer because it is the deepseek line's current "
+        "flash model.",
     ),
     "glm-5.3-flash:cloud": ModelProfile(
         "unreported", 1_000_000, ("text",), True, True, 0.0, 0.0,
@@ -525,9 +544,15 @@ _DEFAULT_ROLES: Dict[str, RoleSettings] = {
     # because glm-5.3-flash leaks reasoning into content with it off (measured,
     # see its catalog entry). 64000, not 48000: 48000 with thinking on is the
     # configuration that failed (test_thinking_roles_have_budgets_that_cover_reasoning).
+    #
+    # deepseek-v4.1-flash runs with thinking OFF (CF-39): with it on, its first
+    # real review spent the whole 64000 on 227,501 chars of reasoning and
+    # returned empty content, so the panel had one voter again. It is clean
+    # with thinking off (catalog entry).
     "reviewer": RoleSettings(
         model="glm-5.3-flash:cloud", max_tokens=64000, think=True, capability="fast",
         extra_members=("deepseek-v4.1-flash:cloud",),
+        no_think_members=("deepseek-v4.1-flash:cloud",),
     ),
     # MEASURED, 2026-08-10, not assumed. See tests/fixtures/arbiter_bench:
     # glm-5.2 raised six findings on the O3 patch, five of them verified correct
@@ -784,6 +809,26 @@ def merge(base: Config, overrides: Mapping[str, Any]) -> Config:
                 )
             roles[name] = RoleSettings(**dict(patch))
         else:
+            patch = dict(patch)
+            if "no_think_members" not in patch and ({"model", "extra_members"} & set(patch)):
+                # CF-39: an INHERITED per-member override follows the members. A
+                # consumer that reseats the panel must not have to clear a name it
+                # never wrote; only a name it writes itself is checked.
+                members = [patch.get("model", roles[name].model)]
+                members += list(patch.get("extra_members", roles[name].extra_members))
+                patch["no_think_members"] = [
+                    m for m in roles[name].no_think_members if m in members
+                ]
+            elif "no_think_members" in patch:
+                merged = replace(roles[name], **{k: v for k, v in patch.items()
+                                                 if k in ("model", "extra_members")})
+                stray = [m for m in patch["no_think_members"] if m not in merged.all_members]
+                if stray:
+                    raise ValueError(
+                        f"roles.{name}.no_think_members names model(s) that are not "
+                        f"members of this role: {', '.join(stray)}; members are "
+                        f"{', '.join(merged.all_members)}"
+                    )
             roles[name] = _merge_dataclass(roles[name], patch, f"roles.{name}")
 
     modes = dict(base.modes)

@@ -1562,3 +1562,27 @@ suite is at 816 passed, 36 skipped, and selftest at 13/13.
 
 Still open: the static problem detail is not printed to the console or written to the run
 directory. It had to be reproduced by hand.
+
+### CF-39 (new, HIGH, FIXED) — `think` was per role, so the CF-37 panel had one voter again
+
+Measured in tvDownloadOHLC on 2026-09-26 (ticket T3 of `tickets_spine_p1`). CF-37 seated
+glm-5.3-flash + deepseek-v4.1-flash with `think=True`, because glm-5.3-flash leaks its
+reasoning into `content` when thinking is off. That setting reached both members. On its
+first real review, deepseek-v4.1-flash spent the whole 64000-token budget on 227,501
+chars of reasoning (`eval_count=64000`, `done_reason=length`) and returned empty content.
+The panel ended `APPROVE_PARTIAL` on quorum 1/2, the outcome CF-37 existed to end. The
+strict-JSON probe that CF-37 relied on had shown deepseek clean with thinking on (53 chars
+of reasoning). A probe is not a review.
+
+Fix: `RoleSettings.no_think_members`, read through `think_for(model)` by both
+`review_panel` and `registry_from_config`. The shipped reviewer runs deepseek-v4.1-flash
+with thinking off; glm-5.3-flash keeps it on. An explicit `think=` argument still wins for
+every member. A config file that names a non-member is refused. An inherited entry follows
+a consumer that reseats the panel, so swapping the second reviewer does not trip over a
+name the consumer never wrote.
+
+Test: `tests/acceptance/test_cf39_reviewer_think_is_per_member.py` (8 tests, including the
+negative control that without the override every member inherits the role). Suite: 831
+passed, 40 skipped. Selftest: 13/13.
+
+Still UNMEASURED: deepseek-v4.1-flash with thinking off on a real review.

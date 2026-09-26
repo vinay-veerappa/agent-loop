@@ -581,7 +581,13 @@ def review_panel(
             "zero opinions is not a review"
         )
     cfg_role = _role_settings("reviewer")
-    think_flag = think if think is not None else (cfg_role.think if cfg_role else False)
+
+    def think_for(model: str) -> bool:
+        # CF-39: per member, not per role -- the panel mixes families that need
+        # opposite settings. An explicit `think` argument still wins for all.
+        if think is not None:
+            return think
+        return cfg_role.think_for(model) if cfg_role else False
 
     def one(model: str) -> Vote:
         t0 = time.time()
@@ -596,7 +602,7 @@ def review_panel(
                 model,
                 [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 max_tokens=budget,
-                think=think_flag,
+                think=think_for(model),
                 cache=True,
             )
         except ProviderError as exc:
