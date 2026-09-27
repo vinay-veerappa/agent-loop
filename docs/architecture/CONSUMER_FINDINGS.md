@@ -1885,6 +1885,19 @@ mistaken for a patch that did not converge.
 
 Evidence: `logs/agent_loop/T15/r{2,3,4}_build.txt` in tvDownloadOHLC.
 
+**Second instance, same day, on T16.** Rounds 1–2 were green. The round-4 candidate never got a
+test verdict, because its build hit the same `LNK1104` on `three_way-<hash>.exe`. Applied by
+hand, it passed 11/11, and a 22-mutant battery killed every mutant.
+
+**A mechanism that fits, not yet confirmed.** `Workspace.run` calls `subprocess.run(cmd,
+shell=True, timeout=...)`. On Windows, a timeout kills only the `cmd.exe` it started. `cargo`
+and the test executables it spawned are orphaned, keep running, and keep their exe locked, so
+the next round's link fails. `three_way` is the slowest test binary in the suite. To confirm,
+look for an orphaned `three_way-*.exe` while a run is in progress. If that is the cause,
+the fix is to kill the process tree on timeout: create the process with a new process group
+or a Job object and run `taskkill /T /F` on the tree. CF-46's classification is still needed
+either way.
+
 ### CF-47 (new, HIGH, OPEN) — the arbiter recommends REVISE when nothing above MINOR survives
 
 **Measured** in tvDownloadOHLC on 2026-09-27, on ticket T14 (profile `rust-spine`, JSON
