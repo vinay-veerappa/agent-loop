@@ -695,6 +695,12 @@ def check_tests(
     secs = round(time.time() - t0, 1)
 
     if not out.counted:
+        # CF-56: the implementer is handed `feedback or summary`, never
+        # `detail`, so the output's TAIL goes in the feedback. A runner that
+        # dies before its summary (an uncatchable AccessViolationException, a
+        # stack overflow, a segfault) prints its cause last, and whatever it
+        # printed before it -- per-test FAIL lines -- is evidence too.
+        tail = out.raw[-3000:].strip() or "(no output)"
         return (
             GateResult(
                 "test",
@@ -702,8 +708,10 @@ def check_tests(
                 "runner produced no parseable result summary (aborted or timed out)",
                 out.raw[-4000:],
                 secs,
-                feedback="The test runner did not finish. Its output ends without a "
-                "result summary, so no conclusion can be drawn about your patch.",
+                feedback="The test runner did not finish: its output ends without a "
+                "result summary, so the process crashed, hung or timed out. A crash "
+                "is usually caused by your patch; its cause is normally in the last "
+                "lines below. The output ends:\n" + tail,
             ),
             out,
         )

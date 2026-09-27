@@ -2136,3 +2136,24 @@ line says so; a courtesy region no longer ends a run. Enforced by
 
 The failing-shape test and the negative control are both red on the pre-fix code. Suite:
 865 passed, 40 skipped. Selftest: 13/13.
+
+### CF-56 (new, HIGH, FIXED) — a test runner that dies before its summary hides how it died from the implementer
+
+Seen on tvDownloadOHLC T26 (csharp-spinehost), 2026-09-27, round 2. The patch compiled.
+The runner printed six `[FAIL] ...: FormatException: bad kind` lines, then a P/Invoke
+call raised `System.AccessViolationException`, which .NET cannot catch, and the process
+died before `RESULTS:`. `check_tests` put that output in `GateResult.detail` and set
+`feedback` to one sentence: "no conclusion can be drawn about your patch". The
+implementer is handed `feedback or summary` (the CF-18 shape), so the model was told its
+patch had an unknown effect. The log it never saw named both of its defects and the
+crashing frame.
+
+**Fix.** On an uncounted run, `feedback` carries the last 3000 characters of the output
+and says that a crash is usually the patch's doing. Enforced by
+`tests/acceptance/test_uncounted_run_reaches_the_implementer.py` (3 tests):
+- the T26 shape (FAIL lines, then an uncatchable crash) reaches `feedback or summary`,
+  crash frame included;
+- a long output hands on only its tail;
+- the negative control: a counted run is unchanged.
+
+The first two are red on the pre-fix code. Suite: 868 passed, 40 skipped. Selftest: 13/13.
