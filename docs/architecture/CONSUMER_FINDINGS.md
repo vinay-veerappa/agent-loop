@@ -2157,3 +2157,11 @@ and says that a crash is usually the patch's doing. Enforced by
 - the negative control: a counted run is unchanged.
 
 The first two are red on the pre-fix code. Suite: 868 passed, 40 skipped. Selftest: 13/13.
+
+### CF-57 (new, LOW, FIXED) — the reasoning-exhaustion message advised the setting already in effect
+
+Measured on tvDownloadOHLC T26 (C#, 2026-09-27). The implementer role is configured `think: false` at 96000 tokens. `kimi-k2.7-code:cloud` still returned 363099 chars of thinking and empty content (`eval_count=96000`, `done_reason=length`). `providers._call_ollama` then raised "Set think=False for this role before raising max_tokens", which is the setting that was already sent. The same config had produced patches on T26's earlier runs, so the model ignores `think=False` only some of the time.
+
+**Fix:** when `think is False` was sent, the message now says so, and it names the only two levers left: retry the run, or switch to a model that honours `think=False`. Tests: `test_think_false_already_sent_is_not_the_advice`, red on the old code; and `test_think_on_still_names_think_false`, a negative control that keeps the old advice when thinking was on.
+
+**Open:** a single empty completion ends the run as `IMPLEMENTER_UNREACHABLE` with no retry, even though retrying is the one thing that has been measured to help.

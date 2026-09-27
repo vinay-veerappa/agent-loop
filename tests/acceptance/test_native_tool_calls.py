@@ -395,3 +395,42 @@ def test_a_budget_exhausted_on_reasoning_does_not_only_advise_raising_it():
         "'chars of thinking' -- an assertion the unfixed message also satisfies. "
         f"got: {msg}"
     )
+
+
+def _truncated_on_reasoning():
+    data = _ollama_response()
+    data["message"]["content"] = ""
+    data["message"]["tool_calls"] = []
+    data["message"]["thinking"] = "x" * 363099
+    data["done_reason"] = "length"
+    data["eval_count"] = 96000
+    return data
+
+
+def _call_think(data, think):
+    with patch.object(providers, "_post", return_value=data):
+        return providers._call_ollama(
+            "kimi-k2.7-code:cloud", [{"role": "user", "content": "hi"}],
+            0.1, 96000, 900, 32768, think, False,
+        )
+
+
+def test_think_false_already_sent_is_not_the_advice():
+    """CF-57. Measured on tvDownloadOHLC T26 (2026-09-27): the implementer role
+    is configured think=False, kimi-k2.7-code reasoned 363099 chars anyway, and
+    the message told the reader to "Set think=False for this role" -- the
+    setting already in effect."""
+    with pytest.raises(providers.ProviderError) as exc:
+        _call_think(_truncated_on_reasoning(), False)
+    msg = str(exc.value)
+    assert "Set think=False" not in msg, msg
+    assert "think=False WAS sent" in msg, msg
+    assert "96000" in msg, msg
+
+
+def test_think_on_still_names_think_false():
+    # Negative control: with thinking on, think=False is still the advice.
+    for think in (True, None):
+        with pytest.raises(providers.ProviderError) as exc:
+            _call_think(_truncated_on_reasoning(), think)
+        assert "Set think=False" in str(exc.value)

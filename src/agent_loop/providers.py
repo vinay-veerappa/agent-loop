@@ -348,6 +348,18 @@ def _call_ollama(model, messages, temperature, max_tokens, timeout, num_ctx, thi
             # fix for the identical failure in the reviewer role was think=False
             # (159s and no verdict, versus 21s and ten findings), so name that
             # first and offer the budget second (O60).
+            if think is False:
+                # CF-57: the advice below was printed on a request that had
+                # ALREADY sent think=False (kimi-k2.7-code, 363099 chars of
+                # thinking at 96000). It sent the reader to a setting in effect.
+                raise ProviderError(
+                    f"{model} exhausted its output budget on reasoning: {detail} "
+                    f"It produced no answer at all. think=False WAS sent and the "
+                    f"model reasoned anyway, so that setting is not the lever "
+                    f"here: retry (the same config has answered before), or give "
+                    f"this role a model that honours think=False. Raising "
+                    f"max_tokens above {max_tokens} may buy only more reasoning."
+                )
             raise ProviderError(
                 f"{model} exhausted its output budget on reasoning: {detail} "
                 f"It produced no answer at all, so it did not run out of room to "
