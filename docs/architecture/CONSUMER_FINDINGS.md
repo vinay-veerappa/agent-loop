@@ -1802,3 +1802,57 @@ prose.
 
 **Workaround used:** the ticket's spec was reworded to drop `Clone + PartialEq`
 (tvDownloadOHLC `6bdbb7c9`).
+
+### CF-45 (new, HIGH, OPEN) — no rejection criterion covers "demands what the contract does not say", so hostile-input guards ratchet
+
+**Measured** in tvDownloadOHLC on 2026-09-26, on ticket T11 (profile `rust-spine`). This is
+the Nautilus host that executes a session's order intents. All 4 rounds were green at
+193 passed / 0 failed, with all 8 acceptance tests passing. The run ended
+`MAX_ROUNDS_EXHAUSTED`, and the arbiter rejected nothing:
+
+| round | kept | rejected | fill-guard conditions in the implementation |
+|------:|-----:|---------:|---------------------------------------------:|
+| 1 | 31 | 0 | 1 |
+| 2 | 47 | 0 | 2 |
+| 3 | 27 | 0 | 4 |
+| 4 | 15 | 0 | 6 |
+
+**Mechanism.**
+1. In round 1, a reviewer asked the host to *skip* any fill whose quantity is not a
+   positive finite integer. That input is outside the ticket's contract; the venue does not
+   produce it.
+2. The arbiter kept the finding. None of its five criteria applies: the code exists, the
+   mechanism "holds", and the finding contradicts no gate.
+3. Rounds 2 and 3 asked for the guard to be tightened (NaN, fractional quantities,
+   ordering against the cast), and the implementer complied each time.
+4. In round 4, both reviewers flagged the guards themselves as defects. A legitimate fill at
+   a negative price (real on spread instruments) is now dropped, so the position never
+   updates. Error-swallowing added for the same reason drew five more findings.
+5. The loop spent its rounds adding and then objecting to the same code. In human review,
+   five defects were fixed. Three of them had been *injected* on reviewer request:
+   - fills filtered on price and quantity;
+   - swallowed submit/modify/cancel errors;
+   - a leg mapping evicted on cancel.
+
+**The missing criterion.** The arbiter prompt (`arbiter.py`, `_ARBITER_CONTRACT`) can
+reject only on four grounds: a contradicted gate, code that doesn't exist, scope, or
+mechanism. It has no ground for "the finding demands behaviour the ticket's written
+contract does not specify" or "the finding contradicts the contract". When a reviewer's
+hypothetical input is not one the contract admits, criterion 5 ("the mechanism doesn't
+hold") does not bite, because the arbiter reasons about the *code*, not about the
+admissible inputs. The round-4 rationale says so in as many words: "semantic judgments
+about contract intent that I cannot demonstrably reject."
+
+**Proposed fix (not built).**
+- Add criterion 6, **OUTSIDE THE CONTRACT**: the finding's failure needs an input or a
+  behaviour that the region the ticket marks as the contract does not admit or require.
+  The ruling must quote the contract line it relies on.
+- Negative control: a finding that the contract *does* cover (for example, "the contract
+  says every fill is passed on, and this guard drops some") must be KEPT. That was round 4's
+  real finding.
+- Separately, when round N's kept findings object to code that round N−1's kept findings
+  requested, report it as a contradiction and escalate. Do not revise again.
+
+Evidence: `logs/agent_loop/T11/r{1..4}_review_*.txt` and `r{1..4}_arbiter.txt` in
+tvDownloadOHLC, which are local only. The promoted round is `356b0602` and the review fixes
+are `8f09fdca`.
