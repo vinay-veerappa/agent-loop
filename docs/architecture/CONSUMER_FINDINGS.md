@@ -1989,3 +1989,29 @@ unresolved names the check exists to catch.
 **Proposed fix (not built).** Resolve each spec symbol against the union of every region
 file, plus the read-only context. Name the file it was found in.
 - Negative control: a name declared in no region file must still REFUSE.
+
+### CF-51 (new, MEDIUM, OPEN) — the reasoning-exhaustion diagnosis prescribes the setting already in force
+
+**Measured** in tvDownloadOHLC on 2026-09-27 with ticket T25 (profile `rust-spine`). The
+implementer role is configured `kimi-k2.7-code:cloud`, `max_tokens 96000`, `think: false`
+(in `agent_loop.config.json`, since 2026-08-11). Round 1 died `IMPLEMENTER_UNREACHABLE` with:
+`343848 chars of thinking, empty content (eval_count=96000, done_reason=length) ... Set
+think=False for this role before raising max_tokens above 96000`.
+- `think` WAS False. `providers._call_ollama` sent `payload["think"] = False`, and the
+  model reasoned anyway, into the `thinking` channel, for the whole budget.
+- The message does not know what was sent, so it prescribes the setting that just failed.
+  An operator following it changes nothing and reruns into the same wall.
+
+Two defects:
+1. **The advice ignores its own input.** When `think is False` and thinking came back
+   anyway, the message must say so. It should say that the model does not honour
+   `think=false`, and that the remedies are a different implementer (`--implementer`) or a
+   smaller ticket, not a setting.
+2. **The run summary names symbols "shipped with this candidate" when no candidate
+   exists.** The `[unresolved] 8 guessed symbol(s)` block printed after a round that
+   produced no patch. It reports the ticket's pre-flight symbol refusals as a candidate's.
+
+**Proposed fix (not built).** Thread `think` into the ProviderError text and branch on it.
+Suppress the unresolved-symbols block when `applied` is False and no patch was produced.
+- Negative control: `think=None` or `think=True` with the same response still prints the
+  current advice.
