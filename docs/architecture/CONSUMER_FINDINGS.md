@@ -1766,3 +1766,39 @@ fix was applied by hand.
 Evidence: `logs/agent_loop/T9/r4_review_deepseek-v4.1-flash_cloud.txt` and `r4_arbiter.txt`
 in tvDownloadOHLC (the `logs/agent_loop/*` entries are gitignored there; the review and
 arbiter texts are local only).
+
+### CF-44 (new, HIGH, OPEN) — CF-31's auto-attached context can anchor on a blank line and kill the ticket
+
+**Measured** in tvDownloadOHLC on 2026-09-26, on ticket T10 (profile `rust-spine`). The
+spec said that some types "implement Serialize + Deserialize + Clone + PartialEq". The
+run died before round 1 with
+`RegionError: anchor not unique (607 hits): ''` in `crates/spine/src/risk.rs`. `--list` on
+the same ticket had printed `OK` for every region.
+
+**Mechanism** (`cli._attach_readonly_context`):
+1. In `risk.rs`, `PartialEq` appears only on `#[derive(...)]` lines. The declaration
+   heuristic skips every line starting with `#`, so it finds no candidate.
+2. The fallback takes the first line that mentions the symbol (line 52). That line is not
+   unique, because every derive repeats it, so the anchor becomes
+   `lines[start - 3].rstrip()`, which is line 49.
+3. Line 49 is blank. The empty anchor matches every line in the file, and `RegionError`
+   aborts the whole ticket. The failure is in a *read-only context* region, which the
+   ticket never asked for.
+
+`--list` prints the `AUTO … attaching read-only context` line, but it never resolves the
+region it would attach. It is the only pre-flight, and it passed a ticket that cannot run.
+
+**Consequences.** Any capitalised word in a spec that the file uses only in an attribute, a
+derive or a comment, placed 3 lines below a blank line, is fatal. The trigger is ordinary
+prose.
+
+**Proposed fix (not built).**
+- The fallback anchor must be non-empty and occur exactly once in the file. Search the window
+  for such a line; if none exists, attach nothing and say so. Auto-attaching context is
+  best-effort, and a failure in it must never abort the ticket.
+- `--list` must resolve the regions it auto-attaches, exactly as a run does.
+- Negative control: a symbol with a unique declaration line still attaches, anchored on that
+  line.
+
+**Workaround used:** the ticket's spec was reworded to drop `Clone + PartialEq`
+(tvDownloadOHLC `6bdbb7c9`).
