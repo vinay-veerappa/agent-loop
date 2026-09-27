@@ -1950,3 +1950,42 @@ per member across runs, and warn once a member's drop rate passes a threshold.
 - Negative control: a member that never degenerates must never trip the warning.
 
 Evidence: `logs/agent_loop/T18/result.json` (tvDownloadOHLC `4ed56039`).
+
+### CF-49 (new, HIGH, OPEN) — the arbiter upholds every finding, including a compile error the compile gate refutes
+
+**Measured** in tvDownloadOHLC on 2026-09-27, on ticket T19 (profile `rust-spine`, the
+catalog day store). Round 4 was green on every gate: the build succeeded and all 7
+acceptance tests passed. The panel raised 13 findings. The arbiter kept **all 13**, and every
+ruling carries the same boilerplate, "[KEEP] #n: no rejection criterion met". Its rationale
+then asks the implementer to "resolve potential borrow-checker issues around
+`builder.build()` (#5, #6)". Those are two MAJOR findings claiming the patch does not
+compile, in a round whose `[compile]` gate reads `ok - build succeeded`. Human review found
+2 of the 13 real (a metadata lookup rule, an invented five-impl trait shim) and fixed both. A
+22-mutant battery then killed 20; the 2 survivors are equivalent.
+
+**Mechanism.** The arbiter is given the gate results but has no criterion that says "a
+finding contradicted by a mechanical gate is rejected". So a claim the machine already
+disproved stands on equal footing with a real one. It is the mirror of CF-47: there, the
+recommendation ignores the severities; here, the rulings ignore the evidence.
+
+**Proposed fix (not built).** Add a rejection criterion stating that a finding asserting
+the patch fails to compile, or a named test fails, is rejected when that gate is green.
+Also treat a ruling list that is 100% KEEP with identical text as a degenerate arbiter
+response, handled like `UNPARSEABLE`.
+- Negative control: a compile claim in a round whose build gate is red must still be kept.
+
+Evidence: `logs/agent_loop/T19/r4_arbiter.txt`, `r4_arbiter_prompt.md` (tvDownloadOHLC `151acce6`).
+
+### CF-50 (new, MEDIUM, OPEN) — a two-file ticket resolves spec symbols against one file only
+
+**Measured** in tvDownloadOHLC on 2026-09-27, validating ticket T26 (profile
+`csharp-spinehost`). Its regions span `SpineCore.cs` and `SpineNative.cs`. `--list` printed
+`REFUSE 'SpineJson' named in spec but not found in scripts/ninjatrader/spine/SpineNative.cs`,
+and the same for `SpineExecutor`, `SpineClock`, `SpineBackstop` and the other types. Every one
+of them is declared in `SpineCore.cs`, which is the ticket's own region file. Only
+`--allow-unresolved-symbols` lets the ticket run, and that flag also silences the REAL
+unresolved names the check exists to catch.
+
+**Proposed fix (not built).** Resolve each spec symbol against the union of every region
+file, plus the read-only context. Name the file it was found in.
+- Negative control: a name declared in no region file must still REFUSE.
