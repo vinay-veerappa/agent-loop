@@ -1724,3 +1724,45 @@ Test: `tests/acceptance/test_cf42_settled_decisions_are_scoped_to_their_ticket.p
 6 of 6 are red on the old code. Mutants: the ticket filter off, the profile filter off,
 legacy entries excluded, and `inject_settled` unscoped. All four were killed. Suite: 861
 passed, 40 skipped. Selftest: 13/13.
+
+### CF-43 (new, HIGH, OPEN) — a self-retracted BLOCKER still carries its label, and makes SHIP unreachable
+
+**Measured** in tvDownloadOHLC on 2026-09-26, on ticket T9 (profile `rust-spine`), round 4.
+All gates were green. `deepseek-v4.1-flash` returned 39 findings, and 34 of them retract
+themselves in their own text ("NOT a blocker on this path", "Correct. NOT a defect"):
+
+| label   | findings | self-retracted |
+|---------|---------:|---------------:|
+| BLOCKER |        2 |              2 |
+| MAJOR   |        8 |              8 |
+| MINOR   |       29 |             24 |
+
+The reviewer uses the finding list as a scratchpad for its trace, and the severity tag is
+written before the conclusion is.
+
+The arbiter handled the rulings correctly: it rejected all 34 under criterion 5, and its
+settled note says so. The guard after it did not. `_blocker_indices` reads only
+`Finding.severity`, so the two retracted BLOCKERs count as "BLOCKERs the arbiter
+dismissed". On this round the arbiter recommended REVISE, over one real MAJOR, so the guard
+never fired. But had that finding already been fixed, SHIP would have been converted to
+`ESCALATE`. A reviewer that retracts in-line therefore makes SHIP structurally unreachable
+on every round where it does so. That is the O28/O20 safety rule firing on noise. The
+escalation then reads as "a human must confirm a rejected blocker" when no blocker was ever
+claimed.
+
+The noise has a second cost. The one finding that held (the unspecified fallback reason
+string, a MAJOR) sat among 38 that did not. The run ended `MAX_ROUNDS_EXHAUSTED`, and the
+fix was applied by hand.
+
+**Proposed fix (not built).**
+- Before parsing severity, drop any finding whose own body concludes that it is not a
+  defect. That decision is the reviewer's own, so dropping it costs nothing. It needs a
+  negative control: a finding that says "this is NOT a defect *in X*, but Y is" must survive.
+- Alternatively, have the reviewer prompt demand the conclusion before the label.
+- Either way, `_blocker_indices` should count only the BLOCKERs the arbiter rejected on a
+  criterion other than 5 ("the finding refutes itself"), since that criterion is the one
+  case where no human judgement is being overridden.
+
+Evidence: `logs/agent_loop/T9/r4_review_deepseek-v4.1-flash_cloud.txt` and `r4_arbiter.txt`
+in tvDownloadOHLC (the `logs/agent_loop/*` entries are gitignored there; the review and
+arbiter texts are local only).
