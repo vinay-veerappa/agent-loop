@@ -1921,3 +1921,32 @@ the model's recommendation override that.
 
 Evidence: `logs/agent_loop/T14/r4_arbiter.txt` and the committed
 `logs/agent_loop/T14/result.json` (tvDownloadOHLC `799e67b1`).
+
+**Second instance** (2026-09-27, ticket T17, `rust-spine`, NT8 parquet reader). Round 4
+was green on every gate, and the arbiter recommended REVISE again. This time 43 of the 49
+findings self-refuted ("OK", "Matches", "Not a defect"), which the arbiter rejected under its
+own criterion 5. The 5 survivors were all style notes: unreachable defensive arms and struct
+placement. Human review applied the patch unchanged, and a 20-mutant battery killed 16; the 4
+survivors are equivalent. Evidence: `logs/agent_loop/T17/r4_arbiter.txt` (tvDownloadOHLC
+`edbd7c1c`).
+
+### CF-48 (new, HIGH, OPEN) — the successor panel member degenerates like the one it replaced
+
+**Measured** in tvDownloadOHLC on 2026-09-27, on ticket T18 (profile `rust-spine`).
+`deepseek-v4.1-flash:cloud` replaced the retired `deepseek-v4-flash`, and it returned **1551
+findings** against a cap of 60. That was correctly scored `UNPARSEABLE`, and the member was
+dropped. The run then ended `APPROVE_PARTIAL` on a quorum of 1/2 and needed human sign-off.
+The retired model failed the same way, measured at 373 and then 853 findings. So the
+replacement brought the same failure mode with it. Nobody measured it on the reviewer bench
+before it became the package default.
+
+**Consequence.** On a two-model panel, one degenerate member means every ticket is
+reviewed by one model, and every approval is partial. CF-23 made that survivable; it did not
+make it rare.
+
+**Proposed fix (not built).** Bench a candidate panel member for repetition before it can
+become a default: it must stay under the cap on the bench corpus. Count `UNPARSEABLE` drops
+per member across runs, and warn once a member's drop rate passes a threshold.
+- Negative control: a member that never degenerates must never trip the warning.
+
+Evidence: `logs/agent_loop/T18/result.json` (tvDownloadOHLC `4ed56039`).
