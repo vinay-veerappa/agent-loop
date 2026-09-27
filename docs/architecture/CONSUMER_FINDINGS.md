@@ -2015,3 +2015,41 @@ Two defects:
 Suppress the unresolved-symbols block when `applied` is False and no patch was produced.
 - Negative control: `think=None` or `think=True` with the same response still prints the
   current advice.
+
+### CF-52 (new, HIGH, OPEN) — context is attached for names in the spec, never for names in the regions' own signatures
+
+**Measured** in tvDownloadOHLC on 2026-09-27 with ticket T27 (profile `rust-spine`,
+`spine_verify`). The ticket ended `ARBITER_NEVER_RAN` after four rounds, three of which
+failed to compile. Each failed round guessed a different shape for a type the regions
+return:
+- r1: `Check::Fail(..)`, `Check::Pass(..)`, `Refusal { .. }` as a `Check` variant;
+- r2: `Check::fail(..)`, and fields `bar_time`, `seq` and `side` on `spine::log::InputBar`;
+- r4: `Check { passed, vacuous }`, `Refusal { detail }`, `BTreeMap` without an import.
+
+Round 3 asked in prose for the file contents. The rewritable regions' signatures are
+`pub fn v0_identity(..) -> Check` and `pub fn parse(..) -> Result<HostLog, Refusal>`, so
+`Check` and `Refusal` are declared in the SAME files, outside every region. The AUTO
+read-only context attachment (`'X' declared outside every region in F; attaching
+read-only context`) fires only for symbols the SPEC names. The spec never wrote `Check`,
+because the signature already says it.
+
+It is invisible for two reasons:
+- The pre-flight is silent about signature types. It cannot refuse what it never looks for.
+- `--allow-unresolved-symbols` is needed anyway because of CF-50's per-file false positives.
+  That also switches off the one check that would have helped.
+
+Adding the types as `readonly` regions by hand fixed the prompt. T28 and T24 had the same
+gap and were fixed before they ran: `SetupEvaluation::gate`, `Ema`, `open_envelope`;
+`SessionHost::from_registry`, `day_feed`, `Day`.
+
+**Proposed fix (not built).** Extract the type and path identifiers from every rewritable
+region's signature (return type, parameter types, `impl` target). Resolve them like spec
+symbols, including the AUTO attach for a declaration outside every region, and follow
+cross-file imports one hop. Print what was attached.
+- Negative control: a signature using only std or prelude types attaches nothing.
+
+**Related, same session:** a `readonly` region in a test file (`tests/venue.rs`, as a
+worked example of driving an engine) makes `--list` print `[REFUSED: targets the
+verifier]` for the whole ticket. Refusing to REWRITE the verifier is right. Refusing to
+SHOW it read-only removes the only working example of an external API when none exists
+outside the tests. The workaround was to transcribe the call shapes into the spec.
