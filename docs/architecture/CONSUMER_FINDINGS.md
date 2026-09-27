@@ -1856,3 +1856,55 @@ about contract intent that I cannot demonstrably reject."
 Evidence: `logs/agent_loop/T11/r{1..4}_review_*.txt` and `r{1..4}_arbiter.txt` in
 tvDownloadOHLC, which are local only. The promoted round is `356b0602` and the review fixes
 are `8f09fdca`.
+
+### CF-46 (new, MEDIUM, OPEN) — a locked link output is scored as the implementer's compile failure
+
+**Measured** in tvDownloadOHLC on 2026-09-27, on ticket T15 (profile `rust-spine`). Round 1
+failed to compile on a real defect (a missing `chrono::Datelike` import). Rounds 2, 3 and 4 all
+failed with `error: linking with link.exe failed: exit code: 1104` / `LNK1104: cannot open
+file '...\agent-loop-cargo-target\debug\deps\three_way-<hash>.exe'`. That exe belongs to a
+test binary the ticket never touched. The profile's `--target-dir` is a shared cache outside
+the worktree, and something held the previous build's exe open. By the time anyone looked,
+no process was running from that directory, so it was transient: a lingering test process, or
+an antivirus scan of the freshly linked file. The run ended `ARBITER_NEVER_RAN`. Applied by
+hand, the round-4 patch compiled and passed all 9 acceptance tests, and a 16-mutant battery
+killed every mutant.
+
+**Mechanism.** The compile gate scores any non-zero `cargo build` as `build FAILED` and hands
+the log to the implementer as feedback. A linker that cannot open its output file says
+nothing about the patch. The implementer cannot fix it, so each round it was asked to try
+again was spent on a failure that was not its own.
+
+**Proposed fix (not built).** Classify an OS-level output-lock failure as an
+**infrastructure** result, not a candidate result: `LNK1104` or `os error 32` on a path under
+the target dir. Retry the gate after a short backoff without spending a round. If it persists,
+end the run `INFRA_ERROR`, a verdict distinct from `MAX_ROUNDS_EXHAUSTED`, so it is never
+mistaken for a patch that did not converge.
+- Negative control: a genuine link error, such as an unresolved external symbol (`LNK2019`),
+  must still reach the implementer.
+
+Evidence: `logs/agent_loop/T15/r{2,3,4}_build.txt` in tvDownloadOHLC.
+
+### CF-47 (new, HIGH, OPEN) — the arbiter recommends REVISE when nothing above MINOR survives
+
+**Measured** in tvDownloadOHLC on 2026-09-27, on ticket T14 (profile `rust-spine`, JSON
+schemas). Rounds 2–4 were green on every gate: 219 passed, 0 failed, all 7 acceptance
+tests green. The round-4 arbiter rejected the only three BLOCKER/MAJOR findings, because each
+self-refutes. It kept 12 findings, all MINOR, and recommended **REVISE**. Its own rationale
+says: "None of the survivors allege a wrong decision, a failed gate, or a reachable panic;
+they are quality/coverage notes for the implementer and human reviewer to weigh." The run
+ended `MAX_ROUNDS_EXHAUSTED`. Human review applied the round-4 patch unchanged, and a
+17-mutant battery killed 16; the survivor is an equivalent mutant.
+
+**Mechanism.** Nothing ties the recommendation to the severity of what survives. A MINOR
+is, by the arbiter's own description, a note for the human, yet it blocks promotion exactly
+as a BLOCKER does. This differs from CF-43, where a self-retracted BLOCKER keeps its label.
+Here the labels are right and the recommendation ignores them.
+
+**Proposed fix (not built).** Derive SHIP mechanically when every gate is green and no
+upheld finding is above MINOR. Carry the MINORs into the result as review notes. Do not let
+the model's recommendation override that.
+- Negative control: one upheld MAJOR must still yield REVISE.
+
+Evidence: `logs/agent_loop/T14/r4_arbiter.txt` and the committed
+`logs/agent_loop/T14/result.json` (tvDownloadOHLC `799e67b1`).
