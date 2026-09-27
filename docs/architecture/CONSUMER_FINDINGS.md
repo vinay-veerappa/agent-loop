@@ -2113,3 +2113,26 @@ Two defects:
   the prose.
 - Negative control: a test command that is genuinely broken, with the build green,
   still ends `TICKET_REJECTED` and shows its output.
+
+### CF-55 (new, HIGH, FIXED) — an auto-attached read-only context region could have a non-unique anchor, and that killed the run
+
+Seen on tvDownloadOHLC T26 (csharp-spinehost), 2026-09-27, right after the CF-54
+workaround gave a correct baseline. `_attach_readonly_context` (CF-31) anchors the
+region on the declaration line, or, when that line repeats, on the first line of a
+three-line window, and it never checked that fallback. In C# that line is routinely
+`/// <summary>`, which has 14 hits in `SpineCore.cs`. The region then raised
+`RegionError: anchor not unique` and the run ended `ERROR` before round 1, all for a
+region that is only a courtesy.
+
+**Fix.** `_unique_anchor_near` returns the declaration line if it is unique. Otherwise
+it returns the nearest non-blank line that occurs once, searching within 20 lines and
+trying above before below. If there is none, the context is not attached and a `SKIP`
+line says so; a courtesy region no longer ends a run. Enforced by
+`tests/test_readonly_context_anchor.py` (4 tests):
+- the shape that failed (a repeated declaration whose window starts on `/// <summary>`);
+- the declaration line is preferred when unique;
+- the nearest unique line is chosen;
+- the negative control: no unique line, nothing attached.
+
+The failing-shape test and the negative control are both red on the pre-fix code. Suite:
+865 passed, 40 skipped. Selftest: 13/13.

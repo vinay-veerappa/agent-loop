@@ -121,6 +121,23 @@ def _looks_like_code(token: str, spec: str = "") -> bool:
     return False
 
 
+def _unique_anchor_near(src: str, lines: list, start: int, anchor_line: str,
+                        reach: int = 20):
+    """The declaration line if it occurs once in `src`, else the non-blank line
+    nearest to it (within `reach` lines, above before below at equal distance)
+    that occurs once; None when there is none."""
+    first = anchor_line.strip()
+    if first and src.count(first) == 1:
+        return first
+    for d in range(1, reach + 1):
+        for i in (start - d, start + d):
+            if 0 <= i < len(lines):
+                cand = lines[i].strip()
+                if cand and src.count(cand) == 1:
+                    return cand
+    return None
+
+
 def _attach_readonly_context(ticket: dict, file_path: str, symbol: str, profile: profiles.Profile) -> None:
     """CF-31: add a readonly region for the declaration site of `symbol` in `file_path`.
 
@@ -169,11 +186,17 @@ def _attach_readonly_context(ticket: dict, file_path: str, symbol: str, profile:
     context_lines = 3
     decl_start = max(0, start - context_lines)
     decl_end = min(len(lines) - 1, start + context_lines)
-    # Pick a unique anchor: prefer the exact declaration line if it is unique,
-    # otherwise the first line of the window.
-    anchor = anchor_line.strip()
-    if src.count(anchor) != 1:
-        anchor = lines[decl_start].rstrip()
+    # Pick a unique anchor: the declaration line if it is unique, otherwise the
+    # nearest line to it that is. CF-55: the fallback used to be the window's
+    # first line UNCHECKED, which in a C# file is routinely `/// <summary>`
+    # (14 hits in SpineCore.cs) -- and a non-unique anchor raises RegionError,
+    # which ended the whole run before round 1 for a context region that is
+    # only ever a courtesy. No unique line nearby -> attach nothing.
+    anchor = _unique_anchor_near(src, lines, start, anchor_line)
+    if anchor is None:
+        print(f"      SKIP  no unique line near the declaration of '{symbol}' in "
+              f"{file_path}; read-only context not attached", file=sys.stderr)
+        return
     readonly_id = f"{ticket['id']}-ctx-{symbol}-{len(ticket.get('regions', []))}"
     ticket.setdefault("regions", []).append({
         "id": readonly_id,
