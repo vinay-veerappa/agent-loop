@@ -2053,3 +2053,35 @@ worked example of driving an engine) makes `--list` print `[REFUSED: targets the
 verifier]` for the whole ticket. Refusing to REWRITE the verifier is right. Refusing to
 SHOW it read-only removes the only working example of an external API when none exists
 outside the tests. The workaround was to transcribe the call shapes into the spec.
+
+### CF-53 (new, HIGH, OPEN) — one transient `git diff` failure discards a finished run, and the error keeps no evidence
+
+Seen on tvDownloadOHLC T28 (rust-spine), 2026-09-27. Round 3 was green at every gate:
+compile, tests (13/13 acceptance), lock-scope. The panel then ruled REVISE. The next
+`Workspace.diff()` call returned nonzero with EMPTY stderr, and the run ended
+`ERROR: WorkspaceError: git diff failed: ` with `applied=False`. No `final.patch`,
+`final_blocks.json` or `result.json` was written. Re-running `git diff` by hand in the
+same worktree minutes later returned 0 and the correct one-file diff.
+
+Three defects:
+- **The error keeps nothing to diagnose it with.** `workspace.py` raises with stderr
+  only. The returncode, the command and stdout are dropped, so an empty-stderr failure
+  prints `git diff failed: ` and the cause is unknowable after the fact.
+- **One transient failure costs the whole run.** Three model rounds and a panel review
+  were spent. The cause is a read-only operation on a worktree the run owns. One retry,
+  or writing the round's blocks to `final_blocks.json` BEFORE diffing, would have kept the
+  artifact. The code was recovered only because the worktree directory survived.
+- **The cleanup message is false.** `remove_worktree` runs `git worktree remove --force`
+  with `check=False`, then prints "git no longer tracks it" for ANY non-empty directory
+  left behind. `git worktree list` still listed `agentloop-T28-16548`. The removal failed
+  (plausibly the same transient cause), and the message says the opposite of what
+  happened.
+
+**Proposed fix (not built).**
+- Include `returncode`, `cmd` and stdout in every `WorkspaceError`.
+- Persist the last green round's blocks before any post-panel git operation.
+- Retry `git diff` once.
+- In `remove_worktree`, check the remove's returncode and report "git still tracks it"
+  when it failed.
+- Negative control: a genuinely failing diff (a corrupt index) still ends ERROR, with
+  the returncode printed.
