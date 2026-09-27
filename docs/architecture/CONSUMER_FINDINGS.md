@@ -2085,3 +2085,31 @@ Three defects:
   when it failed.
 - Negative control: a genuinely failing diff (a corrupt index) still ends ERROR, with
   the returncode printed.
+
+### CF-54 (new, MEDIUM, OPEN) — the baseline runs the test command without the build command, and the refusal is cut before its cause
+
+Seen on tvDownloadOHLC T26 (csharp-spinehost), 2026-09-27. The run ended
+`TICKET_REJECTED` before any model call: "the test suite does not produce a parseable
+result summary at baseline". The profile's `test_cmd` is `dotnet run --no-build`. In the
+fresh worktree nothing had been built, so dotnet printed `cannot find the file ...
+SpineHostTests.exe`. The same command in the main checkout gave the correct red baseline
+(`RESULTS: Passed = 0, Failed = 18`).
+
+Two defects:
+- **`capture_baseline` runs `test_cmd` alone.** Every round runs `build_cmd` before
+  `test_cmd`; the baseline does not. A profile whose test command relies on its build
+  command therefore passes every round and fails at baseline. Here that happens on
+  the first worktree it ever gets. The consumer worked around it: the test command now
+  builds what it runs (tvDownloadOHLC `9d043a17`).
+- **The console refusal is cut at 200 characters**, which is exactly where the cause
+  starts. `print(f"  REFUSED: {result['detail'][:200]}")` ends at `Baseline error: `.
+  The dotnet message is in `result.json` only, and the console reads as though the
+  error were empty.
+
+**Proposed fix (not built).**
+- Run `profile.build_cmd` in `capture_baseline` before `test_cmd`. A build failure is
+  its own refusal ("baseline does not build"), not "no parseable summary".
+- Print the refusal's cause, i.e. the tail of the raw output, rather than a prefix of
+  the prose.
+- Negative control: a test command that is genuinely broken, with the build green,
+  still ends `TICKET_REJECTED` and shows its output.
