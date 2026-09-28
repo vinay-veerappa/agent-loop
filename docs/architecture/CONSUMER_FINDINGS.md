@@ -2173,3 +2173,43 @@ Measured on tvDownloadOHLC T26 (C#, 2026-09-27). A region begins at its anchor l
 **Fix:** `regions.leading_comment(region, profile)` walks up from the line above the region, over line comments (`profile.line_comment`, which covers `///` and `//!`) and attribute lines (`[Attr]`, `#[attr]`, `@decorator`). It stops at the first blank line or code. `build_implement_prompt` shows the result READ-ONLY above the region's code. The region's span, and so what is replaced, is unchanged. An attribute-only block, a `create` region, and a region with nothing above it all get none. Past `LEADING_COMMENT_MAX_LINES` (120), the lines nearest the declaration are kept and the cut is stated. Tests: `tests/acceptance/test_cf58_leading_doc_reaches_the_implementer.py` (7 tests; 5 red on the old code). Mutation battery: 8/8 killed.
 
 **Open:** block comments (`/** */`) above a declaration are not read. The reviewer prompt shows the diff, not the doc.
+
+### CF-59 (new, HIGH, OPEN) — a red acceptance test that ERRORs in its fixture reads as a broken suite
+
+Measured on tvDownloadOHLC T43 (python-tvdownloadohlc, 2026-09-28). The acceptance test
+module had a fixture that called the stub loader during setup:
+`yield rb.load_risk_bindings()`. The stub raises `NotImplementedError`, so pytest reported
+the two tests using that fixture as `ERROR` rather than `FAILED`. The baseline gate counted
+them as "2 suite-level error(s)" and ended the run `TICKET_REJECTED` with "the test command is
+broken independently of any patch". That was wrong: the suite was fine, and those two
+tests were simply red. A stub that raises is the normal test-first shape. Whether the test
+FAILs or ERRORs depends only on whether the first call sits in a fixture or in the test
+body. Workaround used: load inside the test body (`46de196f` in tvDownloadOHLC).
+
+**Wanted:** an ERROR whose node id is an acceptance test (or is in the ticket's test file)
+counts as red, not as a suite-level error. Collection errors and errors in other files
+stay suite-level.
+
+### CF-60 (new, MEDIUM, OPEN) — `final.patch` carries tracked `.pyc` binaries
+
+Measured on tvDownloadOHLC T43, 2026-09-28. The consumer repo tracks some
+`__pycache__/*.pyc` files (`scripts/libs_py/data/__pycache__/`). Running the test gate in the
+worktree rewrote them, and the candidate diff included them as binary hunks without a full
+index line. `git apply logs/agent_loop/T43/final.patch` then failed outright ("cannot apply
+binary patch ... without full index line"), and only `git apply --include=<region file>`
+applied the patch. The patch should contain only files the implementer edited: the region
+files, plus any files a `create` region names.
+
+### CF-61 (new, HIGH, OPEN) — a later round can widen the contract to satisfy a reviewer
+
+Measured on tvDownloadOHLC T42 (rust-spine, 2026-09-28), which ended `NOT_CONVERGING`. The
+panel returned REVISE three times. In round 3, the implementer widened a spec'd rule to
+satisfy a reviewer: the P&L allowance was granted when EITHER side's pack had a limit leg,
+where the spec said the REFERENCE's pack only. The acceptance tests did not discriminate
+between the two readings until I added one. The loop has no check that a later round keeps
+what the spec states, so review pressure can move a patch away from its own spec while
+every gate stays green. Arbitrated and fixed by hand.
+
+Also this session: `deepseek-v4.1-flash:cloud` degenerated again on T43, returning 1187
+findings against a cap of 60, and was dropped (quorum 1/2, `APPROVE_PARTIAL`). That is the
+same shape as the retired `deepseek-v4-flash`.
