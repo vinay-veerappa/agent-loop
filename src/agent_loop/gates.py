@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -522,6 +522,49 @@ def parse_tests(output: str) -> TestOutcome:
         )
 
     return TestOutcome(failures=failures, ran=False, raw=output)
+
+
+def reclassify_suite_errors(outcome: TestOutcome, expect_green: Sequence[str]) -> TestOutcome:
+    """CF-59: split reported pytest ERRORs into the ticket's own acceptance
+    tests and everything else.
+
+    Whether a red acceptance test shows up as pytest FAILED or ERROR depends
+    only on whether its first call into unimplemented code sits in a fixture
+    (ERROR, during setup) or the test body (FAILED) -- both are the ordinary
+    test-first shape, not a broken suite. An ERROR whose node id matches an
+    `expect_green` entry, or whose file also holds one, is reclassified as an
+    ordinary red test. Collection errors (no node id at all -- pytest never
+    got as far as naming a test) and ERRORs in unrelated files stay
+    suite-level, because those really did leave the suite unable to report a
+    verdict on the tests they never reached.
+    """
+    if not expect_green or not outcome.errors:
+        return outcome
+    node_ids = [m.group("msg") for m in _ERROR_PYTEST.finditer(outcome.raw)]
+    if not node_ids:
+        return outcome
+    expect_files = {t.split("::", 1)[0] for t in expect_green if "::" in t}
+    related = sum(
+        1
+        for node_id in node_ids
+        # A collection error's "node id" is just a file path -- no "::" --
+        # which must never equal a test-file match by coincidence; only a
+        # genuine per-test node id can be related.
+        if "::" in node_id
+        and (
+            any(names_match(t, node_id) for t in expect_green)
+            or node_id.split("::", 1)[0] in expect_files
+        )
+    )
+    if not related:
+        return outcome
+    remaining = max(outcome.errors - related, 0)
+    # If every error is accounted for (no unmatched collection error hiding
+    # behind the count) and all of them are related, the run DID reach and
+    # report a verdict on the tests it collected -- it can serve as a
+    # baseline even with no separate passed/failed keyword in the summary.
+    ran = outcome.ran or (remaining == 0 and related == len(node_ids))
+    return replace(outcome, errors=remaining, ran=ran)
 
 
 def run_tests(cmd: str, repo: Path, timeout: int = 900) -> TestOutcome:

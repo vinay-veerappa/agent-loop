@@ -1041,7 +1041,13 @@ def run_ticket(
         print(f"  [worktree] {ws.root.name} @ {ws.base_commit[:8]}")
         if profile.test_cmd:
             try:
-                workspace.capture_baseline(ws, profile.test_cmd, gates.parse_tests)
+                # CF-59: needed here (not just at line ~1093) so an ERROR in
+                # one of the ticket's own acceptance tests is read as a red
+                # test, not a broken suite, before the baseline is even judged.
+                workspace.capture_baseline(
+                    ws, profile.test_cmd, gates.parse_tests,
+                    expect_green=ticket.get("expect_green", ()),
+                )
             except workspace.WorkspaceError as exc:
                 # O64: distinguish "suite doesn't build" from "tests are green."
                 # The old code had one message for three causes:
@@ -1910,10 +1916,16 @@ def run_ticket(
             # "Patch for review: None" (O56). Reverting first also means apply
             # always splices into the original line numbers the regions were
             # resolved against.
-            ws.revert(sorted({r.file for r in regs}))
+            region_files = sorted({r.file for r in regs})
+            ws.revert(region_files)
             _apply_regions(ws, regs, export_blocks)
             if promotable:
-                patch = ws.export_patch(art / "final.patch")
+                # CF-60: restrict the exported patch to the region files (and
+                # any `create` region's file -- Region.file already names it),
+                # not the whole worktree diff. Otherwise a tracked file the
+                # gate's own test run rewrote (e.g. a `.pyc`) rides along as an
+                # unapplyable binary hunk.
+                patch = ws.export_patch(art / "final.patch", paths=region_files)
                 if apply:
                     moved = ws.promote(sorted({r.file for r in regs}))
                     result["applied"] = True
@@ -1929,8 +1941,9 @@ def run_ticket(
                 # Write a readable diff even on failure: final_blocks.json is
                 # JSON-escaped C# and unreadable, and a human has to decide what
                 # happens next. The candidate is already in place above.
-                patch = ws.export_patch(art / "final.patch")
-                ws.revert(sorted({r.file for r in regs}))
+                # CF-60: same region-file restriction as the promotable branch.
+                patch = ws.export_patch(art / "final.patch", paths=region_files)
+                ws.revert(region_files)
                 if final in ("ARBITER_SHIP", "APPROVE_PARTIAL"):
                     # Deliberately not auto-applied. The arbiter filters and
                     # recommends; a human signs off. Same for a quorum-only

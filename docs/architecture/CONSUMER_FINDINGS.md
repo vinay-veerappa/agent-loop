@@ -2174,7 +2174,7 @@ Measured on tvDownloadOHLC T26 (C#, 2026-09-27). A region begins at its anchor l
 
 **Open:** block comments (`/** */`) above a declaration are not read. The reviewer prompt shows the diff, not the doc.
 
-### CF-59 (new, HIGH, OPEN) — a red acceptance test that ERRORs in its fixture reads as a broken suite
+### CF-59 (new, HIGH, FIXED) — a red acceptance test that ERRORs in its fixture reads as a broken suite
 
 Measured on tvDownloadOHLC T43 (python-tvdownloadohlc, 2026-09-28). The acceptance test
 module had a fixture that called the stub loader during setup:
@@ -2190,7 +2190,23 @@ body. Workaround used: load inside the test body (`46de196f` in tvDownloadOHLC).
 counts as red, not as a suite-level error. Collection errors and errors in other files
 stay suite-level.
 
-### CF-60 (new, MEDIUM, OPEN) — `final.patch` carries tracked `.pyc` binaries
+**Fix.** `gates.reclassify_suite_errors(outcome, expect_green)` reads the pytest ERROR
+node ids out of the raw output; one whose node id matches an `expect_green` entry, or
+whose file also holds one, is moved off the suite-level error count and left in
+`failures` as an ordinary red test. A "node id" with no `::` (a genuine collection
+error) is never eligible, so it stays suite-level regardless of what `expect_green`
+names. `workspace.capture_baseline` now takes `expect_green` and applies this before
+deciding whether to refuse the ticket; `loop.py` passes `ticket.get("expect_green", ())`
+at the baseline call site (moved earlier than its previous use, so the classification
+is available at the point the baseline is judged). Enforced by
+`tests/acceptance/test_cf59_error_in_acceptance_test_is_red.py` (4 tests, all red on the
+pre-fix code): the T43 shape (ERROR node id names an expect_green test); the "same file"
+half of the spec (ERROR in a file that holds a *different* expect_green test); and two
+negative controls — an ERROR in a file expect_green never names, and a genuine
+collection error — both of which must still end the run. Suite: 883 passed, 40 skipped.
+Selftest: 13/13.
+
+### CF-60 (new, MEDIUM, FIXED) — `final.patch` carries tracked `.pyc` binaries
 
 Measured on tvDownloadOHLC T43, 2026-09-28. The consumer repo tracks some
 `__pycache__/*.pyc` files (`scripts/libs_py/data/__pycache__/`). Running the test gate in the
@@ -2199,6 +2215,20 @@ index line. `git apply logs/agent_loop/T43/final.patch` then failed outright ("c
 binary patch ... without full index line"), and only `git apply --include=<region file>`
 applied the patch. The patch should contain only files the implementer edited: the region
 files, plus any files a `create` region names.
+
+**Fix.** `Workspace.export_patch` and `Workspace.diff` now take an optional `paths`,
+forwarded to `git diff -- <paths>`. `loop.py`'s two `export_patch` call sites (the
+promotable branch and the failed-gate branch) pass `sorted({r.file for r in regs})` --
+the region files, which already include a `create` region's own file since
+`Region.file` names it regardless of `op`. Developer mode's diff (`driver.py`) is
+restricted the same way, to the `edited` list its tool calls already track (and is
+empty, not unrestricted, when nothing was edited). Enforced by
+`tests/acceptance/test_cf60_final_patch_scoped_to_edited_files.py` (2 tests): a tracked
+binary file rewritten alongside a region edit is absent from `final.patch` when
+`export_patch` is given the edited-files list (red on the pre-fix code, which had no
+`paths` parameter at all); negative control proves the same scenario DOES leak the
+unrelated file when `export_patch` is called unrestricted, so the positive assertion is
+discriminating. Suite: 883 passed, 40 skipped. Selftest: 13/13.
 
 ### CF-61 (new, HIGH, OPEN) — a later round can widen the contract to satisfy a reviewer
 

@@ -467,7 +467,11 @@ def _run_turns(
 
     # After the loop: run gate ladder on the diff
     if result["verdict"] == "DONE":
-        diff = ws.diff()
+        # CF-60: restrict the diff to the files this run's tool calls actually
+        # touched. An unrestricted `git diff` picks up anything else the gate
+        # ladder rewrote in the worktree (a tracked `.pyc`, for instance),
+        # which rides along in `final.patch` as an unapplyable binary hunk.
+        diff = ws.diff(paths=edited) if edited else ""
         result["edited"] = list(edited)
         if diff.strip():
             patch_path = art / "final.patch"

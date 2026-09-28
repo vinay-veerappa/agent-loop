@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
+from . import gates
 from ._io import write_text_verbatim
 
 
@@ -221,11 +222,21 @@ class Workspace:
             )
         return proc.stdout.decode("utf-8", errors="replace")
 
-    def export_patch(self, dest: Path) -> Optional[Path]:
+    def export_patch(self, dest: Path, paths: Sequence[str] | None = None) -> Optional[Path]:
         """Write the worktree's diff so a human arbiter can read the change in
         one file. `final_blocks.json` is JSON-escaped C# and unreadable; the
-        arbiter is the last gate and deserves a real diff."""
-        d = self.diff()
+        arbiter is the last gate and deserves a real diff.
+
+        CF-60: *paths*, when given, restricts the diff to the files the
+        implementer actually edited (the ticket's region files, and any file a
+        `create` region names). Without it, anything else the test run
+        modified in the worktree -- a tracked `__pycache__/*.pyc` the gate's
+        own `pytest` invocation rewrote, for instance -- rides along as a
+        binary hunk with no full index line, and `git apply final.patch`
+        rejects the whole patch outright even though the implementer's own
+        hunks are perfectly applicable.
+        """
+        d = self.diff(paths)
         if not d.strip():
             return None
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -435,7 +446,13 @@ def open_workspace(
                 prune(repo, str(root))
 
 
-def capture_baseline(ws: Workspace, test_cmd: str, parse_tests, timeout: int = 900) -> None:
+def capture_baseline(
+    ws: Workspace,
+    test_cmd: str,
+    parse_tests,
+    timeout: int = 900,
+    expect_green: Sequence[str] = (),
+) -> None:
     """Freeze the expected-failure set BEFORE any candidate is applied.
 
     Recomputing this mid-run would let a patch that breaks a test simply widen
@@ -449,6 +466,13 @@ def capture_baseline(ws: Workspace, test_cmd: str, parse_tests, timeout: int = 9
         )
     _, out = ws.run(test_cmd, timeout=timeout)
     outcome = parse_tests(out)
+    # CF-59: an ERROR whose node id is one of the ticket's own acceptance
+    # tests (or lives in a file that holds one) is the ordinary test-first
+    # shape -- a fixture calling unimplemented code errors instead of
+    # failing, depending only on whether the call sits in the fixture or the
+    # test body. Reclassify those before deciding whether the suite is broken.
+    if expect_green:
+        outcome = gates.reclassify_suite_errors(outcome, expect_green)
     # Errors first: an errored run DID produce a summary, so reporting it as
     # "no parseable summary" would send the reader looking for the wrong fault.
     # A collection or fixture error never reported a verdict on the tests it did
