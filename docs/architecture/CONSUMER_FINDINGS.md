@@ -2165,3 +2165,11 @@ Measured on tvDownloadOHLC T26 (C#, 2026-09-27). The implementer role is configu
 **Fix:** when `think is False` was sent, the message now says so, and it names the only two levers left: retry the run, or switch to a model that honours `think=False`. Tests: `test_think_false_already_sent_is_not_the_advice`, red on the old code; and `test_think_on_still_names_think_false`, a negative control that keeps the old advice when thinking was on.
 
 **Open:** a single empty completion ends the run as `IMPLEMENTER_UNREACHABLE` with no retry, even though retrying is the one thing that has been measured to help.
+
+### CF-58 (new, HIGH, FIXED) — a region's doc comment, usually its contract, never reached the implementer
+
+Measured on tvDownloadOHLC T26 (C#, 2026-09-27). A region begins at its anchor line, so the comment block directly ABOVE the anchored declaration sits outside the region's span. The implement prompt showed only the span. In `SpineCore.cs`, the `/// <summary>` above `public sealed class SpineIntent` is the only place the intent wire form is written down (`"order":{"type":"stop_market","price":p}`). `00_implement_prompt.md` contained no `stop_market`. Rounds 3 and 4 parsed `order` as a string, and 8 acceptance tests stayed red on `FormatException: order not a string` until `ARBITER_NEVER_RAN`. Choosing a doc line as the anchor instead is not a workaround: every `/// <summary>` line is identical, so the anchor is not unique (T26b died on exactly that).
+
+**Fix:** `regions.leading_comment(region, profile)` walks up from the line above the region, over line comments (`profile.line_comment`, which covers `///` and `//!`) and attribute lines (`[Attr]`, `#[attr]`, `@decorator`). It stops at the first blank line or code. `build_implement_prompt` shows the result READ-ONLY above the region's code. The region's span, and so what is replaced, is unchanged. An attribute-only block, a `create` region, and a region with nothing above it all get none. Past `LEADING_COMMENT_MAX_LINES` (120), the lines nearest the declaration are kept and the cut is stated. Tests: `tests/acceptance/test_cf58_leading_doc_reaches_the_implementer.py` (7 tests; 5 red on the old code). Mutation battery: 8/8 killed.
+
+**Open:** block comments (`/** */`) above a declaration are not read. The reviewer prompt shows the diff, not the doc.

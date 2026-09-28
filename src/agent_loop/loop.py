@@ -351,6 +351,18 @@ def build_implement_prompt(
             f'### REGION id="{r.id}"  file={r.file}  lines {r.lines_1based}',
             f"Purpose: {r.note}" if r.note else "",
         ]
+        # CF-58: the doc comment above the anchored declaration is outside the
+        # region's span, and is usually its contract.
+        doc = regions.leading_comment(r, profile)
+        if doc:
+            parts += [
+                "The comment directly above this region (READ-ONLY context: it is "
+                "not part of the region, do not return it; it states the contract "
+                "the code must meet):",
+                f"```{profile.fence}",
+                doc,
+                "```",
+            ]
         # Each op wants a different thing back, and a region whose instruction is
         # left implicit gets the default: `create` would receive a fragment
         # instead of a file, and `insert` would receive the anchored block

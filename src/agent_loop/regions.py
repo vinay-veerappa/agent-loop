@@ -623,6 +623,49 @@ def read_source(path: Path) -> Tuple[List[str], str, bool]:
     return lines, newline, had_trailing_newline
 
 
+LEADING_COMMENT_MAX_LINES = 120
+
+
+def _is_attribute(stripped: str) -> bool:
+    """A C# `[Attr]`, a Rust `#[attr]` or a Python `@decorator` line: it sits
+    between a declaration and its doc comment, so the walk steps over it."""
+    return (stripped.startswith("[") and stripped.endswith("]")) or stripped.startswith(("#[", "@"))
+
+
+def leading_comment(region: Region, profile: Profile) -> str:
+    """The comment block directly above `region` (CF-58), or "".
+
+    A region begins at its anchor, so the doc comment written above the
+    anchored declaration -- usually its CONTRACT -- is outside the region's
+    span. This returns it so the implement prompt can show it READ-ONLY: the
+    region's span, and so what is replaced, is unchanged.
+
+    Walks up from the line above the region over line comments (any line
+    whose stripped text starts with `profile.line_comment`, which covers
+    `///` and `//!` under `//`) and attribute lines; stops at the first
+    blank line or code. A block ending in only attributes is "". Block
+    comments (`/** */`) are not read. Over LEADING_COMMENT_MAX_LINES the
+    lines NEAREST the declaration are kept and the cut is stated.
+    """
+    if region.op == CREATE or not profile.line_comment:
+        return ""
+    lines, _, _ = read_source(region.path)
+    i = region.start_line - 1
+    while i >= 0:
+        st = lines[i].strip()
+        if st and (st.startswith(profile.line_comment) or _is_attribute(st)):
+            i -= 1
+            continue
+        break
+    block = lines[i + 1:region.start_line]
+    if not any(l.strip().startswith(profile.line_comment) for l in block):
+        return ""
+    if len(block) > LEADING_COMMENT_MAX_LINES:
+        cut = len(block) - LEADING_COMMENT_MAX_LINES
+        block = [f"{profile.line_comment} ... [{cut} earlier comment line(s) truncated]"] + block[cut:]
+    return "\n".join(block)
+
+
 def extract(repo: Path, specs: List[Dict[str, Any]], profile: Profile) -> List[Region]:
     """Resolve every region spec in a ticket against the current tree."""
     out: List[Region] = []
