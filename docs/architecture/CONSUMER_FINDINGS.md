@@ -2243,3 +2243,30 @@ every gate stays green. Arbitrated and fixed by hand.
 Also this session: `deepseek-v4.1-flash:cloud` degenerated again on T43, returning 1187
 findings against a cap of 60, and was dropped (quorum 1/2, `APPROVE_PARTIAL`). That is the
 same shape as the retired `deepseek-v4-flash`.
+
+### CF-62 (new, HIGH, OPEN) — review mode scores an answering panel UNREACHABLE and reports 0 findings
+
+Measured on tvDownloadOHLC, 2026-09-29, `--mode review` of `main..te/T2-follow-host` (9
+files, 50,605 chars of diff). Run twice. Both runs printed `glm-5.3-flash:cloud
+UNREACHABLE` and `deepseek-v4.1-flash:cloud UNREACHABLE` with an **empty error column**,
+then `PANEL INVALID` and `findings (0)`. `result.json` read `secs: 0.1`,
+`findings_total: 0`, written 10:53:36 PT. Yet `r1_review_deepseek-v4.1-flash_cloud.txt`
+(13.0K, written 10:53:52) and `r1_review_glm-5.3-flash_cloud.txt` (8.4K, 10:58:10) are
+complete reviews: 11 findings from deepseek, 9 from glm, plus a REQUIRED block. Those
+files are written only on the success path of `loop.py` `one()`. So the model calls
+succeeded after the panel had already been scored as unreachable. A direct `curl` to
+`/api/chat` with the same model answered at 10:53:28.
+
+Two defects:
+
+- **The vote was cast before the call finished.** That is either a deadline much shorter
+  than the configured 1800 s, or a `ProviderError` raised early while the request still
+  completed. Undiagnosed.
+- **An UNREACHABLE vote carries no reason.** `str(exc)` printed empty, so the operator
+  cannot tell a deadline from a refusal from a transport error. The fix for this half:
+  an UNREACHABLE vote must print its exception type and message.
+
+The consumer read the findings from the artifact files by hand. The review found 4 real
+defects, including one both reviewers flagged: pricing closes on a stale leg quote.
+Nothing in the loop's output said they existed. **A `findings (0)` line beside a non-empty
+`r1_review_*.txt` is the symptom to check for.**
