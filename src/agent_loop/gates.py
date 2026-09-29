@@ -544,6 +544,12 @@ def reclassify_suite_errors(outcome: TestOutcome, expect_green: Sequence[str]) -
     if not node_ids:
         return outcome
     expect_files = {t.split("::", 1)[0] for t in expect_green if "::" in t}
+    # A BARE expect_green name ("test_x", the common ticket shape) names no
+    # file; learn its file from any FAILED/ERROR node id in the output that it
+    # matches, so the same-file rule works for bare names too.
+    for nid in re.findall(r"^(?:FAILED|ERROR) (\S+::\S+)", outcome.raw, re.MULTILINE):
+        if any(names_match(t, nid) for t in expect_green if "::" not in t):
+            expect_files.add(nid.split("::", 1)[0])
     related = sum(
         1
         for node_id in node_ids

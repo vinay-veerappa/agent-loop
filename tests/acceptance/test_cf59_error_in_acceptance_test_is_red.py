@@ -93,6 +93,20 @@ def test_error_in_a_file_that_holds_an_acceptance_test_is_also_red(tmp_path):
     assert "tests/test_risk_bindings.py::test_reads_risk_bindings" in ws.baseline
 
 
+def test_a_bare_expect_green_name_finds_its_file(tmp_path):
+    """T43's actual shape: expect_green holds BARE names, and the ERROR is a
+    different test in the file that holds one of them."""
+    repo = _git_repo(tmp_path)
+    with workspace.open_workspace(repo, "CF59E") as ws:
+        workspace.capture_baseline(
+            ws,
+            _cmd(tmp_path, _ACCEPTANCE_ERROR),
+            gates.parse_tests,
+            expect_green=["test_something_else"],
+        )
+    assert "tests/test_risk_bindings.py::test_reads_risk_bindings" in ws.baseline
+
+
 def test_error_in_an_unrelated_file_still_ends_the_run(tmp_path):
     """Negative control: the ERROR's file is not named by expect_green at
     all, so it must stay suite-level and still reject the baseline."""
