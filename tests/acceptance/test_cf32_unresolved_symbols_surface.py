@@ -139,3 +139,56 @@ def test_help_text_warns_about_unverified_ships():
     assert "ships unverified" in src, (
         "the --allow-unresolved-symbols help must warn about unverified ships"
     )
+
+# ---------------------------------------------------------------------------
+# CF-63: a symbol is refused only when NO region file contains it
+# ---------------------------------------------------------------------------
+def _two_file_ticket(spec):
+    return {
+        "id": "T1", "title": "t", "defect": "d", "spec": spec,
+        "regions": [
+            {"id": "R1", "file": "a.py", "anchor": "class Foo"},
+            {"id": "R2", "file": "b.py", "anchor": "class Baz"},
+        ],
+        "expect_green": [],
+    }
+
+
+def _scan_in(tmp_path, ticket):
+    import os
+    old = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return cli._scan_unresolved_symbols(
+            ticket, PROFILE, allow_unresolved=False, verbose=False)
+    finally:
+        os.chdir(old)
+
+
+def test_cf63_symbol_declared_in_other_region_file_is_not_refused(tmp_path):
+    """CF-63: X lives in a.py outside the region; b.py never mentions it. It
+    is auto-attached once from a.py and never refused for b.py."""
+    (tmp_path / "a.py").write_text(
+        "class Foo:\n    pass\n\n\nclass Xsym:\n    pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("class Baz:\n    pass\n", encoding="utf-8")
+    ticket = _two_file_ticket("Use the `Xsym` class")
+    n_regions = len(ticket["regions"])
+
+    guessed = _scan_in(tmp_path, ticket)
+
+    assert [g for g in guessed if g["status"] == "refused"] == [], guessed
+    x = [g for g in guessed if g["symbol"] == "Xsym"]
+    assert len(x) == 1 and x[0]["status"] == "guessed" and x[0]["file"] == "a.py", guessed
+    assert len(ticket["regions"]) == n_regions + 1, "exactly one auto-attach"
+
+
+def test_cf63_symbol_in_no_region_file_is_still_refused(tmp_path):
+    """CF-63 negative control: a symbol in neither file is still refused."""
+    (tmp_path / "a.py").write_text("class Foo:\n    pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("class Baz:\n    pass\n", encoding="utf-8")
+    ticket = _two_file_ticket("Use the `Ghost` class")
+
+    guessed = _scan_in(tmp_path, ticket)
+
+    refused = [g for g in guessed if g["status"] == "refused"]
+    assert {g["symbol"] for g in refused} == {"Ghost"}, guessed

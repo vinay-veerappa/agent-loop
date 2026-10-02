@@ -356,57 +356,48 @@ def _scan_unresolved_symbols(
         except (regions.RegionError, IndexError):
             region_texts_by_file.setdefault(fp, [])  # mark as "seen but failed"
 
-    warned: set = set()
     guessed: list = []
     if caps:
-        # Cache file_text reads to avoid re-reading the same file per region
-        file_text_cache: Dict[str, str] = {}
+        # CF-63: classify each symbol against the TICKET, not per file. It is
+        # refused only when no region file contains it; otherwise it is
+        # auto-attached once, from the first file that declares it.
+        file_texts: Dict[str, str] = {}
         for file_path, region_texts in region_texts_by_file.items():
-            # CF-32 (arbiter #6): if ALL regions for this file failed
-            # extraction, region_texts is []. Every cap in the file would
-            # be classified as "guessed" and auto-attached as readonly
-            # context — a false positive. Skip files with no resolved regions.
+            # CF-32 (arbiter #6): skip files whose regions all failed to
+            # extract (every cap would be a false "guessed").
             if not region_texts:
                 continue
             full_path = root / file_path
             if not full_path.exists():
                 continue
-            if file_path not in file_text_cache:
-                try:
-                    file_text_cache[file_path] = full_path.read_text(
-                        encoding="utf-8", errors="replace")
-                except OSError:
-                    file_text_cache[file_path] = ""
-            file_text = file_text_cache[file_path]
-            if not file_text:
+            try:
+                text = full_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            if text:
+                file_texts[file_path] = text
+        all_region_text = "\n".join(
+            t for texts in region_texts_by_file.values() for t in texts)
+        for cap in sorted(caps):
+            if not file_texts or cap in all_region_text:
+                continue  # visible in at least one region
+            holder = next((fp for fp, t in file_texts.items() if cap in t), None)
+            if holder is None:
+                file_path = next(iter(file_texts))
+                if verbose:
+                    print(f"      REFUSE '{cap}' named in spec but not found in "
+                          f"{', '.join(file_texts)} "
+                          f"-- model will guess unless you add its declaration to a "
+                          f"read-only region; pass --allow-unresolved-symbols to override",
+                          file=sys.stderr)
+                guessed.append({"symbol": cap, "file": file_path, "status": "refused"})
                 continue
-            # All region texts for this file, joined for "in any region" check
-            all_region_text = "\n".join(region_texts)
-            for cap in sorted(caps):
-                if cap in all_region_text:
-                    continue  # visible in at least one region
-                if cap not in file_text:
-                    wkey = (cap, file_path, "refused")
-                    if wkey not in warned:
-                        warned.add(wkey)
-                        if verbose:
-                            print(f"      REFUSE '{cap}' named in spec but not found in {file_path} "
-                                  f"-- model will guess unless you add its declaration to a "
-                                  f"read-only region; pass --allow-unresolved-symbols to override",
-                                  file=sys.stderr)
-                    if not any(g["symbol"] == cap and g["file"] == file_path for g in guessed):
-                        guessed.append({"symbol": cap, "file": file_path, "status": "refused"})
-                    continue
-                # Symbol is in the file but not in ANY region's text.
-                wkey = (cap, file_path, "guessed")
-                if wkey not in warned:
-                    warned.add(wkey)
-                    if verbose:
-                        print(f"      AUTO  '{cap}' declared outside every region in {file_path}; "
-                              f"attaching read-only context")
-                    _attach_readonly_context(ticket, file_path, cap, profile)
-                if not any(g["symbol"] == cap and g["file"] == file_path for g in guessed):
-                    guessed.append({"symbol": cap, "file": file_path, "status": "guessed"})
+            # Declared outside every region in `holder`.
+            if verbose:
+                print(f"      AUTO  '{cap}' declared outside every region in {holder}; "
+                      f"attaching read-only context")
+            _attach_readonly_context(ticket, holder, cap, profile)
+            guessed.append({"symbol": cap, "file": holder, "status": "guessed"})
     return guessed
 
 

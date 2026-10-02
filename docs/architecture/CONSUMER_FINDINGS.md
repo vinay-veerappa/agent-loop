@@ -2270,3 +2270,23 @@ The consumer read the findings from the artifact files by hand. The review found
 defects, including one both reviewers flagged: pricing closes on a stale leg quote.
 Nothing in the loop's output said they existed. **A `findings (0)` line beside a non-empty
 `r1_review_*.txt` is the symptom to check for.**
+
+### CF-63 (new, MEDIUM, FIXED) — a symbol declared in one region file was refused for every other region file
+
+Measured on tvDownloadOHLC, 2026-10-02, `--list` of tickets T29 and T30 (spine P9).
+T30 has regions in `crates/spine_ffi/src/lib.rs` and `crates/spine/src/restart.rs`. It
+printed `AUTO 'PlanRequest' declared outside every region in crates/spine_ffi/src/lib.rs`
+and also `REFUSE 'PlanRequest' named in spec but not found in crates/spine/src/restart.rs`.
+T29 did the same for `DoneReason` (declared in `risk.rs`, refused for `policy.rs`).
+`_scan_unresolved_symbols` classified each symbol once per region file, so a symbol
+found and auto-attached from file A was refused because file B's text lacked it. `loop.py`
+rejects the ticket as `TICKET_REJECTED` on any refusal, so a correct multi-file ticket
+could not run. Same family as CF-13: a property of the ticket computed per region.
+
+**Fix.** Classify per ticket. A symbol in any region's text is visible. Otherwise it is
+auto-attached once from the first region file that declares it. It is refused only when
+no region file contains it, and then once, naming every file searched. Enforced by two
+tests in `tests/acceptance/test_cf32_unresolved_symbols_surface.py`: a two-file ticket
+(no refusal, exactly one auto-attach) and a negative control (a symbol in neither file is
+still refused). Both are red on the pre-fix code. Suite: 886 passed, 40 skipped.
+Selftest: 13/13.
